@@ -1,0 +1,40 @@
+﻿using System;
+using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
+using System.Text;
+using WebsiteBuilder.Models.Base;
+
+namespace WebsiteBuilder.Models
+{
+    public class Page : TenantBaseModel
+    {
+        [Key]
+        public int Id { get; set; }
+
+        [Required, MaxLength(200)]
+        public string Title { get; set; } = string.Empty;
+
+        // URL path segment per tenant, e.g. "about", "listings", "" for home
+        [Required, MaxLength(200)]
+        public string Slug { get; set; } = string.Empty;
+
+        // Draft/Published/Archived (your PageStatus table or enum)
+        public int PageStatusId { get; set; }
+
+        // Optional template key (e.g., "Home", "Landing", "Default")
+        [MaxLength(100)]
+        public string? LayoutKey { get; set; }
+
+        // SEO
+        [MaxLength(200)]
+        public string? MetaTitle { get; set; }
+
+        [MaxLength(500)]
+        public string? MetaDescription { get; set; }
+
+        // Optional: link to MediaAsset (logo/og image)
+        public int? OgImageAssetId { get; set; }
+
+        public DateTime? PublishedAt { get; set; }
+    }
+}
