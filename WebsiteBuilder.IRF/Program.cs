@@ -6,6 +6,7 @@ using WebsiteBuilder.IRF.Infrastructure.Tenancy;
 using WebsiteBuilder.IRF.Repository;
 using WebsiteBuilder.IRF.Repository.IRepository;
 using WebsiteBuilder.Models;
+using WebsiteBuilder.Models.Constants;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -57,6 +58,19 @@ builder.Services.AddScoped<ITenantContext, TenantContext>();
 builder.Services.AddScoped<ITenantResolver, TenantResolver>();
 
 var app = builder.Build();
+
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<DataContext>();
+
+    var valid = db.PageStatuses.Any(p =>
+        p.Id == PageStatusIds.Published &&
+        p.Name == "Published");
+
+    if (!valid)
+        throw new InvalidOperationException("PageStatus seed mismatch.");
+}
+
 
 if (!app.Environment.IsDevelopment())
 {

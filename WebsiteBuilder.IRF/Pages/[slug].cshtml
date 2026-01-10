@@ -1,0 +1,19 @@
+﻿@page "/{slug}"
+@model WebsiteBuilder.IRF.Pages._slug_Model
+
+@if (Model.PageEntity is null)
+{
+    <div class="alert alert-warning">Page not found.</div>
+}
+else
+{
+    <h1>@Model.PageEntity.Title</h1>
+
+    @foreach (var s in Model.PageEntity.Sections.OrderBy(x => x.SortOrder))
+    {
+        <div class="border rounded p-3 mb-3">
+            <div class="fw-bold">#@s.SortOrder — @s.TypeKey</div>
+            <pre class="mb-0">@s.ContentJson</pre>
+        </div>
+    }
+}

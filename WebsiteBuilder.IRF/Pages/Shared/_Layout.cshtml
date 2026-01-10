@@ -1,4 +1,7 @@
-﻿<!DOCTYPE html>
+﻿@using WebsiteBuilder.IRF.Infrastructure.Tenancy
+@inject ITenantContext TenantContext
+
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="utf-8" />
@@ -27,7 +30,21 @@
                             <a class="nav-link text-dark" asp-area="" asp-page="/Privacy">Privacy</a>
                         </li>
                     </ul>
+
+                    <span class="navbar-text">
+                        @if (TenantContext.IsResolved)
+                        {
+                            <strong>@TenantContext.Slug</strong>
+                            <small class="text-muted">(@TenantContext.Host)</small>
+                        }
+                        else
+                        {
+                            <strong>Platform</strong>
+                            <small class="text-muted">(@TenantContext.Host)</small>
+                        }
+                    </span>
                 </div>
+
             </div>
         </nav>
     </header>

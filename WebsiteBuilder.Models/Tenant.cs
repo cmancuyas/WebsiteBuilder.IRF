@@ -23,6 +23,8 @@ namespace WebsiteBuilder.Models
 
         // Owner user lives in Identity DB (separate DB)
         public Guid OwnerUserId { get; set; }
+        public int? HomePageId { get; set; }
+        public Page? HomePage { get; set; }
 
         // Navs (optional but very useful)
         public ICollection<DomainMapping> DomainMappings { get; set; } = new List<DomainMapping>();

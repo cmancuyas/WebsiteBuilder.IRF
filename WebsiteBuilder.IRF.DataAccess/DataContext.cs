@@ -13,6 +13,8 @@ namespace WebsiteBuilder.IRF.DataAccess
         public DbSet<Theme> Themes => Set<Theme>();
         public DbSet<Page> Pages => Set<Page>();
         public DbSet<PageSection> PageSections => Set<PageSection>();
+        public DbSet<PageStatus> PageStatuses => Set<PageStatus>();
+
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -23,6 +25,8 @@ namespace WebsiteBuilder.IRF.DataAccess
             ConfigureDomainMappings(modelBuilder);
             ConfigureThemes(modelBuilder);
             ConfigurePages(modelBuilder);
+            ConfigurePageStatuses(modelBuilder);
+
         }
 
         private static void ConfigureBaseModelConventions(ModelBuilder modelBuilder)
@@ -77,6 +81,12 @@ namespace WebsiteBuilder.IRF.DataAccess
                     .WithOne(p => p.Tenant)
                     .HasForeignKey(p => p.TenantId)
                     .OnDelete(DeleteBehavior.Cascade);
+
+                b.HasOne(x => x.HomePage)
+                     .WithMany()
+                     .HasForeignKey(x => x.HomePageId)
+                     .OnDelete(DeleteBehavior.NoAction);
+
             });
         }
 
@@ -129,6 +139,9 @@ namespace WebsiteBuilder.IRF.DataAccess
 
                 // Slug unique PER tenant
                 b.HasIndex(x => new { x.TenantId, x.Slug }).IsUnique();
+
+                b.Property(x => x.PageStatusId).HasDefaultValue(1);
+
             });
 
             modelBuilder.Entity<PageSection>(b =>
@@ -144,5 +157,21 @@ namespace WebsiteBuilder.IRF.DataAccess
                     .OnDelete(DeleteBehavior.Cascade);
             });
         }
+        private static void ConfigurePageStatuses(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<PageStatus>(b =>
+            {
+                b.HasKey(x => x.Id);
+                b.Property(x => x.Id).ValueGeneratedNever(); // because we’ll seed fixed IDs
+                b.Property(x => x.Name).HasMaxLength(50).IsRequired();
+
+                b.HasData(
+                    new PageStatus { Id = 1, Name = "Draft" },
+                    new PageStatus { Id = 2, Name = "Published" },
+                    new PageStatus { Id = 3, Name = "Archived" }
+                );
+            });
+        }
+
     }
 }

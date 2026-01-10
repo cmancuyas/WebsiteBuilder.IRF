@@ -1,10 +1,38 @@
 ﻿@page
-@model IndexModel
-@{
-    ViewData["Title"] = "Home page";
+@using System.Text.Json
+@model WebsiteBuilder.IRF.Pages.IndexModel
+
+
+Home Page:
+<strong>@(Model.HomePage is null ? "(no page)" : $"{Model.HomePage.Title} (slug: {Model.HomePage.Slug}, status: {Model.HomePage.PageStatusId}, sections: {Model.HomePage.Sections?.Count ?? 0})")</strong>
+<br />
+Published At: <strong>@(Model.HomePage?.PublishedAt?.ToString("u") ?? "(null)")</strong>
+
+@if (Model.HomePage?.Sections?.Any() == true)
+{
+    <hr />
+    <h3>@Model.HomePage.Title</h3>
+
+    @foreach (var s in Model.HomePage.Sections.OrderBy(x => x.SortOrder))
+    {
+        <div class="card mb-3">
+            <div class="card-body">
+                <div class="text-muted small">#@s.SortOrder — @s.TypeKey</div>
+                <pre class="mb-0">@s.ContentJson</pre>
+            </div>
+        </div>
+    }
+}
+else if (Model.IsTenantResolved)
+{
+    <div class="alert alert-info mt-3">
+        No sections found for the tenant home page yet.
+    </div>
 }
 
-<div class="text-center">
-    <h1 class="display-4">Welcome</h1>
-    <p>Learn about <a href="https://learn.microsoft.com/aspnet/core">building Web apps with ASP.NET Core</a>.</p>
-</div>
+@foreach (var section in Model.HomePage.Sections.OrderBy(s => s.SortOrder))
+{
+    var payload = JsonSerializer.Deserialize<dynamic>(section.ContentJson ?? "{}");
+
+    <partial name=$"Shared/Sections/_{section.TypeKey}" model="payload" />
+}
