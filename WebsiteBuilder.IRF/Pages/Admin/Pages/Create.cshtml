@@ -1,0 +1,25 @@
+﻿@page "/admin/pages/create"
+@model WebsiteBuilder.IRF.Pages.Admin.Pages.CreateModel
+@using WebsiteBuilder.IRF.ViewModels.Admin.Pages
+
+<h2 class="mb-3">Create Page</h2>
+
+@if (Request.Query.ContainsKey("err"))
+{
+    <div class="alert alert-danger">An error occurred.</div>
+}
+
+<form method="post" class="card">
+    <div class="card-body">
+        <partial name="_Form" model="Model.Input" />
+    </div>
+
+    <div class="card-footer d-flex gap-2 justify-content-end">
+        <a class="btn btn-outline-secondary" href="/admin/pages">Cancel</a>
+        <button type="submit" class="btn btn-success">Create</button>
+    </div>
+</form>
+
+@section Scripts {
+    <partial name="_ValidationScriptsPartial" />
+}

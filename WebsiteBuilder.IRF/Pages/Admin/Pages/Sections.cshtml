@@ -1,0 +1,191 @@
+﻿@page "/admin/pages/edit/{id:int}/sections"
+@model WebsiteBuilder.IRF.Pages.Admin.Pages.SectionsModel
+
+@{
+    ViewData["Title"] = "Edit Sections";
+}
+
+<div class="d-flex align-items-center justify-content-between mb-3">
+    <div>
+        <h2 class="mb-1">Sections</h2>
+        <div class="text-muted">
+            Page: <strong>@Model.PageTitle</strong> — <code>/@Model.PageSlug</code>
+        </div>
+    </div>
+
+    <div class="d-flex gap-2">
+        <a class="btn btn-outline-secondary" href="/admin/pages/edit/@Model.Id">Back to Page</a>
+        <a class="btn btn-outline-secondary" href="/@Model.PageSlug" target="_blank">Open</a>
+    </div>
+</div>
+
+@if (TempData["Ok"] is not null)
+{
+    <div class="alert alert-success">@TempData["Ok"]</div>
+}
+@if (TempData["Err"] is not null)
+{
+    <div class="alert alert-danger">@TempData["Err"]</div>
+}
+
+<div class="card mb-4">
+    <div class="card-body">
+        <form method="post" asp-page-handler="Add" class="row g-2 align-items-end">
+            <div class="col-md-6">
+                <label class="form-label">Add new section (TypeKey)</label>
+                <input class="form-control" name="NewTypeKey" value="@Model.NewTypeKey" placeholder="e.g. hero, text, gallery" />
+                <div class="form-text">
+                    TypeKey maps to a renderer partial later: <code>/Pages/Shared/Sections/{typeKey}.cshtml</code>
+                </div>
+            </div>
+            <div class="col-md-6 text-end">
+                <button class="btn btn-success" type="submit">Add Section</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header d-flex align-items-center justify-content-between">
+        <div class="fw-semibold">Reorder Sections</div>
+        <div class="text-muted small">Drag rows to reorder, then click Save Order.</div>
+    </div>
+
+    <div class="card-body">
+        @if (Model.Sections.Count == 0)
+        {
+            <div class="alert alert-info mb-0">No sections yet.</div>
+        }
+        else
+        {
+            <div id="sectionsList" class="list-group">
+                @foreach (var s in Model.Sections)
+                {
+                    <div class="list-group-item" data-id="@s.Id">
+                        <div class="d-flex align-items-start justify-content-between gap-3">
+                            <div class="d-flex align-items-center gap-2">
+                                <span class="badge text-bg-secondary">#@s.SortOrder</span>
+                                <span class="fw-semibold">@s.TypeKey</span>
+                            </div>
+
+                            <div class="d-flex gap-2">
+                                <button type="button" class="btn btn-sm btn-outline-primary"
+                                        data-bs-toggle="collapse" data-bs-target="#edit-@s.Id">
+                                    Edit
+                                </button>
+
+                                <form method="post" asp-page-handler="Delete" class="d-inline"
+                                      onsubmit="return confirm('Delete this section?');">
+                                    <input type="hidden" name="sectionId" value="@s.Id" />
+                                    <button type="submit" class="btn btn-sm btn-outline-danger">Delete</button>
+                                </form>
+
+                                <span class="btn btn-sm btn-outline-secondary cursor-grab" title="Drag to reorder">
+                                    ↕
+                                </span>
+                            </div>
+                        </div>
+
+                        <div class="collapse mt-3" id="edit-@s.Id">
+                            <form method="post" asp-page-handler="Update">
+                                <input type="hidden" name="Edit.Id" value="@s.Id" />
+
+                                <div class="row g-2">
+                                    <div class="col-md-6">
+                                        <label class="form-label">TypeKey</label>
+                                        <input class="form-control" name="Edit.TypeKey" value="@s.TypeKey" />
+                                    </div>
+
+                                    <div class="col-md-6 d-flex align-items-end justify-content-end">
+                                        <button type="submit" class="btn btn-primary">Save</button>
+                                    </div>
+
+                                    <div class="col-12">
+                                        <label class="form-label">ContentJson</label>
+                                        <textarea class="form-control font-monospace" rows="8" name="Edit.ContentJson">@s.ContentJson</textarea>
+                                        <div class="form-text">Must be valid JSON object/array. Empty will be saved as <code>{}</code>.</div>
+                                    </div>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                }
+            </div>
+
+            <div class="mt-3 d-flex justify-content-end gap-2">
+                <button id="saveOrderBtn" type="button" class="btn btn-outline-primary">
+                    Save Order
+                </button>
+            </div>
+        }
+    </div>
+</div>
+
+@section Scripts
+{
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+    <script>
+        (function () {
+            const list = document.getElementById('sectionsList');
+            const saveBtn = document.getElementById('saveOrderBtn');
+            if (!list || !saveBtn) return;
+
+            new Sortable(list, {
+                animation: 150,
+                handle: '.cursor-grab'
+            });
+
+            saveBtn.addEventListener('click', async function () {
+                const ids = Array.from(list.querySelectorAll('[data-id]'))
+                    .map(el => parseInt(el.getAttribute('data-id'), 10))
+                    .filter(n => !isNaN(n));
+
+                const url = '@Url.Page("./Sections", new { id = Model.Id })' + '&handler=Reorder';
+
+                const res = await fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'RequestVerificationToken': getAntiForgeryToken()
+                    },
+                    body: JSON.stringify({ orderedIds: ids })
+                });
+
+                if (!res.ok) {
+                    const msg = await res.text();
+                    alert('Failed to save order. ' + msg);
+                    return;
+                }
+
+                const json = await res.json();
+                if (!json.ok) {
+                    alert('Failed to save order.');
+                    return;
+                }
+
+                window.location.reload();
+            });
+
+            function getAntiForgeryToken() {
+                const tokenInput = document.querySelector('input[name="__RequestVerificationToken"]');
+                return tokenInput ? tokenInput.value : '';
+            }
+        })();
+    </script>
+
+    @* Hidden antiforgery token for fetch() *@
+    <form method="post" style="display:none;">
+        @Html.AntiForgeryToken()
+    </form>
+
+    <style>
+        .cursor-grab {
+            cursor: grab;
+            user-select: none;
+        }
+
+        .font-monospace {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        }
+    </style>
+}

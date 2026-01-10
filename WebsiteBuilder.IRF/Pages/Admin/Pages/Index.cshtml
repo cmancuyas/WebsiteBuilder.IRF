@@ -1,0 +1,45 @@
+﻿@page "/admin/pages"
+@model WebsiteBuilder.IRF.Pages.Admin.Pages.IndexModel
+
+<h2 class="mb-3">Pages</h2>
+
+<form method="get" class="row g-2 mb-3">
+    <div class="col-md-6">
+        <input class="form-control" name="Q" value="@Model.Q" placeholder="Search title or slug..." />
+    </div>
+    <div class="col-md-3">
+        <input class="form-control" name="StatusId" value="@Model.StatusId" placeholder="StatusId (optional)" />
+    </div>
+    <div class="col-md-3 d-flex gap-2">
+        <button class="btn btn-primary" type="submit">Search</button>
+        <a class="btn btn-outline-secondary" href="/admin/pages">Reset</a>
+        <a class="btn btn-success ms-auto" href="/admin/pages/create">Create</a>
+    </div>
+</form>
+
+<table class="table table-striped align-middle">
+    <thead>
+        <tr>
+            <th>Title</th>
+            <th>Slug</th>
+            <th>Status</th>
+            <th>Updated</th>
+            <th style="width:160px;"></th>
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var p in Model.Items)
+        {
+            <tr>
+                <td>@p.Title</td>
+                <td><code>/@p.Slug</code></td>
+                <td>@p.PageStatusId</td>
+                <td>@p.UpdatedAt.ToString("yyyy-MM-dd HH:mm")</td>
+                <td class="text-end">
+                    <a class="btn btn-sm btn-outline-primary" href="/admin/pages/edit/@p.Id">Edit</a>
+                    <a class="btn btn-sm btn-outline-secondary" href="/admin/pages/edit/@p.Id?tab=sections">Sections</a>
+                </td>
+            </tr>
+        }
+    </tbody>
+</table>
