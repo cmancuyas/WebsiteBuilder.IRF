@@ -41,6 +41,16 @@ namespace WebsiteBuilder.IRF.Infrastructure.Middleware
                 return;
             }
 
+            //var path = context.Request.Path.Value ?? "";
+
+            //// Allow platform admin routes without tenant resolution (optional)
+            //if (path.StartsWith("/admin", StringComparison.OrdinalIgnoreCase))
+            //{
+            //    await _next(context);
+            //    return;
+            //}
+
+
             // DEV/LOCAL bypass (so you can access /Identity, /app, etc.)
             if (host == "localhost" || host == "127.0.0.1")
             {
@@ -134,11 +144,9 @@ namespace WebsiteBuilder.IRF.Infrastructure.Middleware
                 return true;
             }
 
-            // Platform / Identity / Admin routes (no tenant required)
             if (path.StartsWith("/Identity", StringComparison.OrdinalIgnoreCase) ||
                 path.StartsWith("/Account", StringComparison.OrdinalIgnoreCase) ||
                 path.StartsWith("/app", StringComparison.OrdinalIgnoreCase) ||
-                path.StartsWith("/admin", StringComparison.OrdinalIgnoreCase) ||
                 path.StartsWith("/health", StringComparison.OrdinalIgnoreCase) ||
                 path.StartsWith("/swagger", StringComparison.OrdinalIgnoreCase))
             {
