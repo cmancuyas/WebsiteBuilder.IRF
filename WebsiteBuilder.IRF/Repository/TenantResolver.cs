@@ -4,14 +4,18 @@ using Microsoft.Extensions.Logging;
 using WebsiteBuilder.IRF.DataAccess;
 using WebsiteBuilder.IRF.Infrastructure.Tenancy;
 using WebsiteBuilder.IRF.Repository.IRepository;
+using WebsiteBuilder.Models;
 
 namespace WebsiteBuilder.IRF.Repository
 {
-    public sealed class TenantResolver : ITenantResolver
+    public class TenantResolver : ITenantResolver
     {
         private readonly DataContext _db;
         private readonly IConfiguration _config;
         private readonly ILogger<TenantResolver> _logger;
+
+        private readonly string _platformDomain;
+        private readonly bool _normalizeWww;
 
         public TenantResolver(
             DataContext db,
@@ -21,24 +25,29 @@ namespace WebsiteBuilder.IRF.Repository
             _db = db;
             _config = config;
             _logger = logger;
+
+            _platformDomain = _config["SaaS:PlatformDomain"] ?? string.Empty;
+            _normalizeWww = bool.TryParse(_config["SaaS:NormalizeWww"], out var b) && b;
         }
 
-        public async Task<TenantResolutionResult?> ResolveAsync(string host, string? slug, CancellationToken cancellationToken)
+        public async Task<TenantResolutionResult?> ResolveAsync(
+            string host,
+            string? slug,
+            CancellationToken cancellationToken = default)
         {
             var normalizedHost = NormalizeHost(host);
-            if (string.IsNullOrWhiteSpace(normalizedHost))
-                return null;
 
-            // 1) Try resolve by custom domain first (DomainMapping.Host)
+            // 1) Try Custom Domain mapping first
             var mapping = await FindDomainMappingAsync(normalizedHost, cancellationToken);
-
             if (mapping is not null)
             {
                 var tenant = await _db.Tenants
+                    .IgnoreQueryFilters()
                     .AsNoTracking()
                     .FirstOrDefaultAsync(t =>
                         t.Id == mapping.TenantId &&
-                        t.IsActive == true,
+                        t.IsActive == true &&
+                        t.IsDeleted == false,
                         cancellationToken);
 
                 if (tenant is not null)
@@ -52,23 +61,34 @@ namespace WebsiteBuilder.IRF.Repository
                     };
                 }
 
-                // Domain exists but tenant not active or missing
-                _logger.LogWarning("DomainMapping found but tenant not active/missing. host={Host}", normalizedHost);
+                _logger.LogWarning(
+                    "DomainMapping found but tenant not active/missing. host={Host}, tenantId={TenantId}",
+                    normalizedHost, mapping.TenantId);
+
                 return null;
             }
 
-            // 2) If not matched by domain mapping, try subdomain slug (Tenant.Slug)
-            if (!string.IsNullOrWhiteSpace(slug))
+            // 2) If not matched by custom domain, try subdomain slug (Tenant.Slug)
+            // Only attempt slug-based resolution if PlatformDomain is configured.
+            if (!string.IsNullOrWhiteSpace(_platformDomain))
             {
-                var normalizedSlug = NormalizeSlug(slug);
-
-                if (!string.IsNullOrWhiteSpace(normalizedSlug))
+                // If slug not provided by middleware, infer it from host: {slug}.{platformDomain}
+                if (string.IsNullOrWhiteSpace(slug))
                 {
+                    slug = ExtractSlugFromHost(normalizedHost);
+                }
+
+                if (!string.IsNullOrWhiteSpace(slug))
+                {
+                    var normalizedSlug = NormalizeSlug(slug);
+
                     var tenant = await _db.Tenants
+                        .IgnoreQueryFilters()
                         .AsNoTracking()
                         .FirstOrDefaultAsync(t =>
                             t.Slug.ToLower() == normalizedSlug &&
-                            t.IsActive == true,
+                            t.IsActive == true &&
+                            t.IsDeleted == false,
                             cancellationToken);
 
                     if (tenant is not null)
@@ -87,57 +107,50 @@ namespace WebsiteBuilder.IRF.Repository
             return null;
         }
 
-        private async Task<Models.DomainMapping?> FindDomainMappingAsync(string normalizedHost, CancellationToken ct)
+        private async Task<DomainMapping?> FindDomainMappingAsync(string normalizedHost, CancellationToken ct)
         {
-            // Optional: normalize www
-            var normalizeWww = _config.GetValue("SaaS:NormalizeWww", true);
-
-            // try exact
-            var mapping = await _db.DomainMappings
+            // IMPORTANT: IgnoreQueryFilters() prevents tenant filters from hiding mappings pre-resolution.
+            return await _db.DomainMappings
+                .IgnoreQueryFilters()
                 .AsNoTracking()
-                .Where(d => d.IsActive == true && d.Host == normalizedHost)
-                .OrderByDescending(d => d.IsPrimary) // primary wins if duplicates exist (shouldn't if Host unique)
-                .FirstOrDefaultAsync(ct);
-
-            if (mapping is not null)
-                return mapping;
-
-            // try without www.
-            if (normalizeWww && normalizedHost.StartsWith("www."))
-            {
-                var noWww = normalizedHost.Substring(4);
-
-                mapping = await _db.DomainMappings
-                    .AsNoTracking()
-                    .Where(d => d.IsActive == true && d.Host == noWww)
-                    .OrderByDescending(d => d.IsPrimary)
-                    .FirstOrDefaultAsync(ct);
-
-                if (mapping is not null)
-                    return mapping;
-            }
-
-            return null;
+                .FirstOrDefaultAsync(d =>
+                    d.Host == normalizedHost &&
+                    d.IsActive == true &&
+                    d.IsDeleted == false,
+                    ct);
         }
 
-        private static string NormalizeHost(string host)
+        private string NormalizeHost(string host)
         {
-            // Host should be a hostname only (Request.Host.Host gives that)
-            // Normalize: trim, lowercase, remove trailing dot
-            var h = (host ?? string.Empty).Trim().ToLowerInvariant();
-            if (h.EndsWith(".")) h = h.TrimEnd('.');
-            return h;
+            host = (host ?? string.Empty).Trim().ToLowerInvariant().TrimEnd('.');
+
+            if (_normalizeWww && host.StartsWith("www."))
+                host = host.Substring(4);
+
+            return host;
         }
 
-        private static string NormalizeSlug(string slug)
-        {
-            // For safety: lowercase, trim, take first label only
-            var s = (slug ?? string.Empty).Trim().ToLowerInvariant();
-            if (string.IsNullOrWhiteSpace(s)) return string.Empty;
+        private string NormalizeSlug(string slug)
+            => (slug ?? string.Empty).Trim().ToLowerInvariant();
 
-            // If someone passes "a.b", keep only "a"
-            var first = s.Split('.', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? string.Empty;
-            return first;
+        private string? ExtractSlugFromHost(string normalizedHost)
+        {
+            var platform = NormalizeHost(_platformDomain);
+
+            // Example: john.yourplatform.com => john
+            if (string.IsNullOrWhiteSpace(platform))
+                return null;
+
+            if (!normalizedHost.EndsWith("." + platform))
+                return null;
+
+            var prefix = normalizedHost.Substring(0, normalizedHost.Length - platform.Length - 1);
+            if (string.IsNullOrWhiteSpace(prefix))
+                return null;
+
+            // If nested subdomains exist, only take the left-most token as slug
+            var parts = prefix.Split('.', StringSplitOptions.RemoveEmptyEntries);
+            return parts.Length > 0 ? parts[0] : null;
         }
     }
 }

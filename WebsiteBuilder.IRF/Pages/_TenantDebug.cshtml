@@ -1,0 +1,90 @@
+﻿@page
+@model WebsiteBuilder.IRF.Pages._TenantDebugModel
+@{
+    Layout = null; // keep it simple for debugging
+}
+
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>Tenant Debug</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+        body { font-family: system-ui, Arial, sans-serif; margin: 24px; }
+        .card { border: 1px solid #ddd; border-radius: 10px; padding: 16px; max-width: 900px; }
+        dt { font-weight: 600; margin-top: 10px; }
+        dd { margin: 4px 0 0 0; }
+        code { background: #f6f6f6; padding: 2px 6px; border-radius: 6px; }
+        .muted { color: #666; font-size: 0.95rem; }
+        .ok { color: #0a7a0a; font-weight: 700; }
+        .bad { color: #a10; font-weight: 700; }
+        .row { margin-top: 14px; }
+        .pill { display:inline-block; padding:2px 8px; border-radius:999px; border:1px solid #ddd; font-size:.85rem; background:#fafafa; }
+    </style>
+</head>
+<body>
+    <h1>Tenant Debug</h1>
+    <p class="muted">
+        Temporary diagnostics page. Remove or protect it (Authorize / environment check) before production.
+    </p>
+
+    <div class="card">
+        <div class="row">
+            @if (Model.IsResolved)
+            {
+                <span class="pill ok">Resolved</span>
+            }
+            else
+            {
+                <span class="pill bad">Not Resolved</span>
+            }
+        </div>
+
+        <dl>
+            <dt>Request Host</dt>
+            <dd><code>@Model.RequestHost</code></dd>
+
+            <dt>Request Path</dt>
+            <dd><code>@Model.RequestPath</code></dd>
+
+            <dt>TenantId</dt>
+            <dd><code>@Model.TenantId</code></dd>
+
+            <dt>Tenant Slug</dt>
+            <dd><code>@Model.TenantSlug</code></dd>
+
+            <dt>Tenant Host (from TenantContext)</dt>
+            <dd><code>@Model.TenantHost</code></dd>
+
+            <dt>HttpContext.Items[TenantId]</dt>
+            <dd><code>@Model.ItemsTenantId</code></dd>
+
+            <dt>HttpContext.Items[TenantSlug]</dt>
+            <dd><code>@Model.ItemsTenantSlug</code></dd>
+        </dl>
+    </div>
+
+    <div class="card" style="margin-top:16px;">
+        <h3 style="margin-top:0;">Quick Local Test Checklist</h3>
+        <ol class="muted">
+            <li>Set <code>SaaS:PlatformDomain</code> in appsettings.json (e.g. <code>yourplatform.com</code>).</li>
+            <li>
+                Add hosts entries:
+                <ul>
+                    <li><code>127.0.0.1 john.yourplatform.com</code></li>
+                    <li><code>127.0.0.1 johnrealty.com</code></li>
+                </ul>
+            </li>
+            <li>Create a Tenant with slug <code>john</code> and/or a DomainMapping with host <code>johnrealty.com</code>.</li>
+            <li>
+                Browse:
+                <ul>
+                    <li><code>https://john.yourplatform.com/_TenantDebug</code></li>
+                    <li><code>https://johnrealty.com/_TenantDebug</code></li>
+                </ul>
+            </li>
+        </ol>
+    </div>
+</body>
+</html>

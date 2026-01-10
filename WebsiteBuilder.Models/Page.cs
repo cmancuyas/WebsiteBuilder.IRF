@@ -1,7 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.ComponentModel.DataAnnotations;
-using System.Text;
+﻿using System.ComponentModel.DataAnnotations;
 using WebsiteBuilder.Models.Base;
 
 namespace WebsiteBuilder.Models
@@ -36,5 +33,11 @@ namespace WebsiteBuilder.Models
         public int? OgImageAssetId { get; set; }
 
         public DateTime? PublishedAt { get; set; }
+
+        // ✅ This fixes your Fluent config: WithMany(p => p.Sections)
+        public ICollection<PageSection> Sections { get; set; } = new List<PageSection>();
+
+        // Optional (only if you want navigation)
+        public Tenant? Tenant { get; set; }
     }
 }

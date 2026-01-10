@@ -1,7 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.ComponentModel.DataAnnotations;
-using System.Text;
+﻿using System.ComponentModel.DataAnnotations;
 using WebsiteBuilder.Models.Base;
 
 namespace WebsiteBuilder.Models
@@ -11,21 +8,15 @@ namespace WebsiteBuilder.Models
         [Key]
         public int Id { get; set; }
 
-        // FK to Page
         public int PageId { get; set; }
-
-        // e.g. Hero/Text/Gallery/ListingsGrid/ContactForm
-        public int SectionTypeId { get; set; }
-
-        // Order within the page
-        public int SortOrder { get; set; }
-
-        // JSON payload for section settings (no short max length)
-        [Required]
-        public string SettingsJson { get; set; } = "{}";
-
-        // Navigation (recommended)
         public Page? Page { get; set; }
-        public SectionType? SectionType { get; set; }
+
+        public int SortOrder { get; set; } = 0;
+
+        // Simple generic payload; adjust as you like
+        [MaxLength(100)]
+        public string TypeKey { get; set; } = "Text";
+
+        public string? ContentJson { get; set; }
     }
 }

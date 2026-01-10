@@ -1,9 +1,6 @@
-﻿using System;
-using System.Collections.Generic;
-using System.ComponentModel.DataAnnotations;
-using System.Text;
+﻿using System.ComponentModel.DataAnnotations;
 
-namespace WebsiteBuilder.Models
+namespace WebsiteBuilder.Models.Base
 {
     public class BaseModel
     {
@@ -19,8 +16,8 @@ namespace WebsiteBuilder.Models
         public Guid? DeletedBy { get; set; }
         public DateTime? DeletedAt { get; set; }
 
-        // Concurrency token (prevents silent overwrites in the builder)
+        // SQL Server rowversion / timestamp (optimistic concurrency)
         [Timestamp]
-        public byte[]? RowVersion { get; set; }
+        public byte[] RowVersion { get; set; } = Array.Empty<byte>();
     }
 }

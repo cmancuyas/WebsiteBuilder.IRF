@@ -1,174 +1,148 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using WebsiteBuilder.Models;
+using WebsiteBuilder.Models.Base;
 
 namespace WebsiteBuilder.IRF.DataAccess
 {
     public class DataContext : DbContext
     {
-        public DataContext(DbContextOptions<DataContext> options) : base(options)
-        {
-            ChangeTracker.LazyLoadingEnabled = false;
-        }
+        public DataContext(DbContextOptions<DataContext> options) : base(options) { }
 
-        // ===== DbSets (core) =====
         public DbSet<Tenant> Tenants => Set<Tenant>();
-        public DbSet<TenantStatus> TenantStatuses => Set<TenantStatus>();
-        public DbSet<TenantSetting> TenantSettings => Set<TenantSetting>();
-        public DbSet<TenantUser> TenantUsers => Set<TenantUser>();
-
-        public DbSet<Theme> Themes => Set<Theme>();
-        public DbSet<DefaultTheme> DefaultThemes => Set<DefaultTheme>();
-
         public DbSet<DomainMapping> DomainMappings => Set<DomainMapping>();
-
+        public DbSet<Theme> Themes => Set<Theme>();
         public DbSet<Page> Pages => Set<Page>();
         public DbSet<PageSection> PageSections => Set<PageSection>();
-
-        public DbSet<NavigationMenuItem> NavigationMenuItems => Set<NavigationMenuItem>();
-        // public DbSet<NavigationMenu> NavigationMenus => Set<NavigationMenu>(); // if exists
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
 
-            ConfigureBaseModel(modelBuilder);
-            ApplySoftDeleteQueryFilter(modelBuilder);
-
-            // ===== Constraints / indexes =====
-
-            // Tenant slug must be unique (subdomain routing)
-            modelBuilder.Entity<Tenant>()
-                .HasIndex(t => t.Slug)
-                .IsUnique();
-
-            // Domain host must be unique platform-wide
-            modelBuilder.Entity<DomainMapping>()
-                .HasIndex(d => d.Host)
-                .IsUnique();
-
-            // Only one primary domain per tenant (SQL Server filtered unique index)
-            modelBuilder.Entity<DomainMapping>()
-                .HasIndex(d => new { d.TenantId, d.IsPrimary })
-                .IsUnique()
-                .HasFilter("[IsPrimary] = 1 AND [IsDeleted] = 0");
-
-            // Page slug must be unique within a tenant
-            modelBuilder.Entity<Page>()
-                .HasIndex(p => new { p.TenantId, p.Slug })
-                .IsUnique();
-
-            // ===== Relationships (minimal but important) =====
-
-            // TenantStatus is reference data
-            modelBuilder.Entity<Tenant>()
-                .HasOne(t => t.TenantStatus)
-                .WithMany()
-                .HasForeignKey(t => t.TenantStatusId)
-                .OnDelete(DeleteBehavior.Restrict);
-
-            // Tenant -> ActiveTheme (optional)
-            modelBuilder.Entity<Tenant>()
-                .HasOne(t => t.ActiveTheme)
-                .WithMany()
-                .HasForeignKey(t => t.ActiveThemeId)
-                .OnDelete(DeleteBehavior.SetNull);
-
-            // DomainMapping belongs to tenant
-            modelBuilder.Entity<DomainMapping>()
-                .HasOne<Tenant>()
-                .WithMany()
-                .HasForeignKey(d => d.TenantId)
-                .OnDelete(DeleteBehavior.Cascade);
-
-            // Theme belongs to tenant
-            modelBuilder.Entity<Theme>()
-                .HasOne<Tenant>()
-                .WithMany()
-                .HasForeignKey(t => t.TenantId)
-                .OnDelete(DeleteBehavior.Cascade);
-
-            // Page belongs to tenant
-            modelBuilder.Entity<Page>()
-                .HasOne<Tenant>()
-                .WithMany()
-                .HasForeignKey(p => p.TenantId)
-                .OnDelete(DeleteBehavior.Cascade);
+            ConfigureBaseModelConventions(modelBuilder);
+            ConfigureTenant(modelBuilder);
+            ConfigureDomainMappings(modelBuilder);
+            ConfigureThemes(modelBuilder);
+            ConfigurePages(modelBuilder);
         }
 
-        public override int SaveChanges()
-        {
-            ApplyAuditAndSoftDeleteRules();
-            return base.SaveChanges();
-        }
-
-        public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
-        {
-            ApplyAuditAndSoftDeleteRules();
-            return base.SaveChangesAsync(cancellationToken);
-        }
-
-        private void ApplyAuditAndSoftDeleteRules()
-        {
-            var utcNow = DateTime.UtcNow;
-
-            foreach (var entry in ChangeTracker.Entries<BaseModel>())
-            {
-                if (entry.State == EntityState.Added)
-                {
-                    entry.Entity.CreatedAt = utcNow;
-                }
-                else if (entry.State == EntityState.Modified)
-                {
-                    entry.Entity.UpdatedAt = utcNow;
-                }
-                else if (entry.State == EntityState.Deleted)
-                {
-                    entry.State = EntityState.Modified;
-                    entry.Entity.IsDeleted = true;
-                    entry.Entity.DeletedAt = utcNow;
-                }
-            }
-        }
-
-        private static void ConfigureBaseModel(ModelBuilder modelBuilder)
-        {
-            foreach (var entityType in modelBuilder.Model.GetEntityTypes())
-            {
-                if (typeof(BaseModel).IsAssignableFrom(entityType.ClrType))
-                {
-                    var rowVersionProp = entityType.FindProperty(nameof(BaseModel.RowVersion));
-                    if (rowVersionProp != null)
-                    {
-                        rowVersionProp.IsConcurrencyToken = true;
-                        rowVersionProp.ValueGenerated = Microsoft.EntityFrameworkCore.Metadata.ValueGenerated.OnAddOrUpdate;
-                    }
-                }
-            }
-        }
-
-        private static void ApplySoftDeleteQueryFilter(ModelBuilder modelBuilder)
+        private static void ConfigureBaseModelConventions(ModelBuilder modelBuilder)
         {
             foreach (var entityType in modelBuilder.Model.GetEntityTypes())
             {
                 if (!typeof(BaseModel).IsAssignableFrom(entityType.ClrType))
                     continue;
 
-                var parameter = System.Linq.Expressions.Expression.Parameter(entityType.ClrType, "e");
-                var isDeletedProperty = System.Linq.Expressions.Expression.Call(
-                    typeof(EF),
-                    nameof(EF.Property),
-                    new[] { typeof(bool) },
-                    parameter,
-                    System.Linq.Expressions.Expression.Constant(nameof(BaseModel.IsDeleted)));
+                var b = modelBuilder.Entity(entityType.ClrType);
 
-                var compare = System.Linq.Expressions.Expression.Equal(
-                    isDeletedProperty,
-                    System.Linq.Expressions.Expression.Constant(false));
+                // Defaults (only applies if the property exists on the entity)
+                b.Property(nameof(BaseModel.IsActive)).HasDefaultValue(true);
+                b.Property(nameof(BaseModel.IsDeleted)).HasDefaultValue(false);
+                b.Property(nameof(BaseModel.CreatedAt)).HasDefaultValueSql("SYSUTCDATETIME()");
 
-                var lambda = System.Linq.Expressions.Expression.Lambda(compare, parameter);
-
-                modelBuilder.Entity(entityType.ClrType).HasQueryFilter(lambda);
+                // ✅ Correct way to mark rowversion using Fluent API (PropertyBuilder)
+                b.Property(nameof(BaseModel.RowVersion)).IsRowVersion();
             }
+        }
+
+        private static void ConfigureTenant(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Tenant>(b =>
+            {
+                b.HasKey(x => x.Id);
+                b.Property(x => x.Id).ValueGeneratedNever();
+
+                b.Property(x => x.DisplayName).HasMaxLength(300).IsRequired();
+                b.Property(x => x.Slug).HasMaxLength(200).IsRequired();
+                b.HasIndex(x => x.Slug).IsUnique();
+
+                // ✅ Avoid multiple cascade paths:
+                // Tenant -> Themes cascades
+                // Tenant.ActiveTheme -> Theme must NOT cascade
+                b.HasOne(x => x.ActiveTheme)
+                    .WithMany()
+                    .HasForeignKey(x => x.ActiveThemeId)
+                    .OnDelete(DeleteBehavior.NoAction);
+
+                b.HasMany(x => x.Themes)
+                    .WithOne(t => t.Tenant)
+                    .HasForeignKey(t => t.TenantId)
+                    .OnDelete(DeleteBehavior.Cascade);
+
+                b.HasMany(x => x.DomainMappings)
+                    .WithOne(dm => dm.Tenant)
+                    .HasForeignKey(dm => dm.TenantId)
+                    .OnDelete(DeleteBehavior.Cascade);
+
+                b.HasMany(x => x.Pages)
+                    .WithOne(p => p.Tenant)
+                    .HasForeignKey(p => p.TenantId)
+                    .OnDelete(DeleteBehavior.Cascade);
+            });
+        }
+
+        private static void ConfigureDomainMappings(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<DomainMapping>(b =>
+            {
+                b.HasKey(x => x.Id);
+                b.Property(x => x.Id).ValueGeneratedOnAdd();
+
+                b.Property(x => x.Host).HasMaxLength(510).IsRequired();
+                b.HasIndex(x => x.Host).IsUnique();
+
+                // Recommended behavior:
+                //  - Allow multiple domains per tenant
+                //  - Enforce only ONE primary domain per tenant
+                b.HasIndex(x => new { x.TenantId, x.IsPrimary })
+                    .IsUnique()
+                    .HasFilter("[IsPrimary] = 1");
+
+                b.Property(x => x.SslModeId)
+                .HasColumnName("SslModeId");
+
+            });
+        }
+
+        private static void ConfigureThemes(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Theme>(b =>
+            {
+                b.HasKey(x => x.Id);
+                b.Property(x => x.Id).ValueGeneratedOnAdd();
+
+                b.Property(x => x.Name).HasMaxLength(200).IsRequired();
+                b.Property(x => x.Mode).HasMaxLength(50);
+
+                b.HasIndex(x => new { x.TenantId, x.Name }).IsUnique(false);
+            });
+        }
+
+        private static void ConfigurePages(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Page>(b =>
+            {
+                b.HasKey(x => x.Id);
+                b.Property(x => x.Id).ValueGeneratedOnAdd();
+
+                b.Property(x => x.Title).HasMaxLength(200).IsRequired();
+                b.Property(x => x.Slug).HasMaxLength(200).IsRequired();
+
+                // Slug unique PER tenant
+                b.HasIndex(x => new { x.TenantId, x.Slug }).IsUnique();
+            });
+
+            modelBuilder.Entity<PageSection>(b =>
+            {
+                b.HasKey(x => x.Id);
+                b.Property(x => x.Id).ValueGeneratedOnAdd();
+
+                b.HasIndex(x => new { x.PageId, x.SortOrder });
+
+                b.HasOne(x => x.Page)
+                    .WithMany(p => p.Sections)
+                    .HasForeignKey(x => x.PageId)
+                    .OnDelete(DeleteBehavior.Cascade);
+            });
         }
     }
 }

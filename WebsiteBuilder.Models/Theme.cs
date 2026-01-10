@@ -1,7 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.ComponentModel.DataAnnotations;
-using System.Text;
+﻿using System.ComponentModel.DataAnnotations;
 using WebsiteBuilder.Models.Base;
 
 namespace WebsiteBuilder.Models
@@ -11,15 +8,15 @@ namespace WebsiteBuilder.Models
         [Key]
         public int Id { get; set; }
 
-        [Required, MaxLength(100)]
+        [Required, MaxLength(200)]
         public string Name { get; set; } = string.Empty;
 
-        // Store CSS tokens/settings safely as JSON.
-        // Do NOT cap to 100 chars; JSON will exceed that.
-        [Required]
-        public string TokensJson { get; set; } = "{}";
-
         [MaxLength(50)]
-        public string Version { get; set; } = "1.0";
+        public string Mode { get; set; } = "light"; // light/dark
+
+        // JSON config / CSS variables
+        public string? ThemeJson { get; set; }
+
+        public Tenant? Tenant { get; set; }
     }
 }
