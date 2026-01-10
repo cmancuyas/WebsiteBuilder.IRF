@@ -142,6 +142,8 @@ namespace WebsiteBuilder.IRF.DataAccess
 
                 b.Property(x => x.PageStatusId).HasDefaultValue(1);
 
+                b.HasAlternateKey(x => new { x.TenantId, x.Id });
+
             });
 
             modelBuilder.Entity<PageSection>(b =>
@@ -149,11 +151,12 @@ namespace WebsiteBuilder.IRF.DataAccess
                 b.HasKey(x => x.Id);
                 b.Property(x => x.Id).ValueGeneratedOnAdd();
 
-                b.HasIndex(x => new { x.PageId, x.SortOrder });
+                b.HasIndex(x => new { x.TenantId, x.PageId, x.SortOrder }).IsUnique();
 
                 b.HasOne(x => x.Page)
                     .WithMany(p => p.Sections)
-                    .HasForeignKey(x => x.PageId)
+                    .HasForeignKey(x => new { x.TenantId, x.PageId })
+                    .HasPrincipalKey(p => new { p.TenantId, p.Id })
                     .OnDelete(DeleteBehavior.Cascade);
             });
         }
@@ -162,16 +165,21 @@ namespace WebsiteBuilder.IRF.DataAccess
             modelBuilder.Entity<PageStatus>(b =>
             {
                 b.HasKey(x => x.Id);
-                b.Property(x => x.Id).ValueGeneratedNever(); // because we’ll seed fixed IDs
+                b.Property(x => x.Id).ValueGeneratedNever();
+
                 b.Property(x => x.Name).HasMaxLength(50).IsRequired();
+                b.Property(x => x.IsSystem).HasDefaultValue(true);
+
+                b.HasIndex(x => x.Name).IsUnique();
 
                 b.HasData(
-                    new PageStatus { Id = 1, Name = "Draft" },
-                    new PageStatus { Id = 2, Name = "Published" },
-                    new PageStatus { Id = 3, Name = "Archived" }
+                    new PageStatus { Id = 1, Name = "Draft", IsSystem = true },
+                    new PageStatus { Id = 2, Name = "Published", IsSystem = true },
+                    new PageStatus { Id = 3, Name = "Archived", IsSystem = true }
                 );
             });
         }
+
 
     }
 }

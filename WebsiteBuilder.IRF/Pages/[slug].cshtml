@@ -1,19 +1,92 @@
 ﻿@page "/{slug}"
 @model WebsiteBuilder.IRF.Pages._slug_Model
+@using System.Text.Json
+
+@{
+    // Basic SEO defaults (safe even if PageEntity is null)
+    ViewData["Title"] = Model.PageEntity?.MetaTitle
+                        ?? Model.PageEntity?.Title
+                        ?? "Page";
+}
 
 @if (Model.PageEntity is null)
 {
-    <div class="alert alert-warning">Page not found.</div>
+    // Production-friendly: do not expose tenant/page lookup details
+    <div class="container py-5">
+        <div class="alert alert-warning mb-0" role="alert">
+            Page not found.
+        </div>
+    </div>
 }
 else
 {
-    <h1>@Model.PageEntity.Title</h1>
+    <div class="container py-4">
+        @* Optional: render H1 only when you want pages to show it *@
+        @if (!string.IsNullOrWhiteSpace(Model.PageEntity.Title))
+        {
+            <h1 class="mb-4">@Model.PageEntity.Title</h1>
+        }
 
-    @foreach (var s in Model.PageEntity.Sections.OrderBy(x => x.SortOrder))
-    {
-        <div class="border rounded p-3 mb-3">
-            <div class="fw-bold">#@s.SortOrder — @s.TypeKey</div>
-            <pre class="mb-0">@s.ContentJson</pre>
-        </div>
-    }
+        @* Optional meta description (if your layout supports it; otherwise harmless) *@
+        @if (!string.IsNullOrWhiteSpace(Model.PageEntity.MetaDescription))
+        {
+            <meta name="description" content="@Model.PageEntity.MetaDescription" />
+        }
+
+        @{
+            var sections = (Model.PageEntity.Sections ?? Enumerable.Empty<WebsiteBuilder.Models.PageSection>())
+            .Where(s => s is not null)
+            .OrderBy(s => s.SortOrder)
+            .ThenBy(s => s.Id)
+            .ToList();
+        }
+
+        @if (sections.Count == 0)
+        {
+            <div class="alert alert-info" role="alert">
+                This page has no sections yet.
+            </div>
+        }
+        else
+        {
+            foreach (var s in sections)
+            {
+                // Convention: partial per section type key.
+                // Example: TypeKey = "hero"  => /Pages/Shared/Sections/hero.cshtml
+                //          TypeKey = "text"  => /Pages/Shared/Sections/text.cshtml
+                var typeKey = (s.TypeKey ?? string.Empty).Trim();
+                var partialPath = string.IsNullOrWhiteSpace(typeKey)
+                ? null
+                : $"/Pages/Shared/Sections/{typeKey}.cshtml";
+
+                <div class="mb-3">
+                    @if (!string.IsNullOrWhiteSpace(partialPath))
+                    {
+                        try
+                        {
+                            // Pass the PageSection as the partial model
+                            @await Html.PartialAsync(partialPath, s)
+                        }
+                        catch
+                        {
+                            // Fallback renderer if partial is missing or errors out.
+                            // Keep it safe and minimal for production.
+                            <div class="border rounded p-3">
+                                <div class="fw-bold mb-2">Section: @s.TypeKey</div>
+                                <pre class="mb-0">@s.ContentJson</pre>
+                            </div>
+                        }
+                    }
+                    else
+                    {
+                        // No TypeKey specified: fallback renderer
+                        <div class="border rounded p-3">
+                            <div class="fw-bold mb-2">Section</div>
+                            <pre class="mb-0">@s.ContentJson</pre>
+                        </div>
+                    }
+                </div>
+            }
+        }
+    </div>
 }

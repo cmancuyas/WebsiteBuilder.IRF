@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
 using WebsiteBuilder.IRF.DataAccess;
@@ -19,14 +19,20 @@ namespace WebsiteBuilder.IRF.Pages
             _tenant = tenant;
         }
 
-        public Models.Page? Page { get; private set; }
+        // ✅ Rename to avoid collision with Page()
+        public WebsiteBuilder.Models.Page? PageEntity { get; private set; }
 
         public async Task<IActionResult> OnGetAsync(string slug)
         {
             if (!_tenant.IsResolved)
                 return NotFound();
 
-            Page = await _db.Pages
+            if (string.IsNullOrWhiteSpace(slug))
+                return NotFound();
+
+            slug = slug.Trim();
+
+            PageEntity = await _db.Pages
                 .AsNoTracking()
                 .Include(p => p.Sections)
                 .FirstOrDefaultAsync(p =>
@@ -36,14 +42,20 @@ namespace WebsiteBuilder.IRF.Pages
                     p.IsActive &&
                     !p.IsDeleted);
 
-            if (Page == null)
+            if (PageEntity is null)
                 return NotFound();
 
-            Page.Sections = Page.Sections
-                .Where(s => s.TenantId == _tenant.TenantId && s.IsActive && !s.IsDeleted)
+            // Filter + order sections (safe, deterministic)
+            PageEntity.Sections = PageEntity.Sections
+                .Where(s =>
+                    s.TenantId == _tenant.TenantId &&
+                    s.IsActive &&
+                    !s.IsDeleted)
                 .OrderBy(s => s.SortOrder)
+                .ThenBy(s => s.Id)
                 .ToList();
 
+            // ✅ Calls the Razor Pages method (no collision now)
             return Page();
         }
     }
