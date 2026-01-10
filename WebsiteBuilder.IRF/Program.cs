@@ -41,6 +41,8 @@ builder.Services.AddDbContext<DataContext>(options =>
     )
 );
 
+builder.Services.AddScoped<ITenantNavigationService, TenantNavigationService>();
+
 // Identity
 builder.Services
     .AddIdentity<ApplicationUser, ApplicationRole>(options =>
