@@ -1,13 +1,9 @@
 ﻿@page "{id:int}"
 @model WebsiteBuilder.IRF.Pages.Admin.Pages.EditModel
 @using WebsiteBuilder.Models.Constants
+
 @{
     ViewData["Title"] = "Edit Page";
-
-    // IMPORTANT:
-    // _Form.cshtml reads statuses from ViewData["PageStatuses"].
-    // Your EditModel currently builds Model.PageStatusSelect and stores ViewData["PageStatusSelect"].
-    // This line bridges that so the dropdown is populated.
 }
 
 <div class="container py-4">
@@ -15,61 +11,137 @@
     <div class="d-flex align-items-center justify-content-between mb-3">
         <div>
             <h2 class="mb-0">Edit Page</h2>
-            <div class="text-muted small">
-                Tenant: @Model.TenantHost
-            </div>
+            <div class="text-muted small">Tenant: @Model.TenantHost</div>
         </div>
 
         <div class="d-flex gap-2">
-            <a class="btn btn-outline-secondary" asp-page="/Admin/Pages/Index">
-                Back
-            </a>
 
-            @* Preview (same tab) *@
-            <a class="btn btn-outline-primary" href="@Model.PreviewUrl">
-                Preview
-            </a>
+            <a class="btn btn-outline-secondary" asp-page="/Admin/Pages/Index">Back</a>
 
-            @* Open Preview (new tab) *@
+            <a class="btn btn-outline-primary" href="@Model.PreviewUrl">Preview</a>
+
             <a class="btn btn-outline-primary" href="@Model.PreviewUrl" target="_blank" rel="noopener">
                 Open Preview
             </a>
-            <button type="submit"
-                    class="btn btn-success"
-                    asp-page-handler="Publish"
-                    asp-route-id="@Model.Input.Id"
-                    disabled="@(Model.Input.PageStatusId == PageStatusIds.Published)">
-                Publish
-            </button>
 
-            <button type="submit"
-                    class="btn btn-outline-warning"
-                    asp-page-handler="Unpublish"
-                    asp-route-id="@Model.Input.Id"
-                    disabled="@(Model.Input.PageStatusId == PageStatusIds.Draft)">
-                Unpublish
-            </button>
+            @* Publish *@
+            @if (Model.CanPublish)
+            {
+                <button type="submit"
+                        class="btn btn-success"
+                        form="pageForm"
+                        formnovalidate
+                        asp-page-handler="Publish"
+                        asp-route-id="@Model.Input.Id">
+                    Publish
+                </button>
+            }
+            else
+            {
+                <button type="button" class="btn btn-success" disabled>
+                    Publish
+                </button>
+            }
 
+            @* Unpublish *@
+            @if (Model.CanUnpublish)
+            {
+                <button type="submit"
+                        class="btn btn-outline-warning"
+                        form="pageForm"
+                        formnovalidate
+                        asp-page-handler="Unpublish"
+                        asp-route-id="@Model.Input.Id">
+                    Unpublish
+                </button>
+            }
+            else
+            {
+                <button type="button" class="btn btn-outline-warning" disabled>
+                    Unpublish
+                </button>
+            }
+
+            @* Archive / Restore *@
+            @if (Model.CanArchive)
+            {
+                <button type="submit"
+                        class="btn btn-outline-danger"
+                        form="pageForm"
+                        formnovalidate
+                        asp-page-handler="Archive"
+                        asp-route-id="@Model.Input.Id">
+                    Archive
+                </button>
+            }
+            else
+            {
+                <button type="button" class="btn btn-outline-danger" disabled>
+                    Archive
+                </button>
+            }
+
+            @if (Model.CanRestore)
+            {
+                <button type="submit"
+                        class="btn btn-outline-secondary"
+                        form="pageForm"
+                        formnovalidate
+                        asp-page-handler="Restore"
+                        asp-route-id="@Model.Input.Id">
+                    Restore
+                </button>
+            }
         </div>
     </div>
 
-    @if (Model.SaveSuccess)
+    @* Why Publish is disabled (specific) *@
+    @if (!Model.CanPublish && Model.Input.PageStatusId != PageStatusIds.Published)
     {
-        <div class="alert alert-success">
-            Page saved successfully.
+        <div class="text-muted small mb-3">
+            Publishing is disabled:
+            <ul class="mb-0">
+                @if (Model.IsArchived)
+                {
+                    <li>This page is archived. Restore it before publishing.</li>
+                }
+                @if (!Model.HasSlug)
+                {
+                    <li>Slug is required.</li>
+                }
+                @if (!Model.HasSections)
+                {
+                    <li>Add at least one section.</li>
+                }
+            </ul>
         </div>
     }
 
-    <form method="post" class="card shadow-sm">
+    @* Feedback *@
+    @if (Model.SaveSuccess)
+    {
+        <div class="alert alert-success">Page saved successfully.</div>
+    }
+
+    @if (TempData["Success"] is string ok && !string.IsNullOrWhiteSpace(ok))
+    {
+        <div class="alert alert-success">@ok</div>
+    }
+
+    @if (TempData["Error"] is string err && !string.IsNullOrWhiteSpace(err))
+    {
+        <div class="alert alert-danger">@err</div>
+    }
+
+    <form id="pageForm" method="post" class="card shadow-sm">
         <div class="card-body">
 
             <input type="hidden" asp-for="Input.Id" />
 
-            @* Shared fields *@
+            @* Shared fields (IMPORTANT: use "for=Input" so all names post as Input.*) *@
             <partial name="_Form" for="Input" />
 
-
-            @* Nav fields (Edit specific but kept here, not inside _Form) *@
+            @* Navigation fields *@
             <div class="form-check mt-3">
                 <input asp-for="Input.ShowInNavigation" class="form-check-input" />
                 <label asp-for="Input.ShowInNavigation" class="form-check-label"></label>
@@ -86,17 +158,14 @@
         <div class="card-footer d-flex justify-content-end gap-2">
             <button type="submit"
                     class="btn btn-primary"
+                    id="saveBtn"
                     data-save-button>
                 Save
             </button>
-
-
         </div>
     </form>
 </div>
 
 @section Scripts {
     <partial name="_ValidationScriptsPartial" />
-    <script src="~/js/admin/sections/live-json-validate.js"></script>
 }
-

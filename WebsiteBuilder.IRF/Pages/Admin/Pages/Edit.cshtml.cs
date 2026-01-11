@@ -25,14 +25,30 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
         public PageEditVm Input { get; set; } = new();
 
         public SelectList PageStatusSelect { get; private set; } = default!;
-
         public bool SaveSuccess { get; private set; }
-
         public string TenantHost => _tenant.Host ?? string.Empty;
 
-        /// <summary>
-        /// Computed preview URL for the current page.
-        /// </summary>
+        // ===== Publish/Archive UI state =====
+        public int SectionCount { get; private set; }
+        public bool HasSections => SectionCount > 0;
+        public bool HasSlug => !string.IsNullOrWhiteSpace(Input?.Slug);
+
+        public bool IsPublished => Input.PageStatusId == PageStatusIds.Published;
+        public bool IsDraft => Input.PageStatusId == PageStatusIds.Draft;
+        public bool IsArchived => Input.PageStatusId == PageStatusIds.Archived;
+
+        // CanPublish: enabled only when Draft (or not Published/Archived), has slug, has sections
+        public bool CanPublish => !IsPublished && !IsArchived && HasSlug && HasSections;
+
+        // CanUnpublish: allowed only when Published
+        public bool CanUnpublish => IsPublished;
+
+        // CanArchive: allowed when not archived (Draft or Published)
+        public bool CanArchive => !IsArchived;
+
+        // CanRestore: allowed only when archived
+        public bool CanRestore => IsArchived;
+
         public string PreviewUrl
         {
             get
@@ -44,49 +60,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                 return $"/{slug}?preview=true";
             }
         }
-        public async Task<IActionResult> OnPostPublishAsync(int id)
-        {
-            // Load page
-            var entity = await _db.Pages.FirstOrDefaultAsync(p => p.Id == id);
-            if (entity == null) return NotFound();
 
-            // Optional: enforce basic requirements before publish
-            // (slug not empty, etc.)
-            if (string.IsNullOrWhiteSpace(entity.Slug))
-            {
-                TempData["Error"] = "Cannot publish: Slug is required.";
-                return RedirectToPage(new { id });
-            }
-
-            entity.PageStatusId = PageStatusIds.Published;
-
-            // Optional if you track these:
-            // entity.PublishedAt = DateTime.UtcNow;
-            // entity.UpdatedAt = DateTime.UtcNow;
-            // entity.UpdatedBy = User.Identity?.Name;
-
-            await _db.SaveChangesAsync();
-
-            TempData["Success"] = "Page published.";
-            return RedirectToPage(new { id });
-        }
-
-        public async Task<IActionResult> OnPostUnpublishAsync(int id)
-        {
-            var entity = await _db.Pages.FirstOrDefaultAsync(p => p.Id == id);
-            if (entity == null) return NotFound();
-
-            entity.PageStatusId = PageStatusIds.Draft;
-
-            // Optional audit fields:
-            // entity.UpdatedAt = DateTime.UtcNow;
-            // entity.UpdatedBy = User.Identity?.Name;
-
-            await _db.SaveChangesAsync();
-
-            TempData["Success"] = "Page moved back to Draft.";
-            return RedirectToPage(new { id });
-        }
         public async Task<IActionResult> OnGetAsync(int id, bool saveSuccess = false, CancellationToken ct = default)
         {
             SaveSuccess = saveSuccess;
@@ -122,6 +96,8 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             };
 
             await BuildSelectListsAsync(Input.PageStatusId, ct);
+            await LoadSectionCountAsync(page.Id, ct);
+
             return Page();
         }
 
@@ -130,10 +106,8 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             if (!_tenant.IsResolved)
                 return NotFound("Tenant not resolved.");
 
-            // Ensure dropdown lists exist again on validation errors
             await BuildSelectListsAsync(Input.PageStatusId, ct);
 
-            // Must load the tracked entity to update it
             var page = await _db.Pages
                 .FirstOrDefaultAsync(p =>
                     p.Id == id &&
@@ -145,6 +119,9 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
 
             // Normalize slug (if empty, derive from Title)
             Input.Slug = SanitizeSlug(Input.Slug, Input.Title);
+
+            // Update section count for UI (in case we return Page() on validation error)
+            await LoadSectionCountAsync(page.Id, ct);
 
             // Slug uniqueness per-tenant (exclude current page)
             if (!string.IsNullOrWhiteSpace(Input.Slug))
@@ -161,9 +138,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                         p.Slug.ToLower() == normalizedSlug.ToLower(), ct);
 
                 if (slugExists)
-                {
                     ModelState.AddModelError("Input.Slug", "Slug is already in use for this tenant.");
-                }
             }
 
             if (!ModelState.IsValid)
@@ -180,7 +155,9 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             page.ShowInNavigation = Input.ShowInNavigation;
             page.NavigationOrder = Input.NavigationOrder;
 
-            page.PageStatusId = Input.PageStatusId;
+            // IMPORTANT: Save does NOT change status (publish/unpublish/archive are explicit actions)
+            // page.PageStatusId = Input.PageStatusId;
+
             page.IsActive = Input.IsActive;
             page.IsDeleted = Input.IsDeleted;
 
@@ -200,6 +177,174 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             return RedirectToPage(new { id = page.Id, saveSuccess = true });
         }
 
+        public async Task<IActionResult> OnPostPublishAsync(int id, CancellationToken ct = default)
+        {
+            if (!_tenant.IsResolved)
+                return NotFound("Tenant not resolved.");
+
+            var page = await _db.Pages
+                .FirstOrDefaultAsync(p =>
+                    p.Id == id &&
+                    p.TenantId == _tenant.TenantId &&
+                    !p.IsDeleted, ct);
+
+            if (page == null)
+                return NotFound();
+
+            // Guardrails
+            if (string.IsNullOrWhiteSpace(page.Slug))
+            {
+                TempData["Error"] = "Cannot publish: Slug is required.";
+                return RedirectToPage(new { id });
+            }
+
+            var hasSections = await _db.PageSections
+                .AsNoTracking()
+                .AnyAsync(s => s.PageId == page.Id && !s.IsDeleted, ct);
+
+            if (!hasSections)
+            {
+                TempData["Error"] = "Cannot publish: This page has no sections. Add at least one section before publishing.";
+                return RedirectToPage(new { id });
+            }
+
+            if (page.PageStatusId == PageStatusIds.Archived)
+            {
+                TempData["Error"] = "Cannot publish: This page is archived. Restore it first.";
+                return RedirectToPage(new { id });
+            }
+
+            page.PageStatusId = PageStatusIds.Published;
+
+            if (page.PublishedAt == null)
+                page.PublishedAt = DateTime.UtcNow;
+
+            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (Guid.TryParse(userId, out var userGuid))
+                page.UpdatedBy = userGuid;
+
+            page.UpdatedAt = DateTime.UtcNow;
+
+            await _db.SaveChangesAsync(ct);
+
+            TempData["Success"] = "Page published.";
+            return RedirectToPage(new { id });
+        }
+
+        public async Task<IActionResult> OnPostUnpublishAsync(int id, CancellationToken ct = default)
+        {
+            if (!_tenant.IsResolved)
+                return NotFound("Tenant not resolved.");
+
+            var page = await _db.Pages
+                .FirstOrDefaultAsync(p =>
+                    p.Id == id &&
+                    p.TenantId == _tenant.TenantId &&
+                    !p.IsDeleted, ct);
+
+            if (page == null)
+                return NotFound();
+
+            if (page.PageStatusId != PageStatusIds.Published)
+            {
+                TempData["Error"] = "Unpublish is only available for published pages.";
+                return RedirectToPage(new { id });
+            }
+
+            page.PageStatusId = PageStatusIds.Draft;
+
+            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (Guid.TryParse(userId, out var userGuid))
+                page.UpdatedBy = userGuid;
+
+            page.UpdatedAt = DateTime.UtcNow;
+
+            await _db.SaveChangesAsync(ct);
+
+            TempData["Success"] = "Page moved back to Draft.";
+            return RedirectToPage(new { id });
+        }
+
+        // ===== Archive UX =====
+        public async Task<IActionResult> OnPostArchiveAsync(int id, CancellationToken ct = default)
+        {
+            if (!_tenant.IsResolved)
+                return NotFound("Tenant not resolved.");
+
+            var page = await _db.Pages
+                .FirstOrDefaultAsync(p =>
+                    p.Id == id &&
+                    p.TenantId == _tenant.TenantId &&
+                    !p.IsDeleted, ct);
+
+            if (page == null)
+                return NotFound();
+
+            if (page.PageStatusId == PageStatusIds.Archived)
+            {
+                TempData["Success"] = "Page is already archived.";
+                return RedirectToPage(new { id });
+            }
+
+            page.PageStatusId = PageStatusIds.Archived;
+
+            // Recommended UX: archived pages should not appear in navigation
+            page.ShowInNavigation = false;
+
+            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (Guid.TryParse(userId, out var userGuid))
+                page.UpdatedBy = userGuid;
+
+            page.UpdatedAt = DateTime.UtcNow;
+
+            await _db.SaveChangesAsync(ct);
+
+            TempData["Success"] = "Page archived.";
+            return RedirectToPage(new { id });
+        }
+
+        public async Task<IActionResult> OnPostRestoreAsync(int id, CancellationToken ct = default)
+        {
+            if (!_tenant.IsResolved)
+                return NotFound("Tenant not resolved.");
+
+            var page = await _db.Pages
+                .FirstOrDefaultAsync(p =>
+                    p.Id == id &&
+                    p.TenantId == _tenant.TenantId &&
+                    !p.IsDeleted, ct);
+
+            if (page == null)
+                return NotFound();
+
+            if (page.PageStatusId != PageStatusIds.Archived)
+            {
+                TempData["Error"] = "Restore is only available for archived pages.";
+                return RedirectToPage(new { id });
+            }
+
+            // Restore goes back to Draft (safe default)
+            page.PageStatusId = PageStatusIds.Draft;
+
+            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (Guid.TryParse(userId, out var userGuid))
+                page.UpdatedBy = userGuid;
+
+            page.UpdatedAt = DateTime.UtcNow;
+
+            await _db.SaveChangesAsync(ct);
+
+            TempData["Success"] = "Page restored to Draft.";
+            return RedirectToPage(new { id });
+        }
+
+        private async Task LoadSectionCountAsync(int pageId, CancellationToken ct)
+        {
+            SectionCount = await _db.PageSections
+                .AsNoTracking()
+                .CountAsync(s => s.PageId == pageId && !s.IsDeleted, ct);
+        }
+
         private async Task BuildSelectListsAsync(int selectedPageStatusId, CancellationToken ct)
         {
             var statuses = await _db.PageStatuses
@@ -211,7 +356,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
 
             PageStatusSelect = new SelectList(statuses, "Id", "Name", selectedPageStatusId);
 
-            // If your Form partial expects ViewData["PageStatusSelect"], set it here
+            // _Form.cshtml reads ViewData["PageStatuses"]
             ViewData["PageStatuses"] = PageStatusSelect;
         }
 
@@ -221,21 +366,13 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             if (string.IsNullOrWhiteSpace(value))
                 value = (title ?? string.Empty).Trim();
 
-            // Basic slug normalization:
-            // - trim
-            // - replace spaces with hyphens
-            // - remove leading/trailing slashes
             value = value.Trim().Trim('/');
             value = value.Replace(' ', '-');
 
-            // Collapse repeated hyphens
             while (value.Contains("--"))
                 value = value.Replace("--", "-");
 
-            // Lowercase
-            value = value.ToLowerInvariant();
-
-            return value;
+            return value.ToLowerInvariant();
         }
     }
 }

@@ -33,15 +33,17 @@ namespace WebsiteBuilder.IRF.Pages
             var previewRequested = IsPreviewRequested();
 
             // If preview is requested but user is NOT allowed:
-            // - do NOT 404 (causes exactly what you are seeing)
+            // - do NOT 404
             // - just ignore preview and render published
             IsPreview = previewRequested && UserCanPreview();
 
+            // optional: restrict preview to authenticated admins
+            if (IsPreview && !(User?.Identity?.IsAuthenticated ?? false))
+                return Forbid();
+
             var normalizedSlug = NormalizeSlug(slug);
             if (string.IsNullOrWhiteSpace(normalizedSlug))
-            {
                 normalizedSlug = "home";
-            }
 
             var query = _db.Pages
                 .AsNoTracking()
