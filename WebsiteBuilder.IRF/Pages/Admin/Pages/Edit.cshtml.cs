@@ -44,7 +44,49 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                 return $"/{slug}?preview=true";
             }
         }
+        public async Task<IActionResult> OnPostPublishAsync(int id)
+        {
+            // Load page
+            var entity = await _db.Pages.FirstOrDefaultAsync(p => p.Id == id);
+            if (entity == null) return NotFound();
 
+            // Optional: enforce basic requirements before publish
+            // (slug not empty, etc.)
+            if (string.IsNullOrWhiteSpace(entity.Slug))
+            {
+                TempData["Error"] = "Cannot publish: Slug is required.";
+                return RedirectToPage(new { id });
+            }
+
+            entity.PageStatusId = PageStatusIds.Published;
+
+            // Optional if you track these:
+            // entity.PublishedAt = DateTime.UtcNow;
+            // entity.UpdatedAt = DateTime.UtcNow;
+            // entity.UpdatedBy = User.Identity?.Name;
+
+            await _db.SaveChangesAsync();
+
+            TempData["Success"] = "Page published.";
+            return RedirectToPage(new { id });
+        }
+
+        public async Task<IActionResult> OnPostUnpublishAsync(int id)
+        {
+            var entity = await _db.Pages.FirstOrDefaultAsync(p => p.Id == id);
+            if (entity == null) return NotFound();
+
+            entity.PageStatusId = PageStatusIds.Draft;
+
+            // Optional audit fields:
+            // entity.UpdatedAt = DateTime.UtcNow;
+            // entity.UpdatedBy = User.Identity?.Name;
+
+            await _db.SaveChangesAsync();
+
+            TempData["Success"] = "Page moved back to Draft.";
+            return RedirectToPage(new { id });
+        }
         public async Task<IActionResult> OnGetAsync(int id, bool saveSuccess = false, CancellationToken ct = default)
         {
             SaveSuccess = saveSuccess;

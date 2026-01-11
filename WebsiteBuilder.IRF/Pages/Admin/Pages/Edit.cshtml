@@ -1,6 +1,6 @@
 ﻿@page "{id:int}"
 @model WebsiteBuilder.IRF.Pages.Admin.Pages.EditModel
-
+@using WebsiteBuilder.Models.Constants
 @{
     ViewData["Title"] = "Edit Page";
 
@@ -34,6 +34,22 @@
             <a class="btn btn-outline-primary" href="@Model.PreviewUrl" target="_blank" rel="noopener">
                 Open Preview
             </a>
+            <button type="submit"
+                    class="btn btn-success"
+                    asp-page-handler="Publish"
+                    asp-route-id="@Model.Input.Id"
+                    disabled="@(Model.Input.PageStatusId == PageStatusIds.Published)">
+                Publish
+            </button>
+
+            <button type="submit"
+                    class="btn btn-outline-warning"
+                    asp-page-handler="Unpublish"
+                    asp-route-id="@Model.Input.Id"
+                    disabled="@(Model.Input.PageStatusId == PageStatusIds.Draft)">
+                Unpublish
+            </button>
+
         </div>
     </div>
 
@@ -50,7 +66,8 @@
             <input type="hidden" asp-for="Input.Id" />
 
             @* Shared fields *@
-            <partial name="_Form" model="Model.Input" />
+            <partial name="_Form" for="Input" />
+
 
             @* Nav fields (Edit specific but kept here, not inside _Form) *@
             <div class="form-check mt-3">
@@ -67,9 +84,13 @@
         </div>
 
         <div class="card-footer d-flex justify-content-end gap-2">
-            <button type="submit" class="btn btn-primary">
+            <button type="submit"
+                    class="btn btn-primary"
+                    data-save-button>
                 Save
             </button>
+
+
         </div>
     </form>
 </div>

@@ -29,7 +29,8 @@
         <div class="card-body">
 
             @* Shared fields *@
-            <partial name="_Form" model="Model.Input" />
+            <partial name="_Form" for="Input" />
+
 
             @* Nav fields (Create/Edit specific but kept here, not inside _Form) *@
             <div class="form-check mt-3">
@@ -58,5 +59,7 @@
 
 @section Scripts {
     <partial name="_ValidationScriptsPartial" />
+    @* This script is not needed on Page Create/Edit (it’s for Sections JSON).
+       You can remove it safely if you want. *@
     <script src="~/js/admin/sections/live-json-validate.js"></script>
 }
