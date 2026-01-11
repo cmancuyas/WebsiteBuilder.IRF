@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using WebsiteBuilder.IRF.DataAccess;
 using WebsiteBuilder.IRF.Infrastructure.Middleware;
 using WebsiteBuilder.IRF.Infrastructure.Sections;
+using WebsiteBuilder.IRF.Infrastructure.Sections.Validators;
 using WebsiteBuilder.IRF.Infrastructure.Tenancy;
 using WebsiteBuilder.IRF.Repository;
 using WebsiteBuilder.IRF.Repository.IRepository;
@@ -70,6 +71,14 @@ builder.Services.AddAuthorization(options =>
 builder.Services.AddScoped<ITenantContext, TenantContext>();
 builder.Services.AddScoped<ITenantResolver, TenantResolver>();
 builder.Services.AddSingleton<ISectionRegistry, SectionRegistry>();
+builder.Services.AddSingleton<ISectionJsonValidator, SectionJsonValidator>();
+
+builder.Services.AddScoped<ISectionValidationService, SectionValidationService>();
+builder.Services.AddScoped<ISectionContentValidator, HeroSectionValidator>();
+builder.Services.AddScoped<ISectionContentValidator, TextSectionValidator>();
+builder.Services.AddScoped<ISectionContentValidator, GallerySectionValidator>();
+
+
 
 var app = builder.Build();
 

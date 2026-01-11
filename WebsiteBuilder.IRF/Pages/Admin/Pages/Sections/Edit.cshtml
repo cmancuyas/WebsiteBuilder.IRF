@@ -1,0 +1,140 @@
+﻿@page
+@model WebsiteBuilder.IRF.Pages.Admin.Pages.Sections.EditModel
+
+@{
+    ViewData["Title"] = "Edit Section";
+}
+
+<h2 class="mb-3">Edit Section</h2>
+
+<form method="post" id="sectionForm">
+    @Html.AntiForgeryToken()
+
+    <input type="hidden" asp-for="Section.Id" />
+    <input type="hidden" asp-for="Section.PageId" />
+
+    <div class="row g-3">
+        <div class="col-md-4">
+            <label asp-for="Section.TypeKey" class="form-label">Section Type</label>
+            <select asp-for="Section.TypeKey" asp-items="Model.SectionTypeOptions" class="form-select" id="typeKey">
+            </select>
+            <span asp-validation-for="Section.TypeKey" class="text-danger"></span>
+        </div>
+
+        <div class="col-md-4">
+            <label asp-for="Section.SortOrder" class="form-label">Sort Order</label>
+            <input asp-for="Section.SortOrder" class="form-control" />
+            <span asp-validation-for="Section.SortOrder" class="text-danger"></span>
+        </div>
+    </div>
+
+    <div class="mt-3">
+        <label asp-for="Section.ContentJson" class="form-label">Content JSON</label>
+        <textarea asp-for="Section.ContentJson"
+                  rows="14"
+                  class="form-control font-monospace"
+                  id="contentJson"></textarea>
+        <span asp-validation-for="Section.ContentJson" class="text-danger"></span>
+
+        <!-- Live validation UI -->
+        <div class="mt-2" id="jsonStatus" style="display:none;"></div>
+        <ul class="mt-2 text-danger" id="jsonErrors" style="display:none;"></ul>
+    </div>
+
+    <div class="mt-4 d-flex gap-2">
+        <button type="submit" class="btn btn-primary" id="saveBtn">Save</button>
+        <a asp-page="/Admin/Pages/Sections"
+           asp-route-pageId="@Model.Section.PageId"
+           class="btn btn-secondary">Cancel</a>
+    </div>
+</form>
+
+@section Scripts {
+    <script>
+        (function () {
+            const form = document.getElementById("sectionForm");
+            const typeKeyEl = document.getElementById("typeKey");
+            const jsonEl = document.getElementById("contentJson");
+            const statusEl = document.getElementById("jsonStatus");
+            const errorsEl = document.getElementById("jsonErrors");
+            const saveBtn = document.getElementById("saveBtn");
+
+            const tokenEl = form.querySelector('input[name="__RequestVerificationToken"]');
+
+            let debounceHandle = null;
+
+            function setStatus(ok, text) {
+                statusEl.style.display = "block";
+                statusEl.className = ok ? "text-success" : "text-danger";
+                statusEl.textContent = text;
+            }
+
+            function setErrors(errors) {
+                errorsEl.innerHTML = "";
+                if (!errors || errors.length === 0) {
+                    errorsEl.style.display = "none";
+                    return;
+                }
+                errorsEl.style.display = "block";
+                for (const e of errors) {
+                    const li = document.createElement("li");
+                    li.textContent = e;
+                    errorsEl.appendChild(li);
+                }
+            }
+
+            function setSaveEnabled(enabled) {
+                saveBtn.disabled = !enabled;
+            }
+
+            async function validateNow() {
+                const typeKey = typeKeyEl.value || "";
+                const contentJson = jsonEl.value || "";
+
+                setStatus(true, "Validating...");
+                setErrors([]);
+                setSaveEnabled(false);
+
+                const fd = new FormData();
+                fd.append("typeKey", typeKey);
+                fd.append("contentJson", contentJson);
+
+                const resp = await fetch("?handler=ValidateJson", {
+                    method: "POST",
+                    body: fd,
+                    headers: {
+                        "RequestVerificationToken": tokenEl ? tokenEl.value : ""
+                    }
+                });
+
+                if (!resp.ok) {
+                    setStatus(false, "Validation endpoint error.");
+                    setSaveEnabled(true);
+                    return;
+                }
+
+                const data = await resp.json();
+
+                if (data.isValid) {
+                    setStatus(true, "JSON is valid for this section type.");
+                    setErrors([]);
+                    setSaveEnabled(true);
+                } else {
+                    setStatus(false, "JSON is invalid for this section type.");
+                    setErrors(data.errors || []);
+                    setSaveEnabled(false);
+                }
+            }
+
+            function scheduleValidation() {
+                if (debounceHandle) clearTimeout(debounceHandle);
+                debounceHandle = setTimeout(validateNow, 350);
+            }
+
+            jsonEl.addEventListener("input", scheduleValidation);
+            typeKeyEl.addEventListener("change", scheduleValidation);
+
+            scheduleValidation();
+        })();
+    </script>
+}

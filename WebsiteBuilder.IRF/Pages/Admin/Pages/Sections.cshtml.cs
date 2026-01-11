@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
 using WebsiteBuilder.IRF.DataAccess;
+using WebsiteBuilder.IRF.Infrastructure.Sections;
 using WebsiteBuilder.IRF.Infrastructure.Tenancy;
 using WebsiteBuilder.IRF.ViewModels.Admin.Pages;
 using WebsiteBuilder.Models;
@@ -13,11 +14,19 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
     {
         private readonly DataContext _db;
         private readonly ITenantContext _tenant;
+        private readonly ISectionRegistry _sections;
+        private readonly ISectionJsonValidator _validator;
 
-        public SectionsModel(DataContext db, ITenantContext tenant)
+        public SectionsModel(
+            DataContext db,
+            ITenantContext tenant,
+            ISectionRegistry sections,
+            ISectionJsonValidator validator)
         {
             _db = db;
             _tenant = tenant;
+            _sections = sections;
+            _validator = validator;
         }
 
         // Route parameter: /admin/pages/edit/{id:int}/sections
@@ -31,11 +40,13 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
 
         // Add form
         [BindProperty]
-        public string NewTypeKey { get; set; } = "text";
+        public string NewTypeKey { get; set; } = "Text";
 
         // Update form
         [BindProperty]
         public PageSectionEditVm Edit { get; set; } = new();
+
+        public IReadOnlyCollection<SectionDefinition> AvailableSectionTypes => _sections.All;
 
         public async Task<IActionResult> OnGetAsync()
         {
@@ -77,16 +88,16 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
         public async Task<IActionResult> OnPostAddAsync()
         {
             if (!_tenant.IsResolved) return NotFound();
-
             if (Id <= 0) return NotFound();
 
-            if (string.IsNullOrWhiteSpace(NewTypeKey))
+            var canonicalTypeKey = _sections.Canonicalize(NewTypeKey);
+            if (canonicalTypeKey is null)
             {
-                TempData["Err"] = "TypeKey is required.";
+                TempData["Err"] = "Unknown section type.";
                 return RedirectToPage("./Sections", new { id = Id });
             }
 
-            var typeKey = NormalizeTypeKey(NewTypeKey);
+            var def = _sections.All.First(x => x.TypeKey.Equals(canonicalTypeKey, StringComparison.OrdinalIgnoreCase));
 
             var pageExists = await _db.Pages.AnyAsync(p =>
                 p.Id == Id &&
@@ -106,8 +117,13 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                 TenantId = _tenant.TenantId,
                 PageId = Id,
                 SortOrder = (maxOrder <= 0 ? 0 : maxOrder) + 10,
-                TypeKey = typeKey,
-                ContentJson = "{}",
+
+                // Store canonical key (Hero/Text/Gallery) so runtime rendering matches your switch
+                TypeKey = def.TypeKey,
+
+                // Default JSON from registry
+                ContentJson = def.DefaultJson,
+
                 IsDeleted = false,
                 CreatedBy = GetUserIdOrEmpty(),
                 CreatedAt = DateTime.UtcNow
@@ -124,7 +140,6 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
         public async Task<IActionResult> OnPostUpdateAsync()
         {
             if (!_tenant.IsResolved) return NotFound();
-
             if (Id <= 0) return NotFound();
 
             if (!ModelState.IsValid)
@@ -141,22 +156,31 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
 
             if (entity is null) return NotFound();
 
-            var typeKey = NormalizeTypeKey(Edit.TypeKey);
-
-            var json = (Edit.ContentJson ?? string.Empty).Trim();
-
-            // If empty, store "{}" as a safe default
-            if (string.IsNullOrWhiteSpace(json))
-                json = "{}";
-
-            // Minimal JSON sanity check: object or array
-            if (!LooksLikeJson(json))
+            var canonicalTypeKey = _sections.Canonicalize(Edit.TypeKey);
+            if (canonicalTypeKey is null)
             {
-                TempData["Err"] = "ContentJson must be valid JSON (object/array).";
+                TempData["Err"] = "Unknown section type.";
                 return RedirectToPage("./Sections", new { id = Id });
             }
 
-            entity.TypeKey = typeKey;
+            var json = (Edit.ContentJson ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                // If empty, use registry default JSON for this section type
+                if (_sections.TryGet(canonicalTypeKey, out var def))
+                    json = def.DefaultJson;
+                else
+                    json = "{}";
+            }
+
+            // Strict per-section validation
+            if (!_validator.Validate(canonicalTypeKey, json, out var error))
+            {
+                TempData["Err"] = error;
+                return RedirectToPage("./Sections", new { id = Id });
+            }
+
+            entity.TypeKey = canonicalTypeKey; // canonical store
             entity.ContentJson = json;
 
             entity.UpdatedBy = GetUserIdOrEmpty();
@@ -172,7 +196,6 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
         public async Task<IActionResult> OnPostDeleteAsync(int sectionId)
         {
             if (!_tenant.IsResolved) return NotFound();
-
             if (Id <= 0) return NotFound();
 
             var entity = await _db.PageSections.FirstOrDefaultAsync(s =>
@@ -197,7 +220,6 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
         public async Task<IActionResult> OnPostReorderAsync([FromBody] PageSectionReorderVm vm)
         {
             if (!_tenant.IsResolved) return NotFound();
-
             if (Id <= 0) return NotFound();
 
             if (vm?.OrderedIds is null || vm.OrderedIds.Count == 0)
@@ -243,23 +265,6 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             await _db.SaveChangesAsync();
 
             return new JsonResult(new { ok = true });
-        }
-
-        private static string NormalizeTypeKey(string typeKey)
-        {
-            typeKey = (typeKey ?? string.Empty).Trim().ToLowerInvariant();
-
-            // keep only a-z, 0-9, hyphen, underscore
-            typeKey = System.Text.RegularExpressions.Regex.Replace(typeKey, @"[^a-z0-9\-_]", "");
-            typeKey = typeKey.Trim('-', '_');
-
-            return string.IsNullOrWhiteSpace(typeKey) ? "text" : typeKey;
-        }
-
-        private static bool LooksLikeJson(string value)
-        {
-            var v = (value ?? string.Empty).Trim();
-            return (v.StartsWith("{") && v.EndsWith("}")) || (v.StartsWith("[") && v.EndsWith("]"));
         }
 
         private Guid GetUserIdOrEmpty()

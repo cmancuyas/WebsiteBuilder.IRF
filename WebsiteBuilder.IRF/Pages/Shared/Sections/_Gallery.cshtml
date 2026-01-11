@@ -2,35 +2,34 @@
 @using System.Text.Json
 
 @{
-    List<(string Url, string? Alt)> images = new();
-
-    if (!string.IsNullOrWhiteSpace(Model.ContentJson))
+    JsonDocument? doc = null;
+    try
     {
-        try
+        if (!string.IsNullOrWhiteSpace(Model.ContentJson))
         {
-            using var doc = JsonDocument.Parse(Model.ContentJson);
-
-            if (doc.RootElement.TryGetProperty("images", out var imgs) &&
-                imgs.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var item in imgs.EnumerateArray())
-                {
-                    if (item.ValueKind != JsonValueKind.Object) continue;
-
-                    var url = item.TryGetProperty("url", out var u) ? u.GetString() : null;
-                    var alt = item.TryGetProperty("alt", out var a) ? a.GetString() : null;
-
-                    if (!string.IsNullOrWhiteSpace(url))
-                        images.Add((url!, alt));
-                }
-            }
+            doc = JsonDocument.Parse(Model.ContentJson);
         }
-        catch
+    }
+    catch
+    {
+        doc = null;
+    }
+
+    var images = new List<(string Url, string? Alt)>();
+
+    if (doc?.RootElement.ValueKind == JsonValueKind.Object &&
+        doc.RootElement.TryGetProperty("images", out var imgs) &&
+        imgs.ValueKind == JsonValueKind.Array)
+    {
+        foreach (var item in imgs.EnumerateArray())
         {
-            <div class="alert alert-danger mb-0">
-                Invalid Gallery JSON content.
-            </div>
-            return;
+            if (item.ValueKind != JsonValueKind.Object) continue;
+
+            var url = item.TryGetProperty("url", out var u) && u.ValueKind == JsonValueKind.String ? u.GetString() : null;
+            var alt = item.TryGetProperty("alt", out var a) && a.ValueKind == JsonValueKind.String ? a.GetString() : null;
+
+            if (!string.IsNullOrWhiteSpace(url))
+                images.Add((url!, alt));
         }
     }
 }
@@ -39,7 +38,7 @@
     <div class="container">
         @if (images.Count == 0)
         {
-            <div class="text-muted">No gallery images.</div>
+            <div class="text-muted">No images.</div>
         }
         else
         {
@@ -48,9 +47,7 @@
                 {
                     <div class="col-6 col-md-4 col-lg-3">
                         <div class="border rounded overflow-hidden">
-                            <img src="@img.Url"
-                                 alt="@(img.Alt ?? string.Empty)"
-                                 class="img-fluid d-block" />
+                            <img src="@img.Url" alt="@img.Alt" class="img-fluid d-block" />
                         </div>
                     </div>
                 }
