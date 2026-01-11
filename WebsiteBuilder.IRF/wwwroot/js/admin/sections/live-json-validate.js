@@ -57,6 +57,31 @@ const SCHEMA_HINTS = {
             timer = setTimeout(() => fn.apply(this, args), delay);
         };
     }
+    function tryBeautifyJson(textarea) {
+        const raw = textarea.value;
+        if (!raw || raw.trim().length === 0) return false;
+
+        // First, attempt strict parse
+        try {
+            const obj = JSON.parse(raw);
+            const pretty = JSON.stringify(obj, null, 2);
+            if (pretty !== raw.trim()) textarea.value = pretty;
+            return true;
+        } catch {
+            // Fallback: attempt relaxed parse by stripping trailing commas
+            try {
+                const cleaned = stripTrailingCommas(raw);
+                const obj = JSON.parse(cleaned);
+                const pretty = JSON.stringify(obj, null, 2);
+                textarea.value = pretty;
+                return true;
+            } catch {
+                // Still invalid → do not modify user input
+                return false;
+            }
+        }
+    }
+
 
     function renderStatus(textarea, isValid, errorsCount) {
         const id = textarea.dataset.statusContainer;
@@ -210,6 +235,70 @@ const SCHEMA_HINTS = {
             console.error(err);
         }
     }
+    function maskJsonStrings(input) {
+        // Replaces characters inside JSON string literals with spaces so regex ops
+        // won’t accidentally modify content within strings.
+        // Returns { masked, map } where map lets us restore original strings.
+        const map = [];
+        let masked = "";
+        let i = 0;
+
+        while (i < input.length) {
+            const ch = input[i];
+
+            if (ch === '"') {
+                let start = i;
+                i++; // consume opening quote
+                let escaped = false;
+
+                while (i < input.length) {
+                    const c = input[i];
+                    if (!escaped && c === '"') {
+                        i++; // consume closing quote
+                        break;
+                    }
+                    if (!escaped && c === "\\") {
+                        escaped = true;
+                    } else {
+                        escaped = false;
+                    }
+                    i++;
+                }
+
+                const str = input.slice(start, i);
+                const token = `__STR_${map.length}__`;
+                map.push(str);
+
+                // Keep token length similar-ish for indexing stability; token is fine.
+                masked += token;
+            } else {
+                masked += ch;
+                i++;
+            }
+        }
+
+        return { masked, map };
+    }
+
+    function unmaskJsonStrings(input, map) {
+        let output = input;
+        for (let idx = 0; idx < map.length; idx++) {
+            output = output.replace(`__STR_${idx}__`, map[idx]);
+        }
+        return output;
+    }
+
+    function stripTrailingCommas(jsonText) {
+        // Remove trailing commas before } or ] (outside strings).
+        // Example: { "a": 1, } -> { "a": 1 }
+        //          [1,2,]      -> [1,2]
+        const { masked, map } = maskJsonStrings(jsonText);
+
+        // Remove comma followed by optional whitespace/newlines then a closing bracket/brace
+        const cleanedMasked = masked.replace(/,\s*([}\]])/g, "$1");
+
+        return unmaskJsonStrings(cleanedMasked, map);
+    }
 
     function wire() {
         const textareas = document.querySelectorAll("textarea[data-live-json-validate]");
@@ -224,6 +313,14 @@ const SCHEMA_HINTS = {
 
             const handler = debounce(() => validateJson(textarea), DEBOUNCE_MS);
             textarea.addEventListener("input", handler);
+
+            textarea.addEventListener("blur", () => {
+                const beautified = tryBeautifyJson(textarea);
+                if (beautified) {
+                    // Immediately re-validate so UI reflects formatted JSON
+                    validateJson(textarea);
+                }
+            });
 
             // OPTIONAL but recommended:
             // validate immediately if textarea already has content
