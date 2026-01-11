@@ -1,5 +1,33 @@
-﻿@model dynamic
+﻿@model WebsiteBuilder.Models.PageSection
+@using System.Text.Json
 
-<section class="content py-3">
-    <p>@Model.text</p>
+@{
+    string? text = null;
+
+    if (!string.IsNullOrWhiteSpace(Model.ContentJson))
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(Model.ContentJson);
+
+            if (doc.RootElement.TryGetProperty("text", out var t))
+                text = t.GetString();
+        }
+        catch
+        {
+            <div class="alert alert-danger">
+                Invalid Text JSON content.
+            </div>
+            return;
+        }
+    }
+}
+
+<section class="py-4">
+    <div class="container">
+        @if (!string.IsNullOrWhiteSpace(text))
+        {
+            <p class="mb-0">@text</p>
+        }
+    </div>
 </section>

@@ -1,6 +1,42 @@
-﻿@model dynamic
+﻿@model WebsiteBuilder.Models.PageSection
+@using System.Text.Json
 
-<section class="hero py-5 text-center">
-    <h1>@Model.headline</h1>
-    <p class="lead">@Model.subheadline</p>
+@{
+    string? headline = null;
+    string? subheadline = null;
+
+    if (!string.IsNullOrWhiteSpace(Model.ContentJson))
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(Model.ContentJson);
+
+            if (doc.RootElement.TryGetProperty("headline", out var h))
+                headline = h.GetString();
+
+            if (doc.RootElement.TryGetProperty("subheadline", out var s))
+                subheadline = s.GetString();
+        }
+        catch
+        {
+            <div class="alert alert-danger">
+                Invalid Hero JSON content.
+            </div>
+            return;
+        }
+    }
+}
+
+<section class="py-5">
+    <div class="container">
+        @if (!string.IsNullOrWhiteSpace(headline))
+        {
+            <h1 class="display-5 fw-bold mb-2">@headline</h1>
+        }
+
+        @if (!string.IsNullOrWhiteSpace(subheadline))
+        {
+            <p class="lead text-muted mb-0">@subheadline</p>
+        }
+    </div>
 </section>

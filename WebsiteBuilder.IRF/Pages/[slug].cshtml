@@ -20,7 +20,7 @@
 @if (Model.IsPreview)
 {
     <div class="container pt-3">
-        <div class="alert alert-warning">
+        <div class="alert alert-warning mb-0">
             Preview mode — this page may include unpublished changes.
         </div>
     </div>
@@ -45,9 +45,27 @@
                     <span class="text-muted">• Order: @s.SortOrder</span>
                 </div>
 
-                @if (!string.IsNullOrWhiteSpace(s.ContentJson))
+                @if (string.IsNullOrWhiteSpace(s.ContentJson))
                 {
-                    <pre class="bg-light p-3 rounded mb-0">@s.ContentJson</pre>
+                    <div class="text-muted">No content.</div>
+                }
+                else
+                {
+                    switch (s.TypeKey)
+                    {
+                        case "Hero":
+                            <partial name="Shared/Sections/_Hero" model="s" />
+                            break;
+
+                        case "Text":
+                            <partial name="Shared/Sections/_Text" model="s" />
+                            break;
+
+                        default:
+                            <div class="fw-bold mb-2">Unknown section: @s.TypeKey</div>
+                            <pre class="mb-0">@s.ContentJson</pre>
+                            break;
+                    }
                 }
             </div>
         }
