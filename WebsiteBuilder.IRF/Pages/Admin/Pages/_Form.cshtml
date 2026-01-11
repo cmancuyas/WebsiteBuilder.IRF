@@ -11,9 +11,7 @@
     <label class="form-label" asp-for="Slug"></label>
     <input class="form-control" asp-for="Slug" placeholder="e.g. about, listings" />
     <div class="form-text">
-        This becomes the URL:
-        <span class="text-danger">/your-slug</span>.
-        Use lowercase and hyphens. No leading slashes.
+        This becomes the URL: <span class="text-danger">/your-slug</span>. Use lowercase and hyphens. No leading slashes.
     </div>
     <span class="text-danger" asp-validation-for="Slug"></span>
 </div>
@@ -24,16 +22,15 @@
     <select class="form-select"
             asp-for="PageStatusId"
             asp-items="@(ViewData["PageStatuses"] as IEnumerable<SelectListItem>)">
+        <option value="">-- Select --</option>
     </select>
 
     <span class="text-danger" asp-validation-for="PageStatusId"></span>
 </div>
 
 <div class="mb-3">
-    <label class="form-label" asp-for="LayoutKey"></label>
-    <input class="form-control"
-           asp-for="LayoutKey"
-           placeholder="e.g. Default, Home, Landing" />
+    <label class="form-label" asp-for="LayoutKey">Layout Key</label>
+    <input class="form-control" asp-for="LayoutKey" placeholder="e.g. Default, Home, Landing" />
     <span class="text-danger" asp-validation-for="LayoutKey"></span>
 </div>
 
@@ -42,21 +39,24 @@
 <h5 class="mb-3">SEO</h5>
 
 <div class="mb-3">
-    <label class="form-label" asp-for="MetaTitle"></label>
+    <label class="form-label" asp-for="MetaTitle">Meta Title</label>
     <input class="form-control" asp-for="MetaTitle" />
     <span class="text-danger" asp-validation-for="MetaTitle"></span>
 </div>
 
 <div class="mb-3">
-    <label class="form-label" asp-for="MetaDescription"></label>
-    <textarea class="form-control"
-              asp-for="MetaDescription"
-              rows="4"></textarea>
+    <label class="form-label" asp-for="MetaDescription">Meta Description</label>
+    <textarea class="form-control" asp-for="MetaDescription" rows="4"></textarea>
     <span class="text-danger" asp-validation-for="MetaDescription"></span>
 </div>
 
 <div class="mb-3">
-    <label class="form-label" asp-for="OgImageAssetId"></label>
+    <label class="form-label" asp-for="OgImageAssetId">OG Image Asset Id (optional)</label>
     <input class="form-control" asp-for="OgImageAssetId" />
     <span class="text-danger" asp-validation-for="OgImageAssetId"></span>
+</div>
+
+<div class="form-check form-switch">
+    <input class="form-check-input" type="checkbox" asp-for="IsActive" />
+    <label class="form-check-label" asp-for="IsActive"></label>
 </div>

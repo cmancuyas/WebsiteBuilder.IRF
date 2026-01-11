@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>@ViewData["Title"] - WebsiteBuilder.IRF</title>
-    <script type="importmap"></script>
+
     <link rel="stylesheet" href="~/lib/bootstrap/dist/css/bootstrap.min.css" />
     <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
     <link rel="stylesheet" href="~/WebsiteBuilder.IRF.styles.css" asp-append-version="true" />
@@ -17,14 +17,22 @@
     <header>
         <nav class="navbar navbar-expand-sm navbar-toggleable-sm navbar-light bg-white border-bottom box-shadow mb-3">
             <div class="container">
-                <a class="navbar-brand" href="/">WebsiteBuilder.IRF</a>
 
-                <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target=".navbar-collapse" aria-controls="navbarSupportedContent"
-                        aria-expanded="false" aria-label="Toggle navigation">
+                <a class="navbar-brand" href="/">
+                    @(TenantContext.IsResolved? TenantContext.Host: "WebsiteBuilder.IRF")
+                </a>
+
+                <!-- FIX: Proper bootstrap toggler attributes -->
+                <button class="navbar-toggler" type="button"
+                        data-bs-toggle="collapse"
+                        data-bs-target="#mainNavbar"
+                        aria-controls="mainNavbar"
+                        aria-expanded="false"
+                        aria-label="Toggle navigation">
                     <span class="navbar-toggler-icon"></span>
                 </button>
 
-                <div class="navbar-collapse collapse d-sm-inline-flex justify-content-between">
+                <div class="navbar-collapse collapse d-sm-inline-flex justify-content-between" id="mainNavbar">
                     @{
                         var navItems = await NavService.GetNavAsync();
                     }
@@ -37,19 +45,6 @@
                             </li>
                         }
                     </ul>
-
-                    <span class="navbar-text">
-                        @if (TenantContext.IsResolved)
-                        {
-                            <strong>@TenantContext.Slug</strong>
-                            <small class="text-muted">(@TenantContext.Host)</small>
-                        }
-                        else
-                        {
-                            <strong>Platform</strong>
-                            <small class="text-muted">(@TenantContext.Host)</small>
-                        }
-                    </span>
                 </div>
 
             </div>

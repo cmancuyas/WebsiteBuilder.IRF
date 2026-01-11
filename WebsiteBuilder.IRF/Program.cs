@@ -53,7 +53,17 @@ builder.Services
     .AddDefaultTokenProviders();
 
 // Authorization (Identity already wires up auth; this is fine)
-builder.Services.AddAuthorization();
+builder.Services.AddAuthorization(options =>
+{
+    options.AddPolicy("PagesPreview", policy =>
+    {
+        policy.RequireAuthenticatedUser();
+        policy.RequireAssertion(ctx =>
+            ctx.User.IsInRole("Admin") ||
+            ctx.User.HasClaim("Permission", "Pages.Preview"));
+    });
+});
+
 
 // Tenant services
 builder.Services.AddScoped<ITenantContext, TenantContext>();
@@ -92,4 +102,5 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapRazorPages();
+
 app.Run();

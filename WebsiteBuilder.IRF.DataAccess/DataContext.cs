@@ -15,7 +15,6 @@ namespace WebsiteBuilder.IRF.DataAccess
         public DbSet<PageSection> PageSections => Set<PageSection>();
         public DbSet<PageStatus> PageStatuses => Set<PageStatus>();
 
-
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
@@ -25,8 +24,8 @@ namespace WebsiteBuilder.IRF.DataAccess
             ConfigureDomainMappings(modelBuilder);
             ConfigureThemes(modelBuilder);
             ConfigurePages(modelBuilder);
+            ConfigurePageSections(modelBuilder);
             ConfigurePageStatuses(modelBuilder);
-
         }
 
         private static void ConfigureBaseModelConventions(ModelBuilder modelBuilder)
@@ -38,12 +37,12 @@ namespace WebsiteBuilder.IRF.DataAccess
 
                 var b = modelBuilder.Entity(entityType.ClrType);
 
-                // Defaults (only applies if the property exists on the entity)
+                // Defaults (only applies if property exists on the entity)
                 b.Property(nameof(BaseModel.IsActive)).HasDefaultValue(true);
                 b.Property(nameof(BaseModel.IsDeleted)).HasDefaultValue(false);
                 b.Property(nameof(BaseModel.CreatedAt)).HasDefaultValueSql("SYSUTCDATETIME()");
 
-                // ✅ Correct way to mark rowversion using Fluent API (PropertyBuilder)
+                // RowVersion (timestamp/rowversion)
                 b.Property(nameof(BaseModel.RowVersion)).IsRowVersion();
             }
         }
@@ -59,9 +58,7 @@ namespace WebsiteBuilder.IRF.DataAccess
                 b.Property(x => x.Slug).HasMaxLength(200).IsRequired();
                 b.HasIndex(x => x.Slug).IsUnique();
 
-                // ✅ Avoid multiple cascade paths:
-                // Tenant -> Themes cascades
-                // Tenant.ActiveTheme -> Theme must NOT cascade
+                // Avoid multiple cascade paths
                 b.HasOne(x => x.ActiveTheme)
                     .WithMany()
                     .HasForeignKey(x => x.ActiveThemeId)
@@ -83,10 +80,9 @@ namespace WebsiteBuilder.IRF.DataAccess
                     .OnDelete(DeleteBehavior.Cascade);
 
                 b.HasOne(x => x.HomePage)
-                     .WithMany()
-                     .HasForeignKey(x => x.HomePageId)
-                     .OnDelete(DeleteBehavior.NoAction);
-
+                    .WithMany()
+                    .HasForeignKey(x => x.HomePageId)
+                    .OnDelete(DeleteBehavior.NoAction);
             });
         }
 
@@ -100,16 +96,13 @@ namespace WebsiteBuilder.IRF.DataAccess
                 b.Property(x => x.Host).HasMaxLength(510).IsRequired();
                 b.HasIndex(x => x.Host).IsUnique();
 
-                // Recommended behavior:
-                //  - Allow multiple domains per tenant
-                //  - Enforce only ONE primary domain per tenant
+                // One primary domain per tenant
                 b.HasIndex(x => new { x.TenantId, x.IsPrimary })
                     .IsUnique()
                     .HasFilter("[IsPrimary] = 1");
 
-                b.Property(x => x.SslModeId)
-                .HasColumnName("SslModeId");
-
+                // Keep column name stable (optional)
+                b.Property(x => x.SslModeId).HasColumnName("SslModeId");
             });
         }
 
@@ -137,22 +130,37 @@ namespace WebsiteBuilder.IRF.DataAccess
                 b.Property(x => x.Title).HasMaxLength(200).IsRequired();
                 b.Property(x => x.Slug).HasMaxLength(200).IsRequired();
 
-                // Slug unique PER tenant
+                // Slug unique per tenant
                 b.HasIndex(x => new { x.TenantId, x.Slug }).IsUnique();
 
+                // Default: Draft
                 b.Property(x => x.PageStatusId).HasDefaultValue(1);
 
+                // Composite principal key used by PageSection composite FK (tenant-safe)
                 b.HasAlternateKey(x => new { x.TenantId, x.Id });
-
             });
+        }
 
+        private static void ConfigurePageSections(ModelBuilder modelBuilder)
+        {
             modelBuilder.Entity<PageSection>(b =>
             {
                 b.HasKey(x => x.Id);
                 b.Property(x => x.Id).ValueGeneratedOnAdd();
 
+                b.Property(x => x.TypeKey)
+                    .HasMaxLength(100)
+                    .IsRequired();
+
+                // Optional: if you want ContentJson to be large, leave as nvarchar(max) by default.
+                // b.Property(x => x.ContentJson).HasColumnType("nvarchar(max)");
+
+                // Deterministic ordering per page (not necessarily required to be unique, but usually desired)
+                // If you want to allow duplicate SortOrder values, change IsUnique(false).
                 b.HasIndex(x => new { x.TenantId, x.PageId, x.SortOrder }).IsUnique();
 
+                // Tenant-safe relationship:
+                // PageSection(TenantId, PageId) -> Page(TenantId, Id)
                 b.HasOne(x => x.Page)
                     .WithMany(p => p.Sections)
                     .HasForeignKey(x => new { x.TenantId, x.PageId })
@@ -160,6 +168,7 @@ namespace WebsiteBuilder.IRF.DataAccess
                     .OnDelete(DeleteBehavior.Cascade);
             });
         }
+
         private static void ConfigurePageStatuses(ModelBuilder modelBuilder)
         {
             modelBuilder.Entity<PageStatus>(b =>
@@ -179,7 +188,5 @@ namespace WebsiteBuilder.IRF.DataAccess
                 );
             });
         }
-
-
     }
 }

@@ -27,13 +27,14 @@ namespace WebsiteBuilder.IRF.Infrastructure.Middleware
             ITenantResolver tenantResolver,
             ITenantContext tenantContext)
         {
-            // 1) Bypass tenant resolution for platform/system routes
+            // 1) Bypass tenant resolution for system/platform routes
             if (ShouldBypassTenantResolution(context))
             {
                 await _next(context);
                 return;
             }
 
+            // ✅ Always use host WITHOUT port
             var host = context.Request.Host.Host?.Trim().ToLowerInvariant();
             if (string.IsNullOrWhiteSpace(host))
             {
@@ -41,42 +42,31 @@ namespace WebsiteBuilder.IRF.Infrastructure.Middleware
                 return;
             }
 
-            //var path = context.Request.Path.Value ?? "";
-
-            //// Allow platform admin routes without tenant resolution (optional)
-            //if (path.StartsWith("/admin", StringComparison.OrdinalIgnoreCase))
-            //{
-            //    await _next(context);
-            //    return;
-            //}
-
-
-            // DEV/LOCAL bypass (so you can access /Identity, /app, etc.)
-            if (host == "localhost" || host == "127.0.0.1")
+            // Local/dev bypass
+            if (host is "localhost" or "127.0.0.1")
             {
                 await _next(context);
                 return;
             }
 
-            // 2) Determine platform slug if this is a platform subdomain
             string? slug = null;
 
             var platformDomain = _config["SaaS:PlatformDomain"]?.Trim().ToLowerInvariant();
             if (!string.IsNullOrWhiteSpace(platformDomain))
             {
+                // Root platform domain → no tenant
                 if (host.Equals(platformDomain, StringComparison.OrdinalIgnoreCase))
                 {
-                    // Root marketing/app domain – no tenant for public site rendering
                     await _next(context);
                     return;
                 }
 
+                // Platform subdomain (tenant slug)
                 if (host.EndsWith("." + platformDomain, StringComparison.OrdinalIgnoreCase))
                 {
                     var sub = host[..^(platformDomain.Length + 1)];
                     slug = sub.Split('.', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
 
-                    // Reserved subdomains (platform-owned)
                     var reserved = new[] { "www", "app", "admin", "api", "identity" };
                     if (slug != null && reserved.Contains(slug, StringComparer.OrdinalIgnoreCase))
                         slug = null;
@@ -87,14 +77,11 @@ namespace WebsiteBuilder.IRF.Infrastructure.Middleware
 
             if (resolved is null)
             {
-                _logger.LogInformation("Tenant not found for host={Host} slug={Slug} path={Path}",
+                _logger.LogInformation(
+                    "Tenant not found | host={Host} slug={Slug} path={Path}",
                     host, slug, context.Request.Path);
 
-                // Behavior choice:
-                // - If this is the platform domain or a known platform route, allow through.
-                // - Otherwise, 404 for unknown custom domains.
-                var allowUnknownHosts = _config.GetValue("SaaS:AllowUnknownHosts", false);
-                if (allowUnknownHosts)
+                if (_config.GetValue("SaaS:AllowUnknownHosts", false))
                 {
                     await _next(context);
                     return;
@@ -105,10 +92,10 @@ namespace WebsiteBuilder.IRF.Infrastructure.Middleware
                 return;
             }
 
-            // 3) Set tenant context
+            // ✅ Canonical tenant context assignment
             tenantContext.TenantId = resolved.TenantId;
-            tenantContext.Slug = resolved.Slug;
-            tenantContext.Host = resolved.MatchedHost ?? host; // prefer result's matched host if you populate it
+            tenantContext.Slug = resolved.Slug ?? string.Empty;
+            tenantContext.Host = host;
 
             // Optional convenience
             context.Items["TenantId"] = resolved.TenantId;
@@ -121,18 +108,10 @@ namespace WebsiteBuilder.IRF.Infrastructure.Middleware
         {
             var path = context.Request.Path.Value ?? string.Empty;
 
-            if (path.StartsWith("/_TenantDebug", StringComparison.OrdinalIgnoreCase))
-            {
+            if (path.StartsWith("/_TenantDebug", StringComparison.OrdinalIgnoreCase) ||
+                path.StartsWith("/_content", StringComparison.OrdinalIgnoreCase))
                 return true;
-            }
 
-            if (path.StartsWith("/_content", StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-
-
-            // Static + known files
             if (path.StartsWith("/css", StringComparison.OrdinalIgnoreCase) ||
                 path.StartsWith("/js", StringComparison.OrdinalIgnoreCase) ||
                 path.StartsWith("/lib", StringComparison.OrdinalIgnoreCase) ||
@@ -140,18 +119,14 @@ namespace WebsiteBuilder.IRF.Infrastructure.Middleware
                 path.StartsWith("/uploads", StringComparison.OrdinalIgnoreCase) ||
                 path.Equals("/favicon.ico", StringComparison.OrdinalIgnoreCase) ||
                 path.StartsWith("/.well-known", StringComparison.OrdinalIgnoreCase))
-            {
                 return true;
-            }
 
             if (path.StartsWith("/Identity", StringComparison.OrdinalIgnoreCase) ||
                 path.StartsWith("/Account", StringComparison.OrdinalIgnoreCase) ||
                 path.StartsWith("/app", StringComparison.OrdinalIgnoreCase) ||
                 path.StartsWith("/health", StringComparison.OrdinalIgnoreCase) ||
                 path.StartsWith("/swagger", StringComparison.OrdinalIgnoreCase))
-            {
                 return true;
-            }
 
             return false;
         }
