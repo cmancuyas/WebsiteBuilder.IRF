@@ -30,9 +30,22 @@
     <div class="mt-3">
         <label asp-for="Section.ContentJson" class="form-label">Content JSON</label>
         <textarea asp-for="Section.ContentJson"
-                  rows="14"
                   class="form-control font-monospace"
-                  id="contentJson"></textarea>
+                  rows="12"
+                  data-live-json-validate
+                  data-section-type="@Model.Section.TypeKey"
+                  data-validate-url="@Url.Page(null, null, new { handler = "ValidateJson" })"
+                  data-error-container="jsonErrors"
+                  data-status-container="jsonStatus"
+                  data-hints-container="jsonHints"
+                  data-autofmt-container="jsonAutoFmt">
+        </textarea>
+
+        <div id="jsonStatus" class="small mt-2"></div>
+        <div id="jsonErrors" class="mt-2"></div>
+        <div id="jsonHints" class="mt-3"></div>
+        <div id="jsonAutoFmt" class="small mt-1 text-muted"></div>
+
         <span asp-validation-for="Section.ContentJson" class="text-danger"></span>
 
         <!-- Live validation UI -->
@@ -41,7 +54,13 @@
     </div>
 
     <div class="mt-4 d-flex gap-2">
-        <button type="submit" class="btn btn-primary" id="saveBtn">Save</button>
+        <button type="submit"
+                class="btn btn-primary"
+                id="saveBtn"
+                data-save-button>
+            Save
+        </button>
+
         <a asp-page="/Admin/Pages/Sections"
            asp-route-pageId="@Model.Section.PageId"
            class="btn btn-secondary">Cancel</a>

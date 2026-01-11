@@ -46,7 +46,6 @@ const SCHEMA_HINTS = {
     }
 };
 
-
 (function () {
     const DEBOUNCE_MS = 500;
 
@@ -57,31 +56,42 @@ const SCHEMA_HINTS = {
             timer = setTimeout(() => fn.apply(this, args), delay);
         };
     }
-    function tryBeautifyJson(textarea) {
-        const raw = textarea.value;
-        if (!raw || raw.trim().length === 0) return false;
 
-        // First, attempt strict parse
-        try {
-            const obj = JSON.parse(raw);
-            const pretty = JSON.stringify(obj, null, 2);
-            if (pretty !== raw.trim()) textarea.value = pretty;
-            return true;
-        } catch {
-            // Fallback: attempt relaxed parse by stripping trailing commas
-            try {
-                const cleaned = stripTrailingCommas(raw);
-                const obj = JSON.parse(cleaned);
-                const pretty = JSON.stringify(obj, null, 2);
-                textarea.value = pretty;
-                return true;
-            } catch {
-                // Still invalid → do not modify user input
-                return false;
-            }
-        }
+    function disableSaveInitially() {
+        const btn = document.querySelector("[data-save-button]");
+        if (btn) btn.disabled = true;
     }
 
+    function setSaveEnabled(enabled) {
+        const btn = document.querySelector("[data-save-button]");
+        if (!btn) return;
+        btn.disabled = !enabled;
+    }
+
+    function setState(textarea, state) {
+        textarea.classList.remove("is-valid", "is-invalid");
+
+        if (state === "valid") textarea.classList.add("is-valid");
+        if (state === "invalid") textarea.classList.add("is-invalid");
+    }
+
+    function renderErrors(container, errors) {
+        if (!container) return;
+
+        container.innerHTML = "";
+        if (!errors || errors.length === 0) return;
+
+        const ul = document.createElement("ul");
+        ul.className = "text-danger small mb-0";
+
+        errors.forEach(e => {
+            const li = document.createElement("li");
+            li.textContent = e;
+            ul.appendChild(li);
+        });
+
+        container.appendChild(ul);
+    }
 
     function renderStatus(textarea, isValid, errorsCount) {
         const id = textarea.dataset.statusContainer;
@@ -100,6 +110,22 @@ const SCHEMA_HINTS = {
             el.textContent = "Validation status unavailable.";
             el.className = "small mt-2 text-muted";
         }
+    }
+
+    // Dedicated line for auto-format messages (does NOT overwrite validation status)
+    function showAutoFormatMessage(textarea, message) {
+        const id = textarea.dataset.autofmtContainer;
+        if (!id) return;
+
+        const el = document.getElementById(id);
+        if (!el) return;
+
+        el.textContent = message;
+
+        window.clearTimeout(el._autoFmtTimer);
+        el._autoFmtTimer = window.setTimeout(() => {
+            el.textContent = "";
+        }, 2000);
     }
 
     function renderHints(textarea) {
@@ -130,51 +156,96 @@ const SCHEMA_HINTS = {
             : "";
 
         el.innerHTML = `
-        <div class="border rounded p-2 bg-light">
-        <div class="fw-semibold">${hint.title}</div>
-        ${required}
-        <div class="mt-2"><strong>Example:</strong></div>
-        <pre class="mb-0"><code>${exampleJson}</code></pre>
-        ${notes}
-            </div>
-        `;
+<div class="border rounded p-2 bg-light">
+  <div class="fw-semibold">${hint.title}</div>
+  ${required}
+  <div class="mt-2"><strong>Example:</strong></div>
+  <pre class="mb-0"><code>${exampleJson}</code></pre>
+  ${notes}
+</div>`;
+    }
+
+    // --- Trailing comma support (safe masking so we don't touch commas inside strings) ---
+
+    function maskJsonStrings(input) {
+        const map = [];
+        let masked = "";
+        let i = 0;
+
+        while (i < input.length) {
+            const ch = input[i];
+
+            if (ch === '"') {
+                let start = i;
+                i++;
+                let escaped = false;
+
+                while (i < input.length) {
+                    const c = input[i];
+                    if (!escaped && c === '"') {
+                        i++;
+                        break;
+                    }
+                    if (!escaped && c === "\\") escaped = true;
+                    else escaped = false;
+                    i++;
+                }
+
+                const str = input.slice(start, i);
+                const token = `__STR_${map.length}__`;
+                map.push(str);
+                masked += token;
+            } else {
+                masked += ch;
+                i++;
+            }
         }
 
-
-    function disableSaveInitially() {
-        const btn = document.querySelector("[data-save-button]");
-        if (btn) btn.disabled = true;
+        return { masked, map };
     }
 
-    function setSaveEnabled(enabled) {
-        const btn = document.querySelector("[data-save-button]");
-        if (!btn) return;
-
-        btn.disabled = !enabled;
+    function unmaskJsonStrings(input, map) {
+        let output = input;
+        for (let idx = 0; idx < map.length; idx++) {
+            output = output.replace(`__STR_${idx}__`, map[idx]);
+        }
+        return output;
     }
 
-    function setState(textarea, state) {
-        textarea.classList.remove("is-valid", "is-invalid");
-
-        if (state === "valid") textarea.classList.add("is-valid");
-        if (state === "invalid") textarea.classList.add("is-invalid");
+    function stripTrailingCommas(jsonText) {
+        const { masked, map } = maskJsonStrings(jsonText);
+        const cleanedMasked = masked.replace(/,\s*([}\]])/g, "$1");
+        return unmaskJsonStrings(cleanedMasked, map);
     }
 
-    function renderErrors(container, errors) {
-        container.innerHTML = "";
+    function tryBeautifyJson(textarea) {
+        const raw = textarea.value;
+        if (!raw || raw.trim().length === 0) return { changed: false, mode: null };
 
-        if (!errors || errors.length === 0) return;
+        // Strict parse first
+        try {
+            const obj = JSON.parse(raw);
+            const pretty = JSON.stringify(obj, null, 2);
+            const changed = pretty !== raw.trim();
 
-        const ul = document.createElement("ul");
-        ul.className = "text-danger small mb-0";
+            if (changed) {
+                textarea.value = pretty;
+                return { changed: true, mode: "pretty" };
+            }
+            return { changed: false, mode: null };
+        } catch {
+            // Relaxed parse: strip trailing commas
+            try {
+                const cleaned = stripTrailingCommas(raw);
+                const obj = JSON.parse(cleaned);
+                const pretty = JSON.stringify(obj, null, 2);
 
-        errors.forEach(e => {
-            const li = document.createElement("li");
-            li.textContent = e;
-            ul.appendChild(li);
-        });
-
-        container.appendChild(ul);
+                textarea.value = pretty;
+                return { changed: true, mode: "relaxed" };
+            } catch {
+                return { changed: false, mode: null };
+            }
+        }
     }
 
     async function validateJson(textarea) {
@@ -211,123 +282,66 @@ const SCHEMA_HINTS = {
             if (result.isValid) {
                 setState(textarea, "valid");
                 setSaveEnabled(true);
-                if (errorContainer) renderErrors(errorContainer, []);
+                renderErrors(errorContainer, []);
                 renderStatus(textarea, true, 0);
-
             } else {
                 setState(textarea, "invalid");
                 setSaveEnabled(false);
-                if (errorContainer) renderErrors(errorContainer, result.errors);
-                renderStatus(textarea, false, result.errors ? result.errors.length : 0);
-
+                renderErrors(errorContainer, result.errors || []);
+                renderStatus(textarea, false, (result.errors || []).length);
             }
-
         } catch (err) {
-            // Network or server failure → neutral state
-            setState(textarea, null);
-            if (errorContainer) {
-                renderErrors(errorContainer, [
-                    "Unable to validate JSON. Please try again."
-                ]);
-            }
+            // Safe default: treat as invalid + disable save
+            setState(textarea, "invalid");
+            setSaveEnabled(false);
+
+            renderErrors(errorContainer, ["Unable to validate JSON. Please try again."]);
             renderStatus(textarea, null, 0);
 
             console.error(err);
         }
     }
-    function maskJsonStrings(input) {
-        // Replaces characters inside JSON string literals with spaces so regex ops
-        // won’t accidentally modify content within strings.
-        // Returns { masked, map } where map lets us restore original strings.
-        const map = [];
-        let masked = "";
-        let i = 0;
-
-        while (i < input.length) {
-            const ch = input[i];
-
-            if (ch === '"') {
-                let start = i;
-                i++; // consume opening quote
-                let escaped = false;
-
-                while (i < input.length) {
-                    const c = input[i];
-                    if (!escaped && c === '"') {
-                        i++; // consume closing quote
-                        break;
-                    }
-                    if (!escaped && c === "\\") {
-                        escaped = true;
-                    } else {
-                        escaped = false;
-                    }
-                    i++;
-                }
-
-                const str = input.slice(start, i);
-                const token = `__STR_${map.length}__`;
-                map.push(str);
-
-                // Keep token length similar-ish for indexing stability; token is fine.
-                masked += token;
-            } else {
-                masked += ch;
-                i++;
-            }
-        }
-
-        return { masked, map };
-    }
-
-    function unmaskJsonStrings(input, map) {
-        let output = input;
-        for (let idx = 0; idx < map.length; idx++) {
-            output = output.replace(`__STR_${idx}__`, map[idx]);
-        }
-        return output;
-    }
-
-    function stripTrailingCommas(jsonText) {
-        // Remove trailing commas before } or ] (outside strings).
-        // Example: { "a": 1, } -> { "a": 1 }
-        //          [1,2,]      -> [1,2]
-        const { masked, map } = maskJsonStrings(jsonText);
-
-        // Remove comma followed by optional whitespace/newlines then a closing bracket/brace
-        const cleanedMasked = masked.replace(/,\s*([}\]])/g, "$1");
-
-        return unmaskJsonStrings(cleanedMasked, map);
-    }
 
     function wire() {
         const textareas = document.querySelectorAll("textarea[data-live-json-validate]");
+        if (textareas.length === 0) return;
 
-        if (textareas.length > 0) {
-            disableSaveInitially();
-        }
+        // If this page has live json validation, default Save to disabled until proven valid
+        disableSaveInitially();
 
         textareas.forEach(textarea => {
-
+            // Schema/help panel
             renderHints(textarea);
 
+            // Live validation on input (debounced)
             const handler = debounce(() => validateJson(textarea), DEBOUNCE_MS);
             textarea.addEventListener("input", handler);
 
+            // Auto-format on blur (strict; fallback trailing comma cleanup)
             textarea.addEventListener("blur", () => {
-                const beautified = tryBeautifyJson(textarea);
-                if (beautified) {
-                    // Immediately re-validate so UI reflects formatted JSON
+                const result = tryBeautifyJson(textarea);
+
+                if (result.changed) {
+                    if (result.mode === "relaxed") {
+                        showAutoFormatMessage(textarea, "Auto-formatted JSON (removed trailing commas).");
+                    } else {
+                        showAutoFormatMessage(textarea, "Auto-formatted JSON.");
+                    }
+
                     validateJson(textarea);
                 }
             });
 
-            // OPTIONAL but recommended:
-            // validate immediately if textarea already has content
+            // Validate immediately if there is existing content (Edit scenario)
             if (textarea.value && textarea.value.trim().length > 0) {
                 validateJson(textarea);
             }
         });
     }
 
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", wire);
+    } else {
+        wire();
+    }
 })();
