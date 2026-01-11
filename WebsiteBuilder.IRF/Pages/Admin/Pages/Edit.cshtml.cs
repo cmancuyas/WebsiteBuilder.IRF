@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.AspNetCore.Mvc.Rendering;
@@ -26,7 +27,8 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
 
         public async Task<IActionResult> OnGetAsync(int id)
         {
-            if (!_tenant.IsResolved) return NotFound();
+            if (!_tenant.IsResolved)
+                return NotFound();
 
             await LoadPageStatusesAsync();
 
@@ -58,32 +60,53 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
 
         public async Task<IActionResult> OnPostAsync(int id)
         {
-            if (!_tenant.IsResolved) return NotFound();
+            if (!_tenant.IsResolved)
+                return NotFound();
 
             await LoadPageStatusesAsync();
 
             if (id != Input.Id)
                 return BadRequest();
 
+            // Normalize early so validation + uniqueness check uses final value
+            Input.Title = (Input.Title ?? string.Empty).Trim();
             Input.Slug = NormalizeSlug(Input.Slug);
 
-            if (!ModelState.IsValid)
-                return Page();
+            // Server-side validation: ensure posted status is valid (prevents tampering / bad posts)
+            var isValidStatus = await _db.PageStatuses.AsNoTracking().AnyAsync(s => s.Id == Input.PageStatusId);
+            if (!isValidStatus)
+                ModelState.AddModelError(nameof(Input.PageStatusId), "Invalid status.");
 
-            var entity = await _db.Pages.FirstOrDefaultAsync(p =>
-                p.Id == id &&
-                p.TenantId == _tenant.TenantId &&
-                !p.IsDeleted);
+            if (string.IsNullOrWhiteSpace(Input.Title))
+                ModelState.AddModelError(nameof(Input.Title), "Title is required.");
+
+            if (string.IsNullOrWhiteSpace(Input.Slug))
+                ModelState.AddModelError(nameof(Input.Slug), "Slug is required.");
+
+            if (!ModelState.IsValid)
+            {
+                await LoadPageStatusesAsync();
+                return Page();
+            }
+
+
+            var entity = await _db.Pages
+                .FirstOrDefaultAsync(p =>
+                    p.Id == id &&
+                    p.TenantId == _tenant.TenantId &&
+                    !p.IsDeleted);
 
             if (entity is null)
                 return NotFound();
 
-            // Enforce uniqueness excluding current record
-            var slugExists = await _db.Pages.AsNoTracking().AnyAsync(p =>
-                p.TenantId == _tenant.TenantId &&
-                p.Slug == Input.Slug &&
-                p.Id != id &&
-                !p.IsDeleted);
+            // Uniqueness: slug must be unique per tenant (case-insensitive)
+            var slugExists = await _db.Pages
+                .AsNoTracking()
+                .AnyAsync(p =>
+                    p.TenantId == _tenant.TenantId &&
+                    !p.IsDeleted &&
+                    p.Id != id &&
+                    p.Slug.ToLower() == Input.Slug.ToLower());
 
             if (slugExists)
             {
@@ -93,17 +116,19 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
 
             var previousStatus = entity.PageStatusId;
 
-            entity.Title = Input.Title.Trim();
+            entity.Title = Input.Title;
             entity.Slug = Input.Slug;
             entity.PageStatusId = Input.PageStatusId;
+
             entity.LayoutKey = string.IsNullOrWhiteSpace(Input.LayoutKey) ? null : Input.LayoutKey.Trim();
             entity.MetaTitle = string.IsNullOrWhiteSpace(Input.MetaTitle) ? null : Input.MetaTitle.Trim();
             entity.MetaDescription = string.IsNullOrWhiteSpace(Input.MetaDescription) ? null : Input.MetaDescription.Trim();
             entity.OgImageAssetId = Input.OgImageAssetId;
+
             entity.IsActive = Input.IsActive;
 
-            // Publish timestamp rule:
-            // - If transitioning into Published and PublishedAt is null, set it once.
+            // Publish timestamp:
+            // - Set once when transitioning into Published
             if (previousStatus != PageStatusIds.Published && entity.PageStatusId == PageStatusIds.Published)
             {
                 entity.PublishedAt ??= DateTime.UtcNow;
@@ -119,7 +144,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
 
         private async Task LoadPageStatusesAsync()
         {
-            var statuses = await _db.PageStatuses
+            ViewData["PageStatuses"] = await _db.PageStatuses
                 .AsNoTracking()
                 .OrderBy(s => s.Id)
                 .Select(s => new SelectListItem
@@ -128,21 +153,31 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                     Text = s.Name
                 })
                 .ToListAsync();
-
-            ViewData["PageStatuses"] = statuses;
         }
+
 
         private static string NormalizeSlug(string? slug)
         {
             slug ??= string.Empty;
+
+            // trim whitespace and slashes
             slug = slug.Trim();
+            slug = slug.Trim('/');
 
-            while (slug.StartsWith("/"))
-                slug = slug.Substring(1);
-
+            // lowercase
             slug = slug.ToLowerInvariant();
-            slug = System.Text.RegularExpressions.Regex.Replace(slug, @"\s+", "-");
-            slug = System.Text.RegularExpressions.Regex.Replace(slug, @"-+", "-");
+
+            // spaces -> hyphen
+            slug = Regex.Replace(slug, @"\s+", "-");
+
+            // collapse multiple hyphens
+            slug = Regex.Replace(slug, @"-+", "-");
+
+            // allow only url-safe characters (optional but recommended)
+            // keep letters, digits, hyphen
+            slug = Regex.Replace(slug, @"[^a-z0-9\-]", "");
+
+            // trim hyphens again after cleanup
             slug = slug.Trim('-');
 
             return slug;

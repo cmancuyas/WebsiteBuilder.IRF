@@ -33,6 +33,8 @@ namespace WebsiteBuilder.Models
         public int? OgImageAssetId { get; set; }
 
         public DateTime? PublishedAt { get; set; }
+        public bool ShowInNavigation { get; set; } = true;
+        public int NavigationOrderNavigationOrder { get; set; } = 0;
 
         // ✅ This fixes your Fluent config: WithMany(p => p.Sections)
         public ICollection<PageSection> Sections { get; set; } = new List<PageSection>();

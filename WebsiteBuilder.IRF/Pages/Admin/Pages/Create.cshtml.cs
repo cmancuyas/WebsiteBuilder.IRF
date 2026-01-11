@@ -1,9 +1,10 @@
-using System.Security.Claims;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.AspNetCore.Mvc.Rendering;
 using Microsoft.EntityFrameworkCore;
+using System.Security.Claims;
 using WebsiteBuilder.IRF.DataAccess;
+using WebsiteBuilder.IRF.Infrastructure.Helpers;
 using WebsiteBuilder.IRF.Infrastructure.Tenancy;
 using WebsiteBuilder.IRF.ViewModels.Admin.Pages;
 using WebsiteBuilder.Models;
@@ -64,21 +65,26 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
 
             var userId = GetUserIdOrEmpty();
 
+            if (!_tenant.IsResolved)
+                return NotFound();
+
             var entity = new WebsiteBuilder.Models.Page
             {
-                TenantId = _tenant.TenantId,
+                TenantId = _tenant.TenantId,                 // CRITICAL
                 Title = Input.Title.Trim(),
-                Slug = Input.Slug,
-                PageStatusId = Input.PageStatusId == 0 ? PageStatusIds.Draft : Input.PageStatusId,
-                LayoutKey = string.IsNullOrWhiteSpace(Input.LayoutKey) ? null : Input.LayoutKey.Trim(),
-                MetaTitle = string.IsNullOrWhiteSpace(Input.MetaTitle) ? null : Input.MetaTitle.Trim(),
-                MetaDescription = string.IsNullOrWhiteSpace(Input.MetaDescription) ? null : Input.MetaDescription.Trim(),
+                Slug = SlugUtil.Normalize(Input.Slug),       // CRITICAL
+                PageStatusId = Input.PageStatusId,
+                LayoutKey = Input.LayoutKey?.Trim() ?? "Default",
+                MetaTitle = Input.MetaTitle?.Trim() ?? "",
+                MetaDescription = Input.MetaDescription?.Trim() ?? "",
                 OgImageAssetId = Input.OgImageAssetId,
-                IsActive = Input.IsActive,
+
+                IsActive = true,
                 IsDeleted = false,
-                CreatedBy = userId,
-                CreatedAt = DateTime.UtcNow
+                CreatedAt = DateTime.UtcNow,
+                CreatedBy = userId // however you set this
             };
+
 
             // If created directly as Published, set PublishedAt
             if (entity.PageStatusId == PageStatusIds.Published)

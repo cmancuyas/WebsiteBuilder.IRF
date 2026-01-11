@@ -1,6 +1,6 @@
 ﻿@page "/admin/pages/edit/{id:int}"
 @model WebsiteBuilder.IRF.Pages.Admin.Pages.EditModel
-@using WebsiteBuilder.IRF.ViewModels.Admin.Pages
+@using WebsiteBuilder.Models.Constants
 
 <h2 class="mb-3">Edit Page</h2>
 
@@ -15,17 +15,52 @@
 
 <form method="post" class="card">
     <div class="card-body">
+
         <input type="hidden" asp-for="Input.Id" />
-        <partial name="_Form" model="Model.Input" />
+
+        <!-- IMPORTANT: use 'for="Input"' so name/id become Input.Title, Input.Slug, etc -->
+        <partial name="_Form" for="Input" />
+
+
     </div>
 
     <div class="card-footer d-flex gap-2 justify-content-end">
-        <a class="btn btn-outline-secondary" href="/admin/pages">Back</a>
-        <button type="submit" class="btn btn-primary">Save</button>
-        <a class="btn btn-outline-secondary" href="/@Model.Input.Slug?preview=true" target="_blank">Preview</a>
-        <a class="btn btn-outline-secondary" href="/@Model.Input.Slug" target="_blank">Open (Published)</a>
+        <a class="btn btn-outline-secondary" asp-page="./Index">Back</a>
 
-        <a class="btn btn-outline-secondary" href="/admin/pages/edit/@Model.Input.Id/sections">Sections</a>
+        <button type="submit" class="btn btn-primary">Save</button>
+
+        <!-- Preview can point to ?preview=true; it will only work once your [slug] supports preview -->
+        <a class="btn btn-outline-secondary"
+           href="/@Model.Input.Slug?preview=true"
+           target="_blank">
+            Preview
+        </a>
+
+        @{
+            var isPublished = Model.Input.PageStatusId == PageStatusIds.Published;
+        }
+
+        @if (isPublished && !string.IsNullOrWhiteSpace(Model.Input.Slug))
+        {
+            <a class="btn btn-outline-secondary"
+               href="/@Model.Input.Slug"
+               target="_blank">
+                Open (Published)
+            </a>
+        }
+        else
+        {
+            <button type="button" class="btn btn-outline-secondary" disabled
+                    title="Set Status to Published then Save to open the public page.">
+                Open (Published)
+            </button>
+        }
+
+        <a class="btn btn-outline-secondary"
+           asp-page="./Sections"
+           asp-route-id="@Model.Input.Id">
+            Sections
+        </a>
     </div>
 </form>
 

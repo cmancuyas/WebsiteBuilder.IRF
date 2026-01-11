@@ -1,53 +1,62 @@
 ﻿@model WebsiteBuilder.IRF.ViewModels.Admin.Pages.PageEditVm
-@{
-    // PageStatuses is supplied via ViewData by the PageModel
-    var statuses = ViewData["PageStatuses"] as IEnumerable<Microsoft.AspNetCore.Mvc.Rendering.SelectListItem>
-                   ?? Enumerable.Empty<Microsoft.AspNetCore.Mvc.Rendering.SelectListItem>();
-}
+@using Microsoft.AspNetCore.Mvc.Rendering
 
 <div class="mb-3">
-    <label class="form-label">Title</label>
-    <input asp-for="Title" class="form-control" />
-    <span asp-validation-for="Title" class="text-danger"></span>
+    <label class="form-label" asp-for="Title"></label>
+    <input class="form-control" asp-for="Title" />
+    <span class="text-danger" asp-validation-for="Title"></span>
 </div>
 
 <div class="mb-3">
-    <label class="form-label">Slug</label>
-    <input asp-for="Slug" class="form-control" placeholder="e.g. about, listings" />
+    <label class="form-label" asp-for="Slug"></label>
+    <input class="form-control" asp-for="Slug" placeholder="e.g. about, listings" />
     <div class="form-text">
-        This becomes the URL: <code>/your-slug</code>. Use lowercase and hyphens. No leading slashes.
+        This becomes the URL:
+        <span class="text-danger">/your-slug</span>.
+        Use lowercase and hyphens. No leading slashes.
     </div>
-    <span asp-validation-for="Slug" class="text-danger"></span>
+    <span class="text-danger" asp-validation-for="Slug"></span>
 </div>
 
 <div class="mb-3">
-    <label class="form-label">Status</label>
-    <select asp-for="PageStatusId" class="form-select" asp-items="statuses"></select>
-    <span asp-validation-for="PageStatusId" class="text-danger"></span>
+    <label class="form-label" asp-for="PageStatusId">Status</label>
+
+    <select class="form-select"
+            asp-for="PageStatusId"
+            asp-items="@(ViewData["PageStatuses"] as IEnumerable<SelectListItem>)">
+    </select>
+
+    <span class="text-danger" asp-validation-for="PageStatusId"></span>
 </div>
 
 <div class="mb-3">
-    <label class="form-label">Layout Key</label>
-    <input asp-for="LayoutKey" class="form-control" placeholder="e.g. Default, Home, Landing" />
-    <span asp-validation-for="LayoutKey" class="text-danger"></span>
+    <label class="form-label" asp-for="LayoutKey"></label>
+    <input class="form-control"
+           asp-for="LayoutKey"
+           placeholder="e.g. Default, Home, Landing" />
+    <span class="text-danger" asp-validation-for="LayoutKey"></span>
 </div>
 
-<hr class="my-4" />
+<hr />
 
 <h5 class="mb-3">SEO</h5>
 
 <div class="mb-3">
-    <label class="form-label">Meta Title</label>
-    <input asp-for="MetaTitle" class="form-control" />
-    <span asp-validation-for="MetaTitle" class="text-danger"></span>
+    <label class="form-label" asp-for="MetaTitle"></label>
+    <input class="form-control" asp-for="MetaTitle" />
+    <span class="text-danger" asp-validation-for="MetaTitle"></span>
 </div>
 
 <div class="mb-3">
-    <label class="form-label">Meta Description</label>
-    <textarea asp-for="MetaDescription" class="form-control" rows="3"></textarea>
-    <span asp-validation-for="MetaDescription" class="text-danger"></span>
+    <label class="form-label" asp-for="MetaDescription"></label>
+    <textarea class="form-control"
+              asp-for="MetaDescription"
+              rows="4"></textarea>
+    <span class="text-danger" asp-validation-for="MetaDescription"></span>
 </div>
 
 <div class="mb-3">
-    <label class="form-label">OG Image Asset Id (optional)</label>
-    <input
+    <label class="form-label" asp-for="OgImageAssetId"></label>
+    <input class="form-control" asp-for="OgImageAssetId" />
+    <span class="text-danger" asp-validation-for="OgImageAssetId"></span>
+</div>
