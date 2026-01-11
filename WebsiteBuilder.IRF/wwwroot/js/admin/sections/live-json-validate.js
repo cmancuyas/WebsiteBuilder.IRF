@@ -3,6 +3,50 @@
 // Live JSON validation with debounce + visual feedback
 // No dependencies other than fetch()
 
+const SCHEMA_HINTS = {
+    hero: {
+        title: "Hero section JSON (example)",
+        example: {
+            heading: "Welcome to my site",
+            subheading: "Short supporting message",
+            ctaText: "Get Started",
+            ctaHref: "/about",
+            backgroundImageAssetId: null
+        },
+        required: ["heading"],
+        notes: [
+            "ctaHref should be a relative path like /about",
+            "backgroundImageAssetId can be null or a valid MediaAsset Id"
+        ]
+    },
+    text: {
+        title: "Text section JSON (example)",
+        example: {
+            title: "Section title (optional)",
+            bodyHtml: "<p>Your content here</p>"
+        },
+        required: ["bodyHtml"],
+        notes: [
+            "bodyHtml expects HTML string (sanitize on render if needed)."
+        ]
+    },
+    gallery: {
+        title: "Gallery section JSON (example)",
+        example: {
+            items: [
+                { imageAssetId: 123, caption: "Caption (optional)" },
+                { imageAssetId: 456, caption: "Another caption" }
+            ]
+        },
+        required: ["items"],
+        notes: [
+            "items must be an array with at least 1 element.",
+            "imageAssetId must be a valid MediaAsset Id."
+        ]
+    }
+};
+
+
 (function () {
     const DEBOUNCE_MS = 500;
 
@@ -13,6 +57,65 @@
             timer = setTimeout(() => fn.apply(this, args), delay);
         };
     }
+
+    function renderStatus(textarea, isValid, errorsCount) {
+        const id = textarea.dataset.statusContainer;
+        if (!id) return;
+
+        const el = document.getElementById(id);
+        if (!el) return;
+
+        if (isValid === true) {
+            el.textContent = "Valid JSON.";
+            el.className = "small mt-2 text-success";
+        } else if (isValid === false) {
+            el.textContent = `Invalid JSON (${errorsCount || 0} error${(errorsCount || 0) === 1 ? "" : "s"}).`;
+            el.className = "small mt-2 text-danger";
+        } else {
+            el.textContent = "Validation status unavailable.";
+            el.className = "small mt-2 text-muted";
+        }
+    }
+
+    function renderHints(textarea) {
+        const id = textarea.dataset.hintsContainer;
+        if (!id) return;
+
+        const el = document.getElementById(id);
+        if (!el) return;
+
+        const typeKey = (textarea.dataset.sectionType || "").toLowerCase();
+        const hint = SCHEMA_HINTS[typeKey];
+
+        if (!hint) {
+            el.innerHTML = `<div class="text-muted">No schema hints available for <strong>${typeKey}</strong>.</div>`;
+            return;
+        }
+
+        const exampleJson = JSON.stringify(hint.example, null, 2)
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;");
+
+        const required = hint.required?.length
+            ? `<div class="mt-2"><strong>Required:</strong> ${hint.required.join(", ")}</div>`
+            : "";
+
+        const notes = hint.notes?.length
+            ? `<ul class="mt-2 mb-0">${hint.notes.map(n => `<li>${n}</li>`).join("")}</ul>`
+            : "";
+
+        el.innerHTML = `
+        <div class="border rounded p-2 bg-light">
+        <div class="fw-semibold">${hint.title}</div>
+        ${required}
+        <div class="mt-2"><strong>Example:</strong></div>
+        <pre class="mb-0"><code>${exampleJson}</code></pre>
+        ${notes}
+            </div>
+        `;
+        }
+
+
     function disableSaveInitially() {
         const btn = document.querySelector("[data-save-button]");
         if (btn) btn.disabled = true;
@@ -84,10 +187,14 @@
                 setState(textarea, "valid");
                 setSaveEnabled(true);
                 if (errorContainer) renderErrors(errorContainer, []);
+                renderStatus(textarea, true, 0);
+
             } else {
                 setState(textarea, "invalid");
                 setSaveEnabled(false);
                 if (errorContainer) renderErrors(errorContainer, result.errors);
+                renderStatus(textarea, false, result.errors ? result.errors.length : 0);
+
             }
 
         } catch (err) {
@@ -98,6 +205,8 @@
                     "Unable to validate JSON. Please try again."
                 ]);
             }
+            renderStatus(textarea, null, 0);
+
             console.error(err);
         }
     }
@@ -110,6 +219,9 @@
         }
 
         textareas.forEach(textarea => {
+
+            renderHints(textarea);
+
             const handler = debounce(() => validateJson(textarea), DEBOUNCE_MS);
             textarea.addEventListener("input", handler);
 
