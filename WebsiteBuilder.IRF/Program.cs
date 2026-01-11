@@ -2,6 +2,7 @@
 using Microsoft.EntityFrameworkCore;
 using WebsiteBuilder.IRF.DataAccess;
 using WebsiteBuilder.IRF.Infrastructure.Middleware;
+using WebsiteBuilder.IRF.Infrastructure.Sections;
 using WebsiteBuilder.IRF.Infrastructure.Tenancy;
 using WebsiteBuilder.IRF.Repository;
 using WebsiteBuilder.IRF.Repository.IRepository;
@@ -68,6 +69,7 @@ builder.Services.AddAuthorization(options =>
 // Tenant services
 builder.Services.AddScoped<ITenantContext, TenantContext>();
 builder.Services.AddScoped<ITenantResolver, TenantResolver>();
+builder.Services.AddSingleton<ISectionRegistry, SectionRegistry>();
 
 var app = builder.Build();
 

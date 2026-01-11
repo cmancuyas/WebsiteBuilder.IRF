@@ -1,6 +1,9 @@
 ﻿@page "/{**slug}"
 @model WebsiteBuilder.IRF.Pages._slug_Model
 
+@using WebsiteBuilder.IRF.Infrastructure.Sections
+@inject ISectionRegistry SectionRegistry
+
 @{
     ViewData["Title"] = Model.PageEntity?.MetaTitle
         ?? Model.PageEntity?.Title
@@ -51,22 +54,17 @@
                 }
                 else
                 {
-                    switch (s.TypeKey)
+                    if (SectionRegistry.TryGet(s.TypeKey, out var def))
                     {
-                        case "Hero":
-                            <partial name="Shared/Sections/_Hero" model="s" />
-                            break;
-
-                        case "Text":
-                            <partial name="Shared/Sections/_Text" model="s" />
-                            break;
-
-                        default:
-                            <div class="fw-bold mb-2">Unknown section: @s.TypeKey</div>
-                            <pre class="mb-0">@s.ContentJson</pre>
-                            break;
+                        <partial name="@def.PartialViewPath" model="s" />
+                    }
+                    else
+                    {
+                        <div class="fw-bold mb-2">Unknown section: @s.TypeKey</div>
+                        <pre class="mb-0">@s.ContentJson</pre>
                     }
                 }
+
             </div>
         }
     }
