@@ -1,5 +1,4 @@
 using System.Security.Claims;
-using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.AspNetCore.Mvc.Rendering;
@@ -25,168 +24,176 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
         [BindProperty]
         public PageEditVm Input { get; set; } = new();
 
-        public async Task<IActionResult> OnGetAsync(int id)
+        public SelectList PageStatusSelect { get; private set; } = default!;
+
+        public bool SaveSuccess { get; private set; }
+
+        public string TenantHost => _tenant.Host ?? string.Empty;
+
+        /// <summary>
+        /// Computed preview URL for the current page.
+        /// </summary>
+        public string PreviewUrl
         {
+            get
+            {
+                var slug = (Input?.Slug ?? string.Empty).Trim().Trim('/');
+                if (string.IsNullOrWhiteSpace(slug))
+                    slug = "home";
+
+                return $"/{slug}?preview=true";
+            }
+        }
+
+        public async Task<IActionResult> OnGetAsync(int id, bool saveSuccess = false, CancellationToken ct = default)
+        {
+            SaveSuccess = saveSuccess;
+
             if (!_tenant.IsResolved)
-                return NotFound();
+                return NotFound("Tenant not resolved.");
 
-            await LoadPageStatusesAsync();
-
-            var entity = await _db.Pages
+            var page = await _db.Pages
                 .AsNoTracking()
                 .FirstOrDefaultAsync(p =>
                     p.Id == id &&
                     p.TenantId == _tenant.TenantId &&
-                    !p.IsDeleted);
+                    !p.IsDeleted, ct);
 
-            if (entity is null)
+            if (page == null)
                 return NotFound();
 
             Input = new PageEditVm
             {
-                Id = entity.Id,
-                Title = entity.Title,
-                Slug = entity.Slug,
-                PageStatusId = entity.PageStatusId,
-                LayoutKey = entity.LayoutKey,
-                MetaTitle = entity.MetaTitle,
-                MetaDescription = entity.MetaDescription,
-                OgImageAssetId = entity.OgImageAssetId,
-                IsActive = entity.IsActive
+                Id = page.Id,
+                Title = page.Title,
+                Slug = page.Slug,
+                LayoutKey = page.LayoutKey,
+                MetaTitle = page.MetaTitle,
+                MetaDescription = page.MetaDescription,
+                OgImageAssetId = page.OgImageAssetId,
+                PageStatusId = page.PageStatusId,
+                PublishedAt = page.PublishedAt,
+                IsActive = page.IsActive,
+                IsDeleted = page.IsDeleted,
+                ShowInNavigation = page.ShowInNavigation,
+                NavigationOrder = page.NavigationOrder,
             };
 
+            await BuildSelectListsAsync(Input.PageStatusId, ct);
             return Page();
         }
 
-        public async Task<IActionResult> OnPostAsync(int id)
+        public async Task<IActionResult> OnPostAsync(int id, CancellationToken ct = default)
         {
             if (!_tenant.IsResolved)
-                return NotFound();
+                return NotFound("Tenant not resolved.");
 
-            await LoadPageStatusesAsync();
+            // Ensure dropdown lists exist again on validation errors
+            await BuildSelectListsAsync(Input.PageStatusId, ct);
 
-            if (id != Input.Id)
-                return BadRequest();
-
-            // Normalize early so validation + uniqueness check uses final value
-            Input.Title = (Input.Title ?? string.Empty).Trim();
-            Input.Slug = NormalizeSlug(Input.Slug);
-
-            // Server-side validation: ensure posted status is valid (prevents tampering / bad posts)
-            var isValidStatus = await _db.PageStatuses.AsNoTracking().AnyAsync(s => s.Id == Input.PageStatusId);
-            if (!isValidStatus)
-                ModelState.AddModelError(nameof(Input.PageStatusId), "Invalid status.");
-
-            if (string.IsNullOrWhiteSpace(Input.Title))
-                ModelState.AddModelError(nameof(Input.Title), "Title is required.");
-
-            if (string.IsNullOrWhiteSpace(Input.Slug))
-                ModelState.AddModelError(nameof(Input.Slug), "Slug is required.");
-
-            if (!ModelState.IsValid)
-            {
-                await LoadPageStatusesAsync();
-                return Page();
-            }
-
-
-            var entity = await _db.Pages
+            // Must load the tracked entity to update it
+            var page = await _db.Pages
                 .FirstOrDefaultAsync(p =>
                     p.Id == id &&
                     p.TenantId == _tenant.TenantId &&
-                    !p.IsDeleted);
+                    !p.IsDeleted, ct);
 
-            if (entity is null)
+            if (page == null)
                 return NotFound();
 
-            // Uniqueness: slug must be unique per tenant (case-insensitive)
-            var slugExists = await _db.Pages
-                .AsNoTracking()
-                .AnyAsync(p =>
-                    p.TenantId == _tenant.TenantId &&
-                    !p.IsDeleted &&
-                    p.Id != id &&
-                    p.Slug.ToLower() == Input.Slug.ToLower());
+            // Normalize slug (if empty, derive from Title)
+            Input.Slug = SanitizeSlug(Input.Slug, Input.Title);
 
-            if (slugExists)
+            // Slug uniqueness per-tenant (exclude current page)
+            if (!string.IsNullOrWhiteSpace(Input.Slug))
             {
-                ModelState.AddModelError(nameof(Input.Slug), "Slug already exists for this tenant.");
-                return Page();
-            }
+                var normalizedSlug = Input.Slug.Trim().Trim('/');
 
-            var previousStatus = entity.PageStatusId;
+                var slugExists = await _db.Pages
+                    .AsNoTracking()
+                    .AnyAsync(p =>
+                        p.TenantId == _tenant.TenantId &&
+                        p.Id != page.Id &&
+                        !p.IsDeleted &&
+                        p.Slug != null &&
+                        p.Slug.ToLower() == normalizedSlug.ToLower(), ct);
 
-            entity.Title = Input.Title;
-            entity.Slug = Input.Slug;
-            entity.PageStatusId = Input.PageStatusId;
-
-            entity.LayoutKey = string.IsNullOrWhiteSpace(Input.LayoutKey) ? null : Input.LayoutKey.Trim();
-            entity.MetaTitle = string.IsNullOrWhiteSpace(Input.MetaTitle) ? null : Input.MetaTitle.Trim();
-            entity.MetaDescription = string.IsNullOrWhiteSpace(Input.MetaDescription) ? null : Input.MetaDescription.Trim();
-            entity.OgImageAssetId = Input.OgImageAssetId;
-
-            entity.IsActive = Input.IsActive;
-
-            // Publish timestamp:
-            // - Set once when transitioning into Published
-            if (previousStatus != PageStatusIds.Published && entity.PageStatusId == PageStatusIds.Published)
-            {
-                entity.PublishedAt ??= DateTime.UtcNow;
-            }
-
-            entity.UpdatedBy = GetUserIdOrEmpty();
-            entity.UpdatedAt = DateTime.UtcNow;
-
-            await _db.SaveChangesAsync();
-
-            return RedirectToPage("./Edit", new { id, saved = true });
-        }
-
-        private async Task LoadPageStatusesAsync()
-        {
-            ViewData["PageStatuses"] = await _db.PageStatuses
-                .AsNoTracking()
-                .OrderBy(s => s.Id)
-                .Select(s => new SelectListItem
+                if (slugExists)
                 {
-                    Value = s.Id.ToString(),
-                    Text = s.Name
-                })
-                .ToListAsync();
+                    ModelState.AddModelError("Input.Slug", "Slug is already in use for this tenant.");
+                }
+            }
+
+            if (!ModelState.IsValid)
+                return Page();
+
+            // Map fields
+            page.Title = Input.Title?.Trim() ?? string.Empty;
+            page.Slug = (Input.Slug ?? string.Empty).Trim().Trim('/');
+            page.LayoutKey = string.IsNullOrWhiteSpace(Input.LayoutKey) ? null : Input.LayoutKey.Trim();
+            page.MetaTitle = string.IsNullOrWhiteSpace(Input.MetaTitle) ? null : Input.MetaTitle.Trim();
+            page.MetaDescription = string.IsNullOrWhiteSpace(Input.MetaDescription) ? null : Input.MetaDescription.Trim();
+            page.OgImageAssetId = Input.OgImageAssetId;
+
+            page.ShowInNavigation = Input.ShowInNavigation;
+            page.NavigationOrder = Input.NavigationOrder;
+
+            page.PageStatusId = Input.PageStatusId;
+            page.IsActive = Input.IsActive;
+            page.IsDeleted = Input.IsDeleted;
+
+            // PublishedAt behavior: set when first published, keep existing otherwise
+            if (page.PageStatusId == PageStatusIds.Published && page.PublishedAt == null)
+                page.PublishedAt = DateTime.UtcNow;
+
+            // Audit
+            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (Guid.TryParse(userId, out var userGuid))
+                page.UpdatedBy = userGuid;
+
+            page.UpdatedAt = DateTime.UtcNow;
+
+            await _db.SaveChangesAsync(ct);
+
+            return RedirectToPage(new { id = page.Id, saveSuccess = true });
         }
 
-
-        private static string NormalizeSlug(string? slug)
+        private async Task BuildSelectListsAsync(int selectedPageStatusId, CancellationToken ct)
         {
-            slug ??= string.Empty;
+            var statuses = await _db.PageStatuses
+                .AsNoTracking()
+                .Where(s => s.IsActive && !s.IsDeleted)
+                .OrderBy(s => s.SortOrder)
+                .ThenBy(s => s.Name)
+                .ToListAsync(ct);
 
-            // trim whitespace and slashes
-            slug = slug.Trim();
-            slug = slug.Trim('/');
+            PageStatusSelect = new SelectList(statuses, "Id", "Name", selectedPageStatusId);
 
-            // lowercase
-            slug = slug.ToLowerInvariant();
-
-            // spaces -> hyphen
-            slug = Regex.Replace(slug, @"\s+", "-");
-
-            // collapse multiple hyphens
-            slug = Regex.Replace(slug, @"-+", "-");
-
-            // allow only url-safe characters (optional but recommended)
-            // keep letters, digits, hyphen
-            slug = Regex.Replace(slug, @"[^a-z0-9\-]", "");
-
-            // trim hyphens again after cleanup
-            slug = slug.Trim('-');
-
-            return slug;
+            // If your Form partial expects ViewData["PageStatusSelect"], set it here
+            ViewData["PageStatuses"] = PageStatusSelect;
         }
 
-        private Guid GetUserIdOrEmpty()
+        private static string SanitizeSlug(string? slug, string? title)
         {
-            var raw = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            return Guid.TryParse(raw, out var id) ? id : Guid.Empty;
+            var value = (slug ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(value))
+                value = (title ?? string.Empty).Trim();
+
+            // Basic slug normalization:
+            // - trim
+            // - replace spaces with hyphens
+            // - remove leading/trailing slashes
+            value = value.Trim().Trim('/');
+            value = value.Replace(' ', '-');
+
+            // Collapse repeated hyphens
+            while (value.Contains("--"))
+                value = value.Replace("--", "-");
+
+            // Lowercase
+            value = value.ToLowerInvariant();
+
+            return value;
         }
     }
 }

@@ -1,26 +1,62 @@
 ﻿@page "/admin/pages/create"
 @model WebsiteBuilder.IRF.Pages.Admin.Pages.CreateModel
 
-@using WebsiteBuilder.IRF.ViewModels.Admin.Pages
-
-<h2 class="mb-3">Create Page</h2>
-
-@if (Request.Query.ContainsKey("err"))
-{
-    <div class="alert alert-danger">An error occurred.</div>
+@{
+    ViewData["Title"] = "Create Page";
 }
 
-<form method="post" class="card">
-    <div class="card-body">
-        <partial name="_Form" for="Input" />
+<div class="container py-4">
+
+    <div class="d-flex align-items-center justify-content-between mb-3">
+        <div>
+            <h2 class="mb-0">Create Page</h2>
+            <div class="text-muted small">Create a new page for the current tenant.</div>
+        </div>
+
+        <div class="d-flex gap-2">
+            <a class="btn btn-outline-secondary" asp-page="/Admin/Pages/Index">
+                Back
+            </a>
+        </div>
     </div>
 
-    <div class="card-footer d-flex gap-2 justify-content-end">
-        <a class="btn btn-outline-secondary" href="/admin/pages">Cancel</a>
-        <button type="submit" class="btn btn-success">Create</button>
-    </div>
-</form>
+    @if (Request.Query.ContainsKey("err"))
+    {
+        <div class="alert alert-danger">An error occurred.</div>
+    }
+
+    <form method="post" class="card shadow-sm">
+        <div class="card-body">
+
+            @* Shared fields *@
+            <partial name="_Form" model="Model.Input" />
+
+            @* Nav fields (Create/Edit specific but kept here, not inside _Form) *@
+            <div class="form-check mt-3">
+                <input asp-for="Input.ShowInNavigation" class="form-check-input" />
+                <label asp-for="Input.ShowInNavigation" class="form-check-label"></label>
+            </div>
+
+            <div class="mb-3">
+                <label asp-for="Input.NavigationOrder" class="form-label"></label>
+                <input asp-for="Input.NavigationOrder" class="form-control" />
+                <span class="text-danger" asp-validation-for="Input.NavigationOrder"></span>
+            </div>
+
+        </div>
+
+        <div class="card-footer d-flex gap-2 justify-content-end">
+            <a class="btn btn-outline-secondary" asp-page="/Admin/Pages/Index">
+                Cancel
+            </a>
+            <button type="submit" class="btn btn-success">
+                Create
+            </button>
+        </div>
+    </form>
+</div>
 
 @section Scripts {
     <partial name="_ValidationScriptsPartial" />
+    <script src="~/js/admin/sections/live-json-validate.js"></script>
 }

@@ -1,4 +1,5 @@
-﻿using System.ComponentModel.DataAnnotations;
+﻿using System;
+using System.ComponentModel.DataAnnotations;
 
 namespace WebsiteBuilder.IRF.ViewModels.Admin.Pages
 {
@@ -9,9 +10,12 @@ namespace WebsiteBuilder.IRF.ViewModels.Admin.Pages
         [Required, MaxLength(200)]
         public string Title { get; set; } = string.Empty;
 
-        // URL path segment per tenant, e.g. "about", "listings"
-        // If you want to allow "" for home, relax validation here.
+        // Required slug ("" for home is NOT allowed in your current model)
         [Required, MaxLength(200)]
+        [RegularExpression(
+            @"^[a-z0-9]+(?:-[a-z0-9]+)*$",
+            ErrorMessage = "Slug must be lowercase letters/numbers with optional hyphens."
+        )]
         public string Slug { get; set; } = string.Empty;
 
         [Required]
@@ -28,6 +32,14 @@ namespace WebsiteBuilder.IRF.ViewModels.Admin.Pages
 
         public int? OgImageAssetId { get; set; }
 
+        public DateTime? PublishedAt { get; set; }
+
+        public bool ShowInNavigation { get; set; } = true;
+
+        public int NavigationOrder { get; set; } = 0;
+
         public bool IsActive { get; set; } = true;
+
+        public bool IsDeleted { get; set; } = false;
     }
 }

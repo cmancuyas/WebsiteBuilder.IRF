@@ -34,7 +34,7 @@ namespace WebsiteBuilder.Models
 
         public DateTime? PublishedAt { get; set; }
         public bool ShowInNavigation { get; set; } = true;
-        public int NavigationOrderNavigationOrder { get; set; } = 0;
+        public int NavigationOrder { get; set; } = 0;
 
         // ✅ This fixes your Fluent config: WithMany(p => p.Sections)
         public ICollection<PageSection> Sections { get; set; } = new List<PageSection>();

@@ -1,75 +1,81 @@
-﻿@page "/admin/pages/edit/{id:int}"
+﻿@page "{id:int}"
 @model WebsiteBuilder.IRF.Pages.Admin.Pages.EditModel
-@using WebsiteBuilder.Models.Constants
 
-<h2 class="mb-3">Edit Page</h2>
+@{
+    ViewData["Title"] = "Edit Page";
 
-@if (Request.Query.ContainsKey("created"))
-{
-    <div class="alert alert-success">Page created successfully.</div>
-}
-@if (Request.Query.ContainsKey("saved"))
-{
-    <div class="alert alert-success">Changes saved.</div>
+    // IMPORTANT:
+    // _Form.cshtml reads statuses from ViewData["PageStatuses"].
+    // Your EditModel currently builds Model.PageStatusSelect and stores ViewData["PageStatusSelect"].
+    // This line bridges that so the dropdown is populated.
 }
 
-<form method="post" class="card">
-    <div class="card-body">
-        <input type="hidden" asp-for="Input.Id" />
+<div class="container py-4">
 
-        <!-- IMPORTANT: 'for="Input"' prefixes all fields as Input.* -->
-        <partial name="_Form" for="Input" />
-    </div>
+    <div class="d-flex align-items-center justify-content-between mb-3">
+        <div>
+            <h2 class="mb-0">Edit Page</h2>
+            <div class="text-muted small">
+                Tenant: @Model.TenantHost
+            </div>
+        </div>
 
-    <div class="card-footer d-flex gap-2 justify-content-end">
-        <a class="btn btn-outline-secondary" asp-page="./Index">Back</a>
+        <div class="d-flex gap-2">
+            <a class="btn btn-outline-secondary" asp-page="/Admin/Pages/Index">
+                Back
+            </a>
 
-        <button type="submit" class="btn btn-primary">Save</button>
-
-        @* Draft preview (requires [slug] supports preview=true) *@
-        @if (!string.IsNullOrWhiteSpace(Model.Input.Slug))
-        {
-            <a class="btn btn-outline-secondary"
-               href="/@Model.Input.Slug?preview=true"
-               target="_blank" rel="noopener">
+            @* Preview (same tab) *@
+            <a class="btn btn-outline-primary" href="@Model.PreviewUrl">
                 Preview
             </a>
-        }
-        else
-        {
-            <button type="button" class="btn btn-outline-secondary" disabled>
-                Preview
-            </button>
-        }
 
-        @{
-            var isPublished = Model.Input.PageStatusId == PageStatusIds.Published;
-        }
-
-        @if (isPublished && !string.IsNullOrWhiteSpace(Model.Input.Slug))
-        {
-            <a class="btn btn-outline-secondary"
-               href="/@Model.Input.Slug"
-               target="_blank" rel="noopener">
-                Open (Published)
+            @* Open Preview (new tab) *@
+            <a class="btn btn-outline-primary" href="@Model.PreviewUrl" target="_blank" rel="noopener">
+                Open Preview
             </a>
-        }
-        else
-        {
-            <button type="button" class="btn btn-outline-secondary" disabled
-                    title="Set Status to Published then Save to open the public page.">
-                Open (Published)
-            </button>
-        }
-
-        <a class="btn btn-outline-secondary"
-           asp-page="./Sections"
-           asp-route-id="@Model.Input.Id">
-            Sections
-        </a>
+        </div>
     </div>
-</form>
+
+    @if (Model.SaveSuccess)
+    {
+        <div class="alert alert-success">
+            Page saved successfully.
+        </div>
+    }
+
+    <form method="post" class="card shadow-sm">
+        <div class="card-body">
+
+            <input type="hidden" asp-for="Input.Id" />
+
+            @* Shared fields *@
+            <partial name="_Form" model="Model.Input" />
+
+            @* Nav fields (Edit specific but kept here, not inside _Form) *@
+            <div class="form-check mt-3">
+                <input asp-for="Input.ShowInNavigation" class="form-check-input" />
+                <label asp-for="Input.ShowInNavigation" class="form-check-label"></label>
+            </div>
+
+            <div class="mb-3">
+                <label asp-for="Input.NavigationOrder" class="form-label"></label>
+                <input asp-for="Input.NavigationOrder" class="form-control" />
+                <span class="text-danger" asp-validation-for="Input.NavigationOrder"></span>
+            </div>
+
+        </div>
+
+        <div class="card-footer d-flex justify-content-end gap-2">
+            <button type="submit" class="btn btn-primary">
+                Save
+            </button>
+        </div>
+    </form>
+</div>
 
 @section Scripts {
     <partial name="_ValidationScriptsPartial" />
+    <script src="~/js/admin/sections/live-json-validate.js"></script>
 }
+

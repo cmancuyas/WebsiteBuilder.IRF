@@ -46,7 +46,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             await LoadPageStatusesAsync();
 
             // Server-side normalize BEFORE validation uniqueness
-            Input.Slug = NormalizeSlug(Input.Slug);
+            Input.Slug = SlugUtil.Normalize(Input.Slug);
 
             if (!ModelState.IsValid)
                 return Page();
@@ -75,8 +75,8 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                 Slug = SlugUtil.Normalize(Input.Slug),       // CRITICAL
                 PageStatusId = Input.PageStatusId,
                 LayoutKey = Input.LayoutKey?.Trim() ?? "Default",
-                MetaTitle = Input.MetaTitle?.Trim() ?? "",
-                MetaDescription = Input.MetaDescription?.Trim() ?? "",
+                MetaTitle = string.IsNullOrWhiteSpace(Input.MetaTitle) ? null : Input.MetaTitle.Trim(),
+                MetaDescription = string.IsNullOrWhiteSpace(Input.MetaDescription) ? null : Input.MetaDescription.Trim(),
                 OgImageAssetId = Input.OgImageAssetId,
 
                 IsActive = true,
