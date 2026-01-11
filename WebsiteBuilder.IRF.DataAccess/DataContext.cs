@@ -14,6 +14,8 @@ namespace WebsiteBuilder.IRF.DataAccess
         public DbSet<Page> Pages => Set<Page>();
         public DbSet<PageSection> PageSections => Set<PageSection>();
         public DbSet<PageStatus> PageStatuses => Set<PageStatus>();
+        public DbSet<PageRevision> PageRevisions => Set<PageRevision>();
+        public DbSet<PageRevisionSection> PageRevisionSections => Set<PageRevisionSection>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -26,6 +28,8 @@ namespace WebsiteBuilder.IRF.DataAccess
             ConfigurePages(modelBuilder);
             ConfigurePageSections(modelBuilder);
             ConfigurePageStatuses(modelBuilder);
+
+            ConfigurePageRevisions(modelBuilder);
         }
 
         private static void ConfigureBaseModelConventions(ModelBuilder modelBuilder)
@@ -127,19 +131,36 @@ namespace WebsiteBuilder.IRF.DataAccess
                 b.HasKey(x => x.Id);
                 b.Property(x => x.Id).ValueGeneratedOnAdd();
 
-                b.Property(x => x.Title).HasMaxLength(200).IsRequired();
-                b.Property(x => x.Slug).HasMaxLength(200).IsRequired();
+                b.Property(x => x.Title)
+                    .HasMaxLength(200)
+                    .IsRequired();
+
+                b.Property(x => x.Slug)
+                    .HasMaxLength(200)
+                    .IsRequired();
 
                 // Slug unique per tenant
-                b.HasIndex(x => new { x.TenantId, x.Slug }).IsUnique();
+                b.HasIndex(x => new { x.TenantId, x.Slug })
+                    .IsUnique();
 
                 // Default: Draft
-                b.Property(x => x.PageStatusId).HasDefaultValue(1);
+                b.Property(x => x.PageStatusId)
+                    .HasDefaultValue(1);
+
+                // Published revision pointer (nullable)
+                b.Property(x => x.PublishedRevisionId)
+                    .IsRequired(false);
+
+                b.HasOne(x => x.PublishedRevision)
+                    .WithMany()
+                    .HasForeignKey(x => x.PublishedRevisionId)
+                    .OnDelete(DeleteBehavior.Restrict);
 
                 // Composite principal key used by PageSection composite FK (tenant-safe)
                 b.HasAlternateKey(x => new { x.TenantId, x.Id });
             });
         }
+
 
         private static void ConfigurePageSections(ModelBuilder modelBuilder)
         {
@@ -186,6 +207,27 @@ namespace WebsiteBuilder.IRF.DataAccess
                     new PageStatus { Id = 2, Name = "Published", IsSystem = true },
                     new PageStatus { Id = 3, Name = "Archived", IsSystem = true }
                 );
+            });
+        }
+
+        private static void ConfigurePageRevisions(ModelBuilder modelBuilder)
+        {
+            // PageRevision: unique version per tenant+page
+            modelBuilder.Entity<PageRevision>(b =>
+            {
+                b.HasIndex(x => new { x.TenantId, x.PageId, x.VersionNumber })
+                 .IsUnique();
+
+                b.HasMany(x => x.Sections)
+                 .WithOne(x => x.PageRevision!)
+                 .HasForeignKey(x => x.PageRevisionId)
+                 .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            // PageRevisionSection: supporting index for lookups
+            modelBuilder.Entity<PageRevisionSection>(b =>
+            {
+                b.HasIndex(x => new { x.TenantId, x.PageRevisionId });
             });
         }
     }

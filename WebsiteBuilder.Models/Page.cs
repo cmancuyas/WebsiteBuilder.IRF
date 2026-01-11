@@ -41,5 +41,8 @@ namespace WebsiteBuilder.Models
 
         // Optional (only if you want navigation)
         public Tenant? Tenant { get; set; }
+        public int? PublishedRevisionId { get; set; }
+        public PageRevision? PublishedRevision { get; set; }
+
     }
 }

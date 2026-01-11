@@ -37,7 +37,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
         public bool IsDraft => Input.PageStatusId == PageStatusIds.Draft;
         public bool IsArchived => Input.PageStatusId == PageStatusIds.Archived;
 
-        // CanPublish: enabled only when Draft (or not Published/Archived), has slug, has sections
+        // CanPublish: enabled only when not Published/Archived, has slug, has sections
         public bool CanPublish => !IsPublished && !IsArchived && HasSlug && HasSections;
 
         // CanUnpublish: allowed only when Published
@@ -214,13 +214,76 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                 return RedirectToPage(new { id });
             }
 
+            // FIX: declare userGuid ONCE and reuse it
+            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            Guid.TryParse(userId, out var userGuid);
+
+            // 1) Determine next version number for this page
+            var nextVersion = (await _db.PageRevisions
+                .AsNoTracking()
+                .Where(r => r.TenantId == _tenant.TenantId && r.PageId == page.Id)
+                .MaxAsync(r => (int?)r.VersionNumber, ct) ?? 0) + 1;
+
+            // 2) Load live sections to snapshot
+            var liveSections = await _db.PageSections
+                .AsNoTracking()
+                .Where(s =>
+                    s.TenantId == _tenant.TenantId &&
+                    s.PageId == page.Id &&
+                    s.IsActive &&
+                    !s.IsDeleted)
+                .OrderBy(s => s.SortOrder)
+                .ThenBy(s => s.Id)
+                .ToListAsync(ct);
+
+            // 3) Create revision row
+            var revision = new WebsiteBuilder.Models.PageRevision
+            {
+                TenantId = _tenant.TenantId,
+                PageId = page.Id,
+                VersionNumber = nextVersion,
+                IsPublishedSnapshot = true,
+                CreatedAt = DateTime.UtcNow,
+                CreatedBy = userGuid,
+
+                Title = page.Title,
+                Slug = page.Slug,
+                LayoutKey = page.LayoutKey ?? string.Empty,
+                MetaTitle = page.MetaTitle ?? string.Empty,
+                MetaDescription = page.MetaDescription ?? string.Empty,
+                OgImageAssetId = page.OgImageAssetId,
+                PublishedAt = DateTime.UtcNow
+            };
+
+            // 4) Add section snapshots
+            foreach (var s in liveSections)
+            {
+                revision.Sections.Add(new WebsiteBuilder.Models.PageRevisionSection
+                {
+                    TenantId = _tenant.TenantId,
+                    SourcePageSectionId = s.Id,
+                    TypeKey = s.TypeKey,
+                    SortOrder = s.SortOrder,
+                    ContentJson = s.ContentJson,
+                    SettingsJson = s.SettingsJson
+                });
+            }
+
+            _db.PageRevisions.Add(revision);
+
+            // 5) Persist snapshot now so we can store the ID on Page
+            await _db.SaveChangesAsync(ct);
+
+            // 6) Record published revision pointer on Page
+            // FIX: PublishedRevisionId (not PublishedVersionId)
+            page.PublishedRevisionId = revision.Id;
+
             page.PageStatusId = PageStatusIds.Published;
 
             if (page.PublishedAt == null)
                 page.PublishedAt = DateTime.UtcNow;
 
-            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (Guid.TryParse(userId, out var userGuid))
+            if (userGuid != Guid.Empty)
                 page.UpdatedBy = userGuid;
 
             page.UpdatedAt = DateTime.UtcNow;
