@@ -30,6 +30,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             _validator = validator;
         }
 
+        // GET only (safe)
         [BindProperty(SupportsGet = true)]
         public int Id { get; set; }
 
@@ -38,17 +39,15 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
 
         public List<PageSectionListItemVm> Sections { get; private set; } = new();
 
-        // Add form (canonical)
         [BindProperty]
         public int NewSectionTypeId { get; set; }
 
-        // Edit form (canonical)
         [BindProperty]
         public PageSectionEditVm Edit { get; set; } = new();
 
-        // Dropdown options from DB SectionTypes (Id/Name)
         public List<SelectListItem> SectionTypeOptions { get; private set; } = new();
 
+        // ===================== GET =====================
         public async Task<IActionResult> OnGetAsync()
         {
             if (!_tenant.IsResolved) return NotFound();
@@ -60,19 +59,20 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                     p.TenantId == _tenant.TenantId &&
                     !p.IsDeleted);
 
-            if (page is null) return NotFound();
+            if (page == null) return NotFound();
 
             PageTitle = page.Title;
             PageSlug = page.Slug;
 
-            var sectionTypes = await _db.SectionTypes
+            SectionTypeOptions = await _db.SectionTypes
                 .AsNoTracking()
                 .OrderBy(st => st.Name)
+                .Select(st => new SelectListItem
+                {
+                    Value = st.Id.ToString(),
+                    Text = st.Name
+                })
                 .ToListAsync();
-
-            SectionTypeOptions = sectionTypes
-                .Select(st => new SelectListItem { Value = st.Id.ToString(), Text = st.Name })
-                .ToList();
 
             Sections = await _db.PageSections
                 .AsNoTracking()
@@ -88,7 +88,9 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                     Id = s.Id,
                     SortOrder = s.SortOrder,
                     SectionTypeId = s.SectionTypeId,
-                    SectionTypeName = s.SectionType != null ? s.SectionType.Name : $"Type #{s.SectionTypeId}",
+                    SectionTypeName = s.SectionType != null
+                        ? s.SectionType.Name
+                        : $"Type #{s.SectionTypeId}",
                     SettingsJson = s.SettingsJson
                 })
                 .ToListAsync();
@@ -96,14 +98,14 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             return Page();
         }
 
-        // POST: Add section
-        public async Task<IActionResult> OnPostAddAsync()
+        // ===================== ADD =====================
+        public async Task<IActionResult> OnPostAddAsync(int pageId)
         {
             if (!_tenant.IsResolved) return NotFound();
-            if (Id <= 0) return NotFound();
+            if (pageId <= 0) return NotFound();
 
             var pageExists = await _db.Pages.AnyAsync(p =>
-                p.Id == Id &&
+                p.Id == pageId &&
                 p.TenantId == _tenant.TenantId &&
                 !p.IsDeleted);
 
@@ -116,7 +118,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             if (sectionType == null)
             {
                 TempData["Err"] = "Invalid section type.";
-                return RedirectToPage("./Sections", new { id = Id });
+                return RedirectToPage("./Sections", new { id = pageId });
             }
 
             var defaultJson = "{}";
@@ -124,138 +126,108 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                 defaultJson = def.DefaultJson ?? "{}";
 
             var maxOrder = await _db.PageSections
-                .Where(s => s.PageId == Id && s.TenantId == _tenant.TenantId && !s.IsDeleted)
+                .Where(s => s.PageId == pageId && s.TenantId == _tenant.TenantId && !s.IsDeleted)
                 .Select(s => (int?)s.SortOrder)
                 .MaxAsync() ?? 0;
 
             var entity = new PageSection
             {
                 TenantId = _tenant.TenantId,
-                PageId = Id,
-                SortOrder = (maxOrder <= 0 ? 0 : maxOrder) + 10,
-
+                PageId = pageId,
+                SortOrder = maxOrder + 10,
                 SectionTypeId = sectionType.Id,
                 SettingsJson = defaultJson,
-
-                IsDeleted = false,
                 CreatedBy = GetUserIdOrEmpty(),
-                CreatedAt = DateTime.UtcNow
+                CreatedAt = DateTime.UtcNow,
+                IsDeleted = false
             };
 
             _db.PageSections.Add(entity);
             await _db.SaveChangesAsync();
 
-            TempData["Ok"] = "Section added.";
-            return RedirectToPage("./Sections", new { id = Id });
+            return RedirectToPage("./Sections", new { id = pageId });
         }
 
-        // POST: Update section
-        public async Task<IActionResult> OnPostUpdateAsync()
+        // ===================== UPDATE =====================
+        public async Task<IActionResult> OnPostUpdateAsync(int pageId)
         {
             if (!_tenant.IsResolved) return NotFound();
-            if (Id <= 0) return NotFound();
-
-            if (!ModelState.IsValid)
-            {
-                TempData["Err"] = "Invalid section data.";
-                return RedirectToPage("./Sections", new { id = Id });
-            }
+            if (pageId <= 0) return NotFound();
 
             var entity = await _db.PageSections.FirstOrDefaultAsync(s =>
                 s.Id == Edit.Id &&
-                s.PageId == Id &&
+                s.PageId == pageId &&
                 s.TenantId == _tenant.TenantId &&
                 !s.IsDeleted);
 
-            if (entity is null) return NotFound();
+            if (entity == null) return NotFound();
 
             var sectionType = await _db.SectionTypes
                 .AsNoTracking()
                 .FirstOrDefaultAsync(st => st.Id == Edit.SectionTypeId);
 
             if (sectionType == null)
-            {
-                TempData["Err"] = "Invalid section type.";
-                return RedirectToPage("./Sections", new { id = Id });
-            }
+                return RedirectToPage("./Sections", new { id = pageId });
 
             var json = (Edit.SettingsJson ?? "{}").Trim();
-
             if (!_validator.Validate(sectionType.Name, json, out var error))
             {
                 TempData["Err"] = error;
-                return RedirectToPage("./Sections", new { id = Id });
+                return RedirectToPage("./Sections", new { id = pageId });
             }
 
             entity.SectionTypeId = sectionType.Id;
             entity.SettingsJson = json;
-
             entity.UpdatedBy = GetUserIdOrEmpty();
             entity.UpdatedAt = DateTime.UtcNow;
 
             await _db.SaveChangesAsync();
-
-            TempData["Ok"] = "Section updated.";
-            return RedirectToPage("./Sections", new { id = Id });
+            return RedirectToPage("./Sections", new { id = pageId });
         }
 
-        // POST: Delete section (soft)
-        public async Task<IActionResult> OnPostDeleteAsync(int sectionId)
+        // ===================== DELETE =====================
+        public async Task<IActionResult> OnPostDeleteAsync(int pageId, int sectionId)
         {
             if (!_tenant.IsResolved) return NotFound();
-            if (Id <= 0) return NotFound();
+            if (pageId <= 0) return NotFound();
 
             var entity = await _db.PageSections.FirstOrDefaultAsync(s =>
                 s.Id == sectionId &&
-                s.PageId == Id &&
+                s.PageId == pageId &&
                 s.TenantId == _tenant.TenantId &&
                 !s.IsDeleted);
 
-            if (entity is null) return NotFound();
+            if (entity == null) return NotFound();
 
             entity.IsDeleted = true;
             entity.UpdatedBy = GetUserIdOrEmpty();
             entity.UpdatedAt = DateTime.UtcNow;
 
             await _db.SaveChangesAsync();
-
-            TempData["Ok"] = "Section deleted.";
-            return RedirectToPage("./Sections", new { id = Id });
+            return RedirectToPage("./Sections", new { id = pageId });
         }
 
-        // POST: Reorder (AJAX)
-        public async Task<IActionResult> OnPostReorderAsync([FromBody] PageSectionReorderVm vm)
+        // ===================== REORDER (AJAX) =====================
+        public async Task<IActionResult> OnPostReorderAsync(int pageId, [FromBody] PageSectionReorderVm vm)
         {
             if (!_tenant.IsResolved) return NotFound();
-            if (Id <= 0) return NotFound();
+            if (pageId <= 0) return NotFound();
 
             if (vm?.OrderedIds == null || vm.OrderedIds.Count == 0)
-                return BadRequest(new { ok = false, message = "No IDs provided." });
+                return BadRequest(new { ok = false });
 
             var sections = await _db.PageSections
-                .Where(s => s.PageId == Id && s.TenantId == _tenant.TenantId && !s.IsDeleted)
+                .Where(s => s.PageId == pageId && s.TenantId == _tenant.TenantId && !s.IsDeleted)
                 .ToListAsync();
-
-            if (sections.Count == 0)
-                return BadRequest(new { ok = false, message = "No sections to reorder." });
-
-            var currentIds = sections.Select(s => s.Id).ToHashSet();
-            foreach (var sid in vm.OrderedIds)
-                if (!currentIds.Contains(sid))
-                    return BadRequest(new { ok = false, message = "Invalid section id in reorder list." });
-
-            if (vm.OrderedIds.Count != sections.Count)
-                return BadRequest(new { ok = false, message = "Reorder list does not match section count." });
-
-            var now = DateTime.UtcNow;
-            var userId = GetUserIdOrEmpty();
 
             var byId = sections.ToDictionary(s => s.Id);
             var order = 10;
+            var now = DateTime.UtcNow;
+            var userId = GetUserIdOrEmpty();
 
             foreach (var sid in vm.OrderedIds)
             {
-                var s = byId[sid];
+                if (!byId.TryGetValue(sid, out var s)) continue;
                 s.SortOrder = order;
                 s.UpdatedAt = now;
                 s.UpdatedBy = userId;

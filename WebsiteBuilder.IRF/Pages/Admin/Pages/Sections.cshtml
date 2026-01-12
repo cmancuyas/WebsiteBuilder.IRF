@@ -1,198 +1,262 @@
-﻿@page "/admin/pages/edit/{id:int}/sections"
+﻿@page
 @model WebsiteBuilder.IRF.Pages.Admin.Pages.SectionsModel
-
 @{
-    ViewData["Title"] = "Edit Sections";
+    ViewData["Title"] = "Manage Sections";
+    var pageId = Model.Id;
 }
 
-<div class="d-flex align-items-center justify-content-between mb-3">
-    <div>
-        <h2 class="mb-1">Sections</h2>
-        <div class="text-muted">
-            Page: <strong>@Model.PageTitle</strong> — <code>/@Model.PageSlug</code>
+<div class="container py-4">
+
+    <div class="d-flex align-items-center justify-content-between mb-3">
+        <div>
+            <h3 class="mb-1">Sections</h3>
+            <div class="text-muted">
+                <strong>@Model.PageTitle</strong>
+                @if (!string.IsNullOrWhiteSpace(Model.PageSlug))
+                {
+                    <span class="ms-2">/@Model.PageSlug</span>
+                }
+            </div>
+        </div>
+
+        <div class="d-flex gap-2">
+            <a class="btn btn-outline-secondary" asp-page="/Admin/Pages/Edit" asp-route-id="@pageId">Back to Page</a>
+            <a class="btn btn-outline-primary" href="/@Model.PageSlug?preview=true" target="_blank">Preview</a>
         </div>
     </div>
 
-    <div class="d-flex gap-2">
-        <a class="btn btn-outline-secondary" href="/admin/pages/edit/@Model.Id">Back to Page</a>
-        <a class="btn btn-outline-secondary" href="/@Model.PageSlug" target="_blank">Open</a>
-    </div>
-</div>
+    @* TempData messages *@
+    @if (TempData["Ok"] is string okMsg && !string.IsNullOrWhiteSpace(okMsg))
+    {
+        <div class="alert alert-success">@okMsg</div>
+    }
+    @if (TempData["Err"] is string errMsg && !string.IsNullOrWhiteSpace(errMsg))
+    {
+        <div class="alert alert-danger">@errMsg</div>
+    }
 
-@if (TempData["Ok"] is not null)
-{
-    <div class="alert alert-success">@TempData["Ok"]</div>
-}
-@if (TempData["Err"] is not null)
-{
-    <div class="alert alert-danger">@TempData["Err"]</div>
-}
+    @* Add Section *@
+    <div class="card mb-3">
+        <div class="card-header">
+            Add Section
+        </div>
+        <div class="card-body">
+            <form method="post" asp-page-handler="Add" asp-route-pageId="@pageId">
+                @Html.AntiForgeryToken()
 
-<div class="card mb-4">
-    <div class="card-body">
-        <form method="post" asp-page-handler="Add" class="row g-2 align-items-end">
-            <div class="col-md-6">
-                <label class="form-label">Add new section (Section Type)</label>
-                <select class="form-select" asp-for="NewSectionTypeId" asp-items="Model.SectionTypeOptions"></select>
-                <div class="form-text">
-                    Section type maps to your renderer registry via <code>SectionType.Name</code>.
+                <div class="row g-2 align-items-end">
+                    <div class="col-md-6">
+                        <label class="form-label">Section Type</label>
+                        <select class="form-select" asp-for="NewSectionTypeId" asp-items="Model.SectionTypeOptions">
+                            <option value="">-- Select --</option>
+                        </select>
+                    </div>
+                    <div class="col-md-6">
+                        <button type="submit" class="btn btn-primary">Add</button>
+                    </div>
                 </div>
-            </div>
-            <div class="col-md-6 text-end">
-                <button class="btn btn-success" type="submit">Add Section</button>
-            </div>
-        </form>
+
+                <span class="text-danger" asp-validation-for="NewSectionTypeId"></span>
+            </form>
+        </div>
+    </div>
+
+    @* Sections List *@
+    <div class="card">
+        <div class="card-header d-flex align-items-center justify-content-between">
+            <span>Current Sections</span>
+            <small class="text-muted">Drag rows to reorder</small>
+        </div>
+
+        <div class="card-body p-0">
+            @if (Model.Sections == null || Model.Sections.Count == 0)
+            {
+                <div class="p-3">
+                    <div class="alert alert-warning mb-0">No sections yet. Add one above.</div>
+                </div>
+            }
+            else
+            {
+                <div class="table-responsive">
+                    <table class="table table-striped mb-0">
+                        <thead>
+                            <tr>
+                                <th style="width:48px;"></th>
+                                <th style="width:90px;">Order</th>
+                                <th style="width:220px;">Type</th>
+                                <th>JSON</th>
+                                <th style="width:180px;" class="text-end">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="sectionsTbody">
+                            @foreach (var s in Model.Sections)
+                            {
+                                <tr data-section-id="@s.Id">
+                                    <td class="text-muted" style="cursor:grab;" title="Drag to reorder">⋮⋮</td>
+                                    <td>@s.SortOrder</td>
+                                    <td>@s.SectionTypeName</td>
+                                    <td>
+                                        <pre class="mb-0" style="white-space:pre-wrap;max-height:140px;overflow:auto;">@s.SettingsJson</pre>
+                                    </td>
+                                    <td class="text-end">
+                                        <button type="button"
+                                                class="btn btn-sm btn-outline-primary"
+                                                onclick="openEdit(@s.Id, @s.SectionTypeId, @Html.Raw(System.Text.Json.JsonSerializer.Serialize(s.SettingsJson)))">
+                                            Edit
+                                        </button>
+
+                                        <form method="post"
+                                              class="d-inline"
+                                              asp-page-handler="Delete"
+                                              asp-route-pageId="@pageId"
+                                              asp-route-sectionId="@s.Id"
+                                              onsubmit="return confirm('Delete this section?');">
+                                            @Html.AntiForgeryToken()
+                                            <button type="submit" class="btn btn-sm btn-outline-danger">Delete</button>
+                                        </form>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
     </div>
 </div>
 
-<div class="card">
-    <div class="card-header d-flex align-items-center justify-content-between">
-        <div class="fw-semibold">Reorder Sections</div>
-        <div class="text-muted small">Drag rows to reorder, then click Save Order.</div>
-    </div>
+@* Edit Modal *@
+<div class="modal fade" id="editModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <form method="post" asp-page-handler="Update" asp-route-pageId="@pageId">
+                @Html.AntiForgeryToken()
 
-    <div class="card-body">
-        @if (Model.Sections.Count == 0)
-        {
-            <div class="alert alert-info mb-0">No sections yet.</div>
-        }
-        else
-        {
-            <div id="sectionsList" class="list-group">
-                @foreach (var s in Model.Sections)
-                {
-                    <div class="list-group-item" data-id="@s.Id">
-                        <div class="d-flex align-items-start justify-content-between gap-3">
-                            <div class="d-flex align-items-center gap-2">
-                                <span class="badge text-bg-secondary">#@s.SortOrder</span>
-                                <span class="fw-semibold">@s.SectionTypeName</span>
-                            </div>
+                <div class="modal-header">
+                    <h5 class="modal-title">Edit Section</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
 
-                            <div class="d-flex gap-2">
-                                <button type="button" class="btn btn-sm btn-outline-primary"
-                                        data-bs-toggle="collapse" data-bs-target="#edit-@s.Id">
-                                    Edit
-                                </button>
+                <div class="modal-body">
+                    <input type="hidden" asp-for="Edit.Id" />
 
-                                <form method="post" asp-page-handler="Delete" class="d-inline"
-                                      onsubmit="return confirm('Delete this section?');">
-                                    <input type="hidden" name="sectionId" value="@s.Id" />
-                                    <button type="submit" class="btn btn-sm btn-outline-danger">Delete</button>
-                                </form>
-
-                                <span class="btn btn-sm btn-outline-secondary cursor-grab" title="Drag to reorder">
-                                    ↕
-                                </span>
-                            </div>
+                    <div class="row g-3">
+                        <div class="col-md-4">
+                            <label class="form-label">Type</label>
+                            <select class="form-select" asp-for="Edit.SectionTypeId" asp-items="Model.SectionTypeOptions"></select>
+                            <span class="text-danger" asp-validation-for="Edit.SectionTypeId"></span>
                         </div>
 
-                        <div class="collapse mt-3" id="edit-@s.Id">
-                            <form method="post" asp-page-handler="Update">
-                                <input type="hidden" name="Edit.Id" value="@s.Id" />
-
-                                <div class="row g-2">
-                                    <div class="col-md-6">
-                                        <label class="form-label">Section Type</label>
-                                        <select class="form-select" name="Edit.SectionTypeId">
-                                            @foreach (var opt in Model.SectionTypeOptions)
-                                            {
-                                                var selected = opt.Value == s.SectionTypeId.ToString();
-                                                <option value="@opt.Value" selected="@(selected ? "selected" : null)">@opt.Text</option>
-                                            }
-                                        </select>
-                                    </div>
-
-                                    <div class="col-md-6 d-flex align-items-end justify-content-end">
-                                        <button type="submit" class="btn btn-primary">Save</button>
-                                    </div>
-
-                                    <div class="col-12">
-                                        <label class="form-label">SettingsJson</label>
-                                        <textarea class="form-control font-monospace" rows="8" name="Edit.SettingsJson">@s.SettingsJson</textarea>
-                                        <div class="form-text">Must be valid JSON. Empty will be saved as <code>{}</code>.</div>
-                                    </div>
-                                </div>
-                            </form>
+                        <div class="col-md-8">
+                            <label class="form-label">Settings JSON</label>
+                            <textarea class="form-control" asp-for="Edit.SettingsJson" rows="14" spellcheck="false"></textarea>
+                            <span class="text-danger" asp-validation-for="Edit.SettingsJson"></span>
+                            <small class="text-muted d-block mt-1">Must be valid JSON for the selected type.</small>
                         </div>
                     </div>
-                }
-            </div>
+                </div>
 
-            <div class="mt-3 d-flex justify-content-end gap-2">
-                <button id="saveOrderBtn" type="button" class="btn btn-outline-primary">
-                    Save Order
-                </button>
-            </div>
-        }
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save Changes</button>
+                </div>
+
+            </form>
+        </div>
     </div>
 </div>
 
-@section Scripts
-{
-    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
-    <script>
-        (function () {
-            const list = document.getElementById('sectionsList');
-            const saveBtn = document.getElementById('saveOrderBtn');
-            if (!list || !saveBtn) return;
+@section Scripts {
+    <partial name="_ValidationScriptsPartial" />
 
-            new Sortable(list, {
-                animation: 150,
-                handle: '.cursor-grab'
+    <script>
+        // ------------------------------
+        // Edit modal helper
+        // ------------------------------
+        function openEdit(id, sectionTypeId, settingsJson) {
+            // settingsJson arrives as a JSON string; normalize for textarea
+            const jsonText = (typeof settingsJson === "string") ? settingsJson : JSON.stringify(settingsJson, null, 2);
+
+            document.querySelector('[name="Edit.Id"]').value = id;
+            document.querySelector('[name="Edit.SectionTypeId"]').value = sectionTypeId;
+            document.querySelector('[name="Edit.SettingsJson"]').value = jsonText;
+
+            const modalEl = document.getElementById('editModal');
+            const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+            modal.show();
+        }
+
+        // ------------------------------
+        // Reorder (AJAX) with anti-forgery
+        // ------------------------------
+        function getAntiForgeryToken() {
+            // Razor Pages antiforgery token input is rendered by @Html.AntiForgeryToken()
+            const tokenInput = document.querySelector('input[name="__RequestVerificationToken"]');
+            return tokenInput ? tokenInput.value : "";
+        }
+
+        async function postReorder(orderedIds) {
+            const pageId = @pageId;
+
+            const resp = await fetch(`?handler=Reorder&pageId=${pageId}`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "RequestVerificationToken": getAntiForgeryToken()
+                },
+                body: JSON.stringify({ orderedIds })
             });
 
-            saveBtn.addEventListener('click', async function () {
-                const ids = Array.from(list.querySelectorAll('[data-id]'))
-                    .map(el => parseInt(el.getAttribute('data-id'), 10))
-                    .filter(n => !isNaN(n));
+            if (!resp.ok) {
+                console.error("Reorder failed:", resp.status);
+                return;
+            }
 
-                // ✅ Generate a correct Razor Pages handler URL
-                const url = '@Url.Page("./Sections", null, new { id = Model.Id, handler = "Reorder" })';
+            const data = await resp.json().catch(() => null);
+            if (!data || data.ok !== true) {
+                console.error("Reorder response not ok:", data);
+            }
+        }
 
-                const res = await fetch(url, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'RequestVerificationToken': getAntiForgeryToken()
-                    },
-                    body: JSON.stringify({ orderedIds: ids })
+        // Minimal drag/drop (HTML5) - production-safe baseline
+        // If you already use SortableJS, replace this with your existing integration
+        (function initReorder() {
+            const tbody = document.getElementById("sectionsTbody");
+            if (!tbody) return;
+
+            let draggingRow = null;
+
+            tbody.querySelectorAll("tr").forEach(row => {
+                row.draggable = true;
+
+                row.addEventListener("dragstart", e => {
+                    draggingRow = row;
+                    row.classList.add("table-warning");
+                    e.dataTransfer.effectAllowed = "move";
                 });
 
-                if (!res.ok) {
-                    const msg = await res.text();
-                    alert('Failed to save order. ' + msg);
-                    return;
-                }
+                row.addEventListener("dragend", () => {
+                    if (draggingRow) draggingRow.classList.remove("table-warning");
+                    draggingRow = null;
 
-                const json = await res.json();
-                if (!json.ok) {
-                    alert('Failed to save order.');
-                    return;
-                }
+                    // After drag ends, compute order and POST
+                    const orderedIds = Array.from(tbody.querySelectorAll("tr"))
+                        .map(r => parseInt(r.getAttribute("data-section-id"), 10))
+                        .filter(n => !isNaN(n));
 
-                window.location.reload();
+                    postReorder(orderedIds);
+                });
+
+                row.addEventListener("dragover", e => {
+                    e.preventDefault();
+                    const target = e.currentTarget;
+                    if (!draggingRow || target === draggingRow) return;
+
+                    const rect = target.getBoundingClientRect();
+                    const next = (e.clientY - rect.top) > (rect.height / 2);
+                    tbody.insertBefore(draggingRow, next ? target.nextSibling : target);
+                });
             });
-
-            function getAntiForgeryToken() {
-                const tokenInput = document.querySelector('input[name="__RequestVerificationToken"]');
-                return tokenInput ? tokenInput.value : '';
-            }
         })();
     </script>
-
-    @* Hidden antiforgery token for fetch() *@
-    <form method="post" style="display:none;">
-        @Html.AntiForgeryToken()
-    </form>
-
-    <style>
-        .cursor-grab {
-            cursor: grab;
-            user-select: none;
-        }
-
-        .font-monospace {
-            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-        }
-    </style>
 }

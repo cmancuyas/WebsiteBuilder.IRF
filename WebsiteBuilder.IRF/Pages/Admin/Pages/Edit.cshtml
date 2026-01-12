@@ -27,14 +27,14 @@
             @* Publish *@
             @if (Model.CanPublish)
             {
-                <button type="submit"
-                        class="btn btn-success"
-                        form="pageForm"
-                        formnovalidate
-                        asp-page-handler="Publish"
-                        asp-route-id="@Model.Input.Id">
-                    Publish
-                </button>
+                <form method="post"
+                      class="d-inline"
+                      asp-page-handler="Publish"
+                      asp-route-id="@Model.Input.Id">
+                    <button type="submit" class="btn btn-success">
+                        Publish
+                    </button>
+                </form>
             }
             else
             {
@@ -46,14 +46,14 @@
             @* Unpublish *@
             @if (Model.CanUnpublish)
             {
-                <button type="submit"
-                        class="btn btn-outline-warning"
-                        form="pageForm"
-                        formnovalidate
-                        asp-page-handler="Unpublish"
-                        asp-route-id="@Model.Input.Id">
-                    Unpublish
-                </button>
+                <form method="post"
+                      class="d-inline"
+                      asp-page-handler="Unpublish"
+                      asp-route-id="@Model.Input.Id">
+                    <button type="submit" class="btn btn-outline-warning">
+                        Unpublish
+                    </button>
+                </form>
             }
             else
             {
@@ -62,17 +62,17 @@
                 </button>
             }
 
-            @* Archive / Restore *@
+            @* Archive *@
             @if (Model.CanArchive)
             {
-                <button type="submit"
-                        class="btn btn-outline-danger"
-                        form="pageForm"
-                        formnovalidate
-                        asp-page-handler="Archive"
-                        asp-route-id="@Model.Input.Id">
-                    Archive
-                </button>
+                <form method="post"
+                      class="d-inline"
+                      asp-page-handler="Archive"
+                      asp-route-id="@Model.Input.Id">
+                    <button type="submit" class="btn btn-outline-danger">
+                        Archive
+                    </button>
+                </form>
             }
             else
             {
@@ -81,16 +81,17 @@
                 </button>
             }
 
+            @* Restore *@
             @if (Model.CanRestore)
             {
-                <button type="submit"
-                        class="btn btn-outline-secondary"
-                        form="pageForm"
-                        formnovalidate
-                        asp-page-handler="Restore"
-                        asp-route-id="@Model.Input.Id">
-                    Restore
-                </button>
+                <form method="post"
+                      class="d-inline"
+                      asp-page-handler="Restore"
+                      asp-route-id="@Model.Input.Id">
+                    <button type="submit" class="btn btn-outline-secondary">
+                        Restore
+                    </button>
+                </form>
             }
         </div>
     </div>

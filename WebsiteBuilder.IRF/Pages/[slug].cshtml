@@ -1,28 +1,28 @@
-﻿@page "/{**slug}"
+﻿@page
 @model WebsiteBuilder.IRF.Pages._slug_Model
+
+@{
+    Layout = "_Layout"; // adjust if needed
+}
 
 @if (Model.IsPreview)
 {
-    <div style="position:sticky;top:0;z-index:9999;background:#111827;color:#fff;padding:10px 14px;border-bottom:1px solid rgba(255,255,255,.15);">
-        <strong>Preview Mode</strong>
-        <span style="opacity:.85;">You are viewing an unpublished draft.</span>
+    <div class="alert alert-warning text-center rounded-0 mb-0">
+        <strong>Preview Mode</strong> — You are viewing draft content.
+        <a class="ms-3"
+           href="/Admin/Pages/Edit/@Model.PageEntity!.Id">
+            Back to Edit
+        </a>
     </div>
 }
 
-@* Basic page shell *@
-<main>
-    @* Render sections (draft in preview, published snapshot otherwise) *@
-    @foreach (var s in Model.RenderSections)
-    {
-        <section data-section-type-id="@s.SectionTypeId" data-section-type="@s.SectionTypeName">
-            @* Replace this placeholder with your actual section renderer *@
-            <div style="padding:16px 0;">
-                <div style="font-weight:600;">@s.SectionTypeName (@s.SectionTypeId)</div>
-                @if (!string.IsNullOrWhiteSpace(s.SettingsJson))
-                {
-                    <pre style="white-space:pre-wrap; word-break:break-word; background:#f6f8fa; padding:12px; border-radius:8px;">@s.SettingsJson</pre>
-                }
-            </div>
-        </section>
-    }
-</main>
+@foreach (var section in Model.RenderSections)
+{
+    @await Component.InvokeAsync(
+    "PageSection",
+        new
+        {
+            sectionTypeId = section.SectionTypeId,
+            settingsJson = section.SettingsJson
+        })
+}
