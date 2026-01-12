@@ -16,6 +16,7 @@ namespace WebsiteBuilder.IRF.DataAccess
         public DbSet<PageStatus> PageStatuses => Set<PageStatus>();
         public DbSet<PageRevision> PageRevisions => Set<PageRevision>();
         public DbSet<PageRevisionSection> PageRevisionSections => Set<PageRevisionSection>();
+        public DbSet<SectionType> SectionTypes => Set<SectionType>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -30,6 +31,7 @@ namespace WebsiteBuilder.IRF.DataAccess
             ConfigurePageStatuses(modelBuilder);
 
             ConfigurePageRevisions(modelBuilder);
+            ConfigurePageRevisionSections(modelBuilder);
         }
 
         private static void ConfigureBaseModelConventions(ModelBuilder modelBuilder)
@@ -187,6 +189,10 @@ namespace WebsiteBuilder.IRF.DataAccess
                     .HasForeignKey(x => new { x.TenantId, x.PageId })
                     .HasPrincipalKey(p => new { p.TenantId, p.Id })
                     .OnDelete(DeleteBehavior.Cascade);
+                b.HasOne(x => x.SectionType)
+                .WithMany()
+                .HasForeignKey(x => x.SectionTypeId)
+                .OnDelete(DeleteBehavior.Restrict);
             });
         }
 
@@ -230,5 +236,40 @@ namespace WebsiteBuilder.IRF.DataAccess
                 b.HasIndex(x => new { x.TenantId, x.PageRevisionId });
             });
         }
+        private static void ConfigurePageRevisionSections(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<PageRevisionSection>(b =>
+            {
+                b.HasKey(x => x.Id);
+                b.Property(x => x.Id).ValueGeneratedOnAdd();
+
+                b.Property(x => x.SortOrder)
+                    .HasMaxLength(200)
+                    .IsRequired();
+
+                b.Property(x => x.SettingsJson)
+                    .HasColumnType("nvarchar(max)")
+                    .IsRequired(false);
+
+                b.Property(x => x.SectionTypeId).IsRequired();
+
+                // Deterministic ordering per revision
+                b.HasIndex(x => new { x.TenantId, x.PageRevisionId, x.SortOrder }).IsUnique();
+
+                // Tenant-safe: PageRevisionSection(TenantId, PageRevisionId) -> PageRevision(TenantId, Id)
+                b.HasOne(x => x.PageRevision)
+                    .WithMany(r => r.Sections)
+                    .HasForeignKey(x => new { x.TenantId, x.PageRevisionId })
+                    .HasPrincipalKey(r => new { r.TenantId, r.Id })
+                    .OnDelete(DeleteBehavior.Cascade);
+
+                // SectionType FK
+                b.HasOne(x => x.SectionType)
+                    .WithMany()
+                    .HasForeignKey(x => x.SectionTypeId)
+                    .OnDelete(DeleteBehavior.Restrict);
+            });
+        }
+
     }
 }

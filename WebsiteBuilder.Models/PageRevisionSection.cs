@@ -7,19 +7,21 @@ namespace WebsiteBuilder.Models
     {
         [Key]
         public int Id { get; set; }
+
         public int PageRevisionId { get; set; }
         public PageRevision? PageRevision { get; set; }
 
         // Optional: reference to the live section row at the time of snapshot
         public int? SourcePageSectionId { get; set; }
 
-        // Snapshot fields (adjust names to match your PageSection model)
-        [MaxLength(100)]
-        public string TypeKey { get; set; } = string.Empty;
+        // ✅ Align with PageSection
+        public int SectionTypeId { get; set; }
+        public SectionType? SectionType { get; set; }
 
-        public int SortOrder { get; set; }
+        // ✅ Align with PageSection (your live model uses string)
+        public int SortOrder { get; set; } = 0;
 
-        public string? ContentJson { get; set; }
+        // ✅ Snapshot payload
         public string? SettingsJson { get; set; }
     }
 }

@@ -32,5 +32,10 @@ namespace WebsiteBuilder.Models
 
         // Optional: future-proofing—if you want separate “settings” without breaking existing rows
         public string? SettingsJson { get; set; }
+        [Required]
+        public int SectionTypeId { get; set; }
+        public SectionType? SectionType { get; set; }
+
+
     }
 }

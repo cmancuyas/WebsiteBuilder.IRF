@@ -8,9 +8,11 @@ namespace WebsiteBuilder.Models
 {
     public class ListingStatusHistory : BaseModel
     {
-        [Key]
         public int Id { get; set; }
-        public string OldStatus { get; set; } = string.Empty;
-        public string NewStatus { get; set; } = string.Empty;
+        public int ListingId { get; set; }
+        public int OldStatusId { get; set; }
+        public int NewStatusId { get; set; }
+        public string? Reason { get; set; }
     }
+
 }

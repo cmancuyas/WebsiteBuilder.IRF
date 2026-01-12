@@ -2,6 +2,7 @@
 using Microsoft.EntityFrameworkCore;
 using WebsiteBuilder.IRF.DataAccess;
 using WebsiteBuilder.IRF.Infrastructure.Middleware;
+using WebsiteBuilder.IRF.Infrastructure.Pages;
 using WebsiteBuilder.IRF.Infrastructure.Sections;
 using WebsiteBuilder.IRF.Infrastructure.Sections.Validators;
 using WebsiteBuilder.IRF.Infrastructure.Tenancy;
@@ -42,9 +43,6 @@ builder.Services.AddDbContext<DataContext>(options =>
         }
     )
 );
-
-builder.Services.AddScoped<ITenantNavigationService, TenantNavigationService>();
-
 // Identity
 builder.Services
     .AddIdentity<ApplicationUser, ApplicationRole>(options =>
@@ -68,6 +66,8 @@ builder.Services.AddAuthorization(options =>
 
 
 // Tenant services
+builder.Services.AddScoped<ITenantNavigationService, TenantNavigationService>();
+
 builder.Services.AddScoped<ITenantContext, TenantContext>();
 builder.Services.AddScoped<ITenantResolver, TenantResolver>();
 builder.Services.AddSingleton<ISectionRegistry, SectionRegistry>();
@@ -77,7 +77,7 @@ builder.Services.AddScoped<ISectionValidationService, SectionValidationService>(
 builder.Services.AddScoped<ISectionContentValidator, HeroSectionValidator>();
 builder.Services.AddScoped<ISectionContentValidator, TextSectionValidator>();
 builder.Services.AddScoped<ISectionContentValidator, GallerySectionValidator>();
-
+builder.Services.AddScoped<IPagePublishingService, PagePublishingService>();
 
 
 var app = builder.Build();

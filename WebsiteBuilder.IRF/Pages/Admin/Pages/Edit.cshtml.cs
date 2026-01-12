@@ -1,9 +1,10 @@
-using System.Security.Claims;
-using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.AspNetCore.Mvc.Rendering;
 using Microsoft.EntityFrameworkCore;
+using System.Security.Claims;
 using WebsiteBuilder.IRF.DataAccess;
+using WebsiteBuilder.IRF.Infrastructure.Pages;
 using WebsiteBuilder.IRF.Infrastructure.Tenancy;
 using WebsiteBuilder.IRF.ViewModels.Admin.Pages;
 using WebsiteBuilder.Models.Constants;
@@ -14,11 +15,13 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
     {
         private readonly DataContext _db;
         private readonly ITenantContext _tenant;
+        private readonly IPagePublishingService _pagePublishingService;
 
-        public EditModel(DataContext db, ITenantContext tenant)
+        public EditModel(DataContext db, ITenantContext tenant, IPagePublishingService pagePublishingService)
         {
             _db = db;
             _tenant = tenant;
+            _pagePublishingService = pagePublishingService;
         }
 
         [BindProperty]
@@ -182,117 +185,23 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             if (!_tenant.IsResolved)
                 return NotFound("Tenant not resolved.");
 
-            var page = await _db.Pages
-                .FirstOrDefaultAsync(p =>
-                    p.Id == id &&
-                    p.TenantId == _tenant.TenantId &&
-                    !p.IsDeleted, ct);
-
-            if (page == null)
-                return NotFound();
-
-            // Guardrails
-            if (string.IsNullOrWhiteSpace(page.Slug))
-            {
-                TempData["Error"] = "Cannot publish: Slug is required.";
-                return RedirectToPage(new { id });
-            }
-
-            var hasSections = await _db.PageSections
-                .AsNoTracking()
-                .AnyAsync(s => s.PageId == page.Id && !s.IsDeleted, ct);
-
-            if (!hasSections)
-            {
-                TempData["Error"] = "Cannot publish: This page has no sections. Add at least one section before publishing.";
-                return RedirectToPage(new { id });
-            }
-
-            if (page.PageStatusId == PageStatusIds.Archived)
-            {
-                TempData["Error"] = "Cannot publish: This page is archived. Restore it first.";
-                return RedirectToPage(new { id });
-            }
-
-            // FIX: declare userGuid ONCE and reuse it
+            // Actor
             var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
             Guid.TryParse(userId, out var userGuid);
 
-            // 1) Determine next version number for this page
-            var nextVersion = (await _db.PageRevisions
-                .AsNoTracking()
-                .Where(r => r.TenantId == _tenant.TenantId && r.PageId == page.Id)
-                .MaxAsync(r => (int?)r.VersionNumber, ct) ?? 0) + 1;
+            // Delegate ALL rules + transaction to the service
+            var result = await _pagePublishingService.PublishAsync(id, userGuid, ct);
 
-            // 2) Load live sections to snapshot
-            var liveSections = await _db.PageSections
-                .AsNoTracking()
-                .Where(s =>
-                    s.TenantId == _tenant.TenantId &&
-                    s.PageId == page.Id &&
-                    s.IsActive &&
-                    !s.IsDeleted)
-                .OrderBy(s => s.SortOrder)
-                .ThenBy(s => s.Id)
-                .ToListAsync(ct);
-
-            // 3) Create revision row
-            var revision = new WebsiteBuilder.Models.PageRevision
+            if (!result.Success)
             {
-                TenantId = _tenant.TenantId,
-                PageId = page.Id,
-                VersionNumber = nextVersion,
-                IsPublishedSnapshot = true,
-                CreatedAt = DateTime.UtcNow,
-                CreatedBy = userGuid,
-
-                Title = page.Title,
-                Slug = page.Slug,
-                LayoutKey = page.LayoutKey ?? string.Empty,
-                MetaTitle = page.MetaTitle ?? string.Empty,
-                MetaDescription = page.MetaDescription ?? string.Empty,
-                OgImageAssetId = page.OgImageAssetId,
-                PublishedAt = DateTime.UtcNow
-            };
-
-            // 4) Add section snapshots
-            foreach (var s in liveSections)
-            {
-                revision.Sections.Add(new WebsiteBuilder.Models.PageRevisionSection
-                {
-                    TenantId = _tenant.TenantId,
-                    SourcePageSectionId = s.Id,
-                    TypeKey = s.TypeKey,
-                    SortOrder = s.SortOrder,
-                    ContentJson = s.ContentJson,
-                    SettingsJson = s.SettingsJson
-                });
+                TempData["Error"] = string.Join(" ", result.Errors);
+                return RedirectToPage(new { id });
             }
-
-            _db.PageRevisions.Add(revision);
-
-            // 5) Persist snapshot now so we can store the ID on Page
-            await _db.SaveChangesAsync(ct);
-
-            // 6) Record published revision pointer on Page
-            // FIX: PublishedRevisionId (not PublishedVersionId)
-            page.PublishedRevisionId = revision.Id;
-
-            page.PageStatusId = PageStatusIds.Published;
-
-            if (page.PublishedAt == null)
-                page.PublishedAt = DateTime.UtcNow;
-
-            if (userGuid != Guid.Empty)
-                page.UpdatedBy = userGuid;
-
-            page.UpdatedAt = DateTime.UtcNow;
-
-            await _db.SaveChangesAsync(ct);
 
             TempData["Success"] = "Page published.";
             return RedirectToPage(new { id });
         }
+
 
         public async Task<IActionResult> OnPostUnpublishAsync(int id, CancellationToken ct = default)
         {
@@ -405,7 +314,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
         {
             SectionCount = await _db.PageSections
                 .AsNoTracking()
-                .CountAsync(s => s.PageId == pageId && !s.IsDeleted, ct);
+                .CountAsync(s => s.TenantId == _tenant.TenantId && s.PageId == pageId && !s.IsDeleted, ct);
         }
 
         private async Task BuildSelectListsAsync(int selectedPageStatusId, CancellationToken ct)
