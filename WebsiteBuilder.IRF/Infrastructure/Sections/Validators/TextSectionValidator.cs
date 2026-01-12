@@ -1,5 +1,6 @@
 ﻿using System.Text.Json;
 using WebsiteBuilder.Models;
+using WebsiteBuilder.IRF.Infrastructure.Sections;
 
 namespace WebsiteBuilder.IRF.Infrastructure.Sections.Validators
 {
@@ -9,7 +10,7 @@ namespace WebsiteBuilder.IRF.Infrastructure.Sections.Validators
 
         public SectionValidationResult Validate(PageSection section)
         {
-            if (!JsonValidationHelpers.TryParse(section.ContentJson, out JsonDocument? doc, out var parseError))
+            if (!JsonValidationHelpers.TryParse(section.SettingsJson, out JsonDocument? doc, out var parseError))
                 return SectionValidationResult.Fail(parseError!);
 
             using (doc!)

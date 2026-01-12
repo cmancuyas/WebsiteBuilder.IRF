@@ -32,10 +32,10 @@
     <div class="card-body">
         <form method="post" asp-page-handler="Add" class="row g-2 align-items-end">
             <div class="col-md-6">
-                <label class="form-label">Add new section (TypeKey)</label>
-                <input class="form-control" name="NewTypeKey" value="@Model.NewTypeKey" placeholder="e.g. hero, text, gallery" />
+                <label class="form-label">Add new section (Section Type)</label>
+                <select class="form-select" asp-for="NewSectionTypeId" asp-items="Model.SectionTypeOptions"></select>
                 <div class="form-text">
-                    TypeKey maps to a renderer partial later: <code>/Pages/Shared/Sections/{typeKey}.cshtml</code>
+                    Section type maps to your renderer registry via <code>SectionType.Name</code>.
                 </div>
             </div>
             <div class="col-md-6 text-end">
@@ -65,7 +65,7 @@
                         <div class="d-flex align-items-start justify-content-between gap-3">
                             <div class="d-flex align-items-center gap-2">
                                 <span class="badge text-bg-secondary">#@s.SortOrder</span>
-                                <span class="fw-semibold">@s.TypeKey</span>
+                                <span class="fw-semibold">@s.SectionTypeName</span>
                             </div>
 
                             <div class="d-flex gap-2">
@@ -92,8 +92,14 @@
 
                                 <div class="row g-2">
                                     <div class="col-md-6">
-                                        <label class="form-label">TypeKey</label>
-                                        <input class="form-control" name="Edit.TypeKey" value="@s.TypeKey" />
+                                        <label class="form-label">Section Type</label>
+                                        <select class="form-select" name="Edit.SectionTypeId">
+                                            @foreach (var opt in Model.SectionTypeOptions)
+                                            {
+                                                var selected = opt.Value == s.SectionTypeId.ToString();
+                                                <option value="@opt.Value" selected="@(selected ? "selected" : null)">@opt.Text</option>
+                                            }
+                                        </select>
                                     </div>
 
                                     <div class="col-md-6 d-flex align-items-end justify-content-end">
@@ -101,9 +107,9 @@
                                     </div>
 
                                     <div class="col-12">
-                                        <label class="form-label">ContentJson</label>
-                                        <textarea class="form-control font-monospace" rows="8" name="Edit.ContentJson">@s.ContentJson</textarea>
-                                        <div class="form-text">Must be valid JSON object/array. Empty will be saved as <code>{}</code>.</div>
+                                        <label class="form-label">SettingsJson</label>
+                                        <textarea class="form-control font-monospace" rows="8" name="Edit.SettingsJson">@s.SettingsJson</textarea>
+                                        <div class="form-text">Must be valid JSON. Empty will be saved as <code>{}</code>.</div>
                                     </div>
                                 </div>
                             </form>
@@ -140,7 +146,8 @@
                     .map(el => parseInt(el.getAttribute('data-id'), 10))
                     .filter(n => !isNaN(n));
 
-                const url = '@Url.Page("./Sections", new { id = Model.Id })' + '&handler=Reorder';
+                // ✅ Generate a correct Razor Pages handler URL
+                const url = '@Url.Page("./Sections", null, new { id = Model.Id, handler = "Reorder" })';
 
                 const res = await fetch(url, {
                     method: 'POST',

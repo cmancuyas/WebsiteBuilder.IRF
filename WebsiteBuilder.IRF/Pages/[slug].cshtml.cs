@@ -23,6 +23,18 @@ namespace WebsiteBuilder.IRF.Pages
         public WebsiteBuilder.Models.Page? PageEntity { get; private set; }
         public bool IsPreview { get; private set; }
 
+        // Unified render model so the view does not care whether it’s draft or published snapshot
+        public List<RenderSectionDto> RenderSections { get; private set; } = new();
+
+        public sealed class RenderSectionDto
+        {
+            public int SectionTypeId { get; init; }
+            public string? SectionTypeName { get; init; }
+            public int SortOrder { get; init; }
+            public string? SettingsJson { get; init; }
+        }
+
+
         // Catch-all route param: /{**slug}
         public async Task<IActionResult> OnGetAsync(string? slug)
         {
@@ -45,9 +57,9 @@ namespace WebsiteBuilder.IRF.Pages
             if (string.IsNullOrWhiteSpace(normalizedSlug))
                 normalizedSlug = "home";
 
-            var query = _db.Pages
+            // Load ONLY the page row here (do NOT include Sections; source differs by mode)
+            var pageQuery = _db.Pages
                 .AsNoTracking()
-                .Include(p => p.Sections)
                 .Where(p =>
                     p.TenantId == _tenant.TenantId &&
                     p.IsActive &&
@@ -57,28 +69,72 @@ namespace WebsiteBuilder.IRF.Pages
             if (!IsPreview)
             {
                 // Public visitors only see Published pages
-                query = query.Where(p => p.PageStatusId == PageStatusIds.Published);
+                pageQuery = pageQuery.Where(p => p.PageStatusId == PageStatusIds.Published);
             }
             else
             {
                 // Preview can see Draft + Published (but not Archived)
-                query = query.Where(p => p.PageStatusId != PageStatusIds.Archived);
+                pageQuery = pageQuery.Where(p => p.PageStatusId != PageStatusIds.Archived);
                 ApplyNoCacheHeaders();
             }
 
-            PageEntity = await query.FirstOrDefaultAsync(HttpContext.RequestAborted);
+            PageEntity = await pageQuery.FirstOrDefaultAsync(HttpContext.RequestAborted);
 
             if (PageEntity is null)
                 return NotFound();
 
-            PageEntity.Sections = (PageEntity.Sections ?? new List<PageSection>())
+            if (IsPreview)
+            {
+                // PREVIEW: ignore publish pointer, always render LIVE draft sections
+                var draftSections = await _db.PageSections
+                    .AsNoTracking()
+                    .Include(s => s.SectionType)
+                    .Where(s =>
+                        s.TenantId == _tenant.TenantId &&
+                        s.PageId == PageEntity.Id &&
+                        s.IsActive &&
+                        !s.IsDeleted)
+                    // PageSection.SortOrder in your codebase has appeared as string in places; keep a stable ordering:
+                    .OrderBy(s => s.SortOrder)
+                    .ThenBy(s => s.Id)
+                    .ToListAsync(HttpContext.RequestAborted);
+
+                RenderSections = draftSections.Select(s => new RenderSectionDto
+                {
+                    SectionTypeId = s.SectionTypeId,
+                    SectionTypeName = s.SectionType?.Name,
+                    SortOrder = s.SortOrder,
+                    SettingsJson = s.SettingsJson
+                }).ToList();
+
+                return Page();
+            }
+
+            // NORMAL: render PUBLISHED SNAPSHOT ONLY (single source of truth)
+            if (PageEntity.PublishedRevisionId == null)
+                return NotFound();
+
+            var publishedSections = await _db.PageRevisionSections
+                .AsNoTracking()
+                .Include(s => s.SectionType)
                 .Where(s =>
                     s.TenantId == _tenant.TenantId &&
+                    s.PageRevisionId == PageEntity.PublishedRevisionId.Value &&
                     s.IsActive &&
                     !s.IsDeleted)
+                // Your PageRevisionSection SortOrder may be int or string depending on the version;
+                // keep the ordering logic consistent with your actual model.
                 .OrderBy(s => s.SortOrder)
                 .ThenBy(s => s.Id)
-                .ToList();
+                .ToListAsync(HttpContext.RequestAborted);
+
+            RenderSections = publishedSections.Select(s => new RenderSectionDto
+            {
+                SectionTypeId = s.SectionTypeId,
+                SectionTypeName = s.SectionType?.Name,
+                SortOrder = s.SortOrder,
+                SettingsJson = s.SettingsJson
+            }).ToList();
 
             return Page();
         }

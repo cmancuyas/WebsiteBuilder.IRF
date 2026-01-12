@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
+using Microsoft.AspNetCore.Mvc.Rendering;
 using Microsoft.EntityFrameworkCore;
 using WebsiteBuilder.IRF.DataAccess;
 using WebsiteBuilder.IRF.Infrastructure.Sections;
@@ -29,7 +30,6 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             _validator = validator;
         }
 
-        // Route parameter: /admin/pages/edit/{id:int}/sections
         [BindProperty(SupportsGet = true)]
         public int Id { get; set; }
 
@@ -38,15 +38,16 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
 
         public List<PageSectionListItemVm> Sections { get; private set; } = new();
 
-        // Add form
+        // Add form (canonical)
         [BindProperty]
-        public string NewTypeKey { get; set; } = "Text";
+        public int NewSectionTypeId { get; set; }
 
-        // Update form
+        // Edit form (canonical)
         [BindProperty]
         public PageSectionEditVm Edit { get; set; } = new();
 
-        public IReadOnlyCollection<SectionDefinition> AvailableSectionTypes => _sections.All;
+        // Dropdown options from DB SectionTypes (Id/Name)
+        public List<SelectListItem> SectionTypeOptions { get; private set; } = new();
 
         public async Task<IActionResult> OnGetAsync()
         {
@@ -64,8 +65,18 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             PageTitle = page.Title;
             PageSlug = page.Slug;
 
+            var sectionTypes = await _db.SectionTypes
+                .AsNoTracking()
+                .OrderBy(st => st.Name)
+                .ToListAsync();
+
+            SectionTypeOptions = sectionTypes
+                .Select(st => new SelectListItem { Value = st.Id.ToString(), Text = st.Name })
+                .ToList();
+
             Sections = await _db.PageSections
                 .AsNoTracking()
+                .Include(s => s.SectionType)
                 .Where(s =>
                     s.PageId == Id &&
                     s.TenantId == _tenant.TenantId &&
@@ -76,28 +87,20 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                 {
                     Id = s.Id,
                     SortOrder = s.SortOrder,
-                    TypeKey = s.TypeKey,
-                    ContentJson = s.ContentJson
+                    SectionTypeId = s.SectionTypeId,
+                    SectionTypeName = s.SectionType != null ? s.SectionType.Name : $"Type #{s.SectionTypeId}",
+                    SettingsJson = s.SettingsJson
                 })
                 .ToListAsync();
 
             return Page();
         }
 
-        // POST: Add a new section at bottom
+        // POST: Add section
         public async Task<IActionResult> OnPostAddAsync()
         {
             if (!_tenant.IsResolved) return NotFound();
             if (Id <= 0) return NotFound();
-
-            var canonicalTypeKey = _sections.Canonicalize(NewTypeKey);
-            if (canonicalTypeKey is null)
-            {
-                TempData["Err"] = "Unknown section type.";
-                return RedirectToPage("./Sections", new { id = Id });
-            }
-
-            var def = _sections.All.First(x => x.TypeKey.Equals(canonicalTypeKey, StringComparison.OrdinalIgnoreCase));
 
             var pageExists = await _db.Pages.AnyAsync(p =>
                 p.Id == Id &&
@@ -106,7 +109,20 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
 
             if (!pageExists) return NotFound();
 
-            // Use increments of 10 to allow easy inserts later
+            var sectionType = await _db.SectionTypes
+                .AsNoTracking()
+                .FirstOrDefaultAsync(st => st.Id == NewSectionTypeId);
+
+            if (sectionType == null)
+            {
+                TempData["Err"] = "Invalid section type.";
+                return RedirectToPage("./Sections", new { id = Id });
+            }
+
+            var defaultJson = "{}";
+            if (_sections.TryGet(sectionType.Name, out var def))
+                defaultJson = def.DefaultJson ?? "{}";
+
             var maxOrder = await _db.PageSections
                 .Where(s => s.PageId == Id && s.TenantId == _tenant.TenantId && !s.IsDeleted)
                 .Select(s => (int?)s.SortOrder)
@@ -118,11 +134,8 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                 PageId = Id,
                 SortOrder = (maxOrder <= 0 ? 0 : maxOrder) + 10,
 
-                // Store canonical key (Hero/Text/Gallery) so runtime rendering matches your switch
-                TypeKey = def.TypeKey,
-
-                // Default JSON from registry
-                ContentJson = def.DefaultJson,
+                SectionTypeId = sectionType.Id,
+                SettingsJson = defaultJson,
 
                 IsDeleted = false,
                 CreatedBy = GetUserIdOrEmpty(),
@@ -136,7 +149,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             return RedirectToPage("./Sections", new { id = Id });
         }
 
-        // POST: Update a section (TypeKey + ContentJson)
+        // POST: Update section
         public async Task<IActionResult> OnPostUpdateAsync()
         {
             if (!_tenant.IsResolved) return NotFound();
@@ -156,32 +169,26 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
 
             if (entity is null) return NotFound();
 
-            var canonicalTypeKey = _sections.Canonicalize(Edit.TypeKey);
-            if (canonicalTypeKey is null)
+            var sectionType = await _db.SectionTypes
+                .AsNoTracking()
+                .FirstOrDefaultAsync(st => st.Id == Edit.SectionTypeId);
+
+            if (sectionType == null)
             {
-                TempData["Err"] = "Unknown section type.";
+                TempData["Err"] = "Invalid section type.";
                 return RedirectToPage("./Sections", new { id = Id });
             }
 
-            var json = (Edit.ContentJson ?? string.Empty).Trim();
-            if (string.IsNullOrWhiteSpace(json))
-            {
-                // If empty, use registry default JSON for this section type
-                if (_sections.TryGet(canonicalTypeKey, out var def))
-                    json = def.DefaultJson;
-                else
-                    json = "{}";
-            }
+            var json = (Edit.SettingsJson ?? "{}").Trim();
 
-            // Strict per-section validation
-            if (!_validator.Validate(canonicalTypeKey, json, out var error))
+            if (!_validator.Validate(sectionType.Name, json, out var error))
             {
                 TempData["Err"] = error;
                 return RedirectToPage("./Sections", new { id = Id });
             }
 
-            entity.TypeKey = canonicalTypeKey; // canonical store
-            entity.ContentJson = json;
+            entity.SectionTypeId = sectionType.Id;
+            entity.SettingsJson = json;
 
             entity.UpdatedBy = GetUserIdOrEmpty();
             entity.UpdatedAt = DateTime.UtcNow;
@@ -192,7 +199,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             return RedirectToPage("./Sections", new { id = Id });
         }
 
-        // POST: Soft delete a section
+        // POST: Delete section (soft)
         public async Task<IActionResult> OnPostDeleteAsync(int sectionId)
         {
             if (!_tenant.IsResolved) return NotFound();
@@ -216,16 +223,15 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             return RedirectToPage("./Sections", new { id = Id });
         }
 
-        // POST: Reorder sections (AJAX)
+        // POST: Reorder (AJAX)
         public async Task<IActionResult> OnPostReorderAsync([FromBody] PageSectionReorderVm vm)
         {
             if (!_tenant.IsResolved) return NotFound();
             if (Id <= 0) return NotFound();
 
-            if (vm?.OrderedIds is null || vm.OrderedIds.Count == 0)
+            if (vm?.OrderedIds == null || vm.OrderedIds.Count == 0)
                 return BadRequest(new { ok = false, message = "No IDs provided." });
 
-            // Load current sections for this page/tenant
             var sections = await _db.PageSections
                 .Where(s => s.PageId == Id && s.TenantId == _tenant.TenantId && !s.IsDeleted)
                 .ToListAsync();
@@ -234,19 +240,13 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                 return BadRequest(new { ok = false, message = "No sections to reorder." });
 
             var currentIds = sections.Select(s => s.Id).ToHashSet();
-
-            // Validate IDs belong to this page
             foreach (var sid in vm.OrderedIds)
-            {
                 if (!currentIds.Contains(sid))
                     return BadRequest(new { ok = false, message = "Invalid section id in reorder list." });
-            }
 
-            // Ensure the reorder list covers all sections
             if (vm.OrderedIds.Count != sections.Count)
                 return BadRequest(new { ok = false, message = "Reorder list does not match section count." });
 
-            // Apply new order: 10,20,30...
             var now = DateTime.UtcNow;
             var userId = GetUserIdOrEmpty();
 
@@ -263,7 +263,6 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             }
 
             await _db.SaveChangesAsync();
-
             return new JsonResult(new { ok = true });
         }
 

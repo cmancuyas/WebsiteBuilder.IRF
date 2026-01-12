@@ -1,8 +1,11 @@
+using System.Security.Claims;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.AspNetCore.Mvc.Rendering;
+using Microsoft.EntityFrameworkCore;
 using WebsiteBuilder.IRF.DataAccess;
 using WebsiteBuilder.IRF.Infrastructure.Sections;
+using WebsiteBuilder.IRF.Infrastructure.Tenancy;
 using WebsiteBuilder.Models;
 
 namespace WebsiteBuilder.IRF.Pages.Admin.Pages.Sections
@@ -10,15 +13,18 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages.Sections
     public class CreateModel : PageModel
     {
         private readonly DataContext _db;
+        private readonly ITenantContext _tenant;
         private readonly ISectionRegistry _registry;
         private readonly ISectionValidationService _validation;
 
         public CreateModel(
             DataContext db,
+            ITenantContext tenant,
             ISectionRegistry registry,
             ISectionValidationService validation)
         {
             _db = db;
+            _tenant = tenant;
             _registry = registry;
             _validation = validation;
         }
@@ -28,57 +34,132 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages.Sections
 
         public List<SelectListItem> SectionTypeOptions { get; private set; } = new();
 
-        public IActionResult OnGet(int pageId, string? typeKey = null)
+        public async Task<IActionResult> OnGetAsync(int pageId, string? typeKey = null)
         {
+            if (!_tenant.IsResolved)
+                return NotFound();
+
+            // Tenant guard: page must exist under tenant
+            var pageExists = await _db.Pages
+                .AsNoTracking()
+                .AnyAsync(p => p.Id == pageId && p.TenantId == _tenant.TenantId && !p.IsDeleted);
+
+            if (!pageExists)
+                return NotFound();
+
             Section.PageId = pageId;
             Section.SortOrder = 0;
 
-            // Default to first registry entry if not provided
-            var initialType = !string.IsNullOrWhiteSpace(typeKey)
-                ? typeKey!.Trim()
-                : _registry.All.FirstOrDefault()?.TypeKey ?? "Text";
+            // Determine initial type by name (typeKey)
+            var initialTypeKey = !string.IsNullOrWhiteSpace(typeKey)
+                ? typeKey.Trim()
+                : (_registry.All.FirstOrDefault()?.TypeKey ?? "Text");
 
-            Section.TypeKey = initialType;
+            // Resolve SectionType row by Name
+            var sectionType = await _db.SectionTypes
+                .AsNoTracking()
+                .OrderBy(st => st.Id)
+                .FirstOrDefaultAsync(st => st.Name == initialTypeKey);
 
-            BuildSectionTypeOptions(initialType);
+            // If not found, fallback to "Text" (must exist by migration)
+            if (sectionType == null)
+            {
+                sectionType = await _db.SectionTypes
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(st => st.Name == "Text");
+            }
+
+            if (sectionType == null)
+                return BadRequest("SectionTypes table is missing required seed rows (e.g., 'Text').");
+
+            Section.SectionTypeId = sectionType.Id;
+
+            // Default JSON from registry (if known); otherwise {}
+            var defaultJson = "{}";
+            if (_registry.TryGet(sectionType.Name, out var def))
+                defaultJson = def.DefaultJson ?? "{}";
+
+            Section.SettingsJson = defaultJson;
+
+            await BuildSectionTypeOptionsAsync(Section.SectionTypeId);
             return Page();
         }
 
         public async Task<IActionResult> OnPostAsync()
         {
-            BuildSectionTypeOptions(Section.TypeKey);
+            if (!_tenant.IsResolved)
+                return NotFound();
+
+            await BuildSectionTypeOptionsAsync(Section.SectionTypeId);
 
             if (!ModelState.IsValid)
                 return Page();
 
-            // Guard: only allow known types
-            if (!_registry.TryGet(Section.TypeKey, out _))
+            // Tenant guard: page must exist under tenant
+            var pageExists = await _db.Pages
+                .AsNoTracking()
+                .AnyAsync(p => p.Id == Section.PageId && p.TenantId == _tenant.TenantId && !p.IsDeleted);
+
+            if (!pageExists)
             {
-                ModelState.AddModelError(nameof(Section.TypeKey), "Unknown section type.");
+                ModelState.AddModelError(nameof(Section.PageId), "Page not found.");
                 return Page();
             }
 
-            var result = await _validation.ValidateAsync(Section.TypeKey, Section.ContentJson);
+            // Resolve SectionType from DB
+            var sectionType = await _db.SectionTypes
+                .AsNoTracking()
+                .FirstOrDefaultAsync(st => st.Id == Section.SectionTypeId);
+
+            if (sectionType == null)
+            {
+                ModelState.AddModelError(nameof(Section.SectionTypeId), "Unknown section type.");
+                return Page();
+            }
+
+            // Guard: only allow types known by registry (renderer + validator)
+            if (!_registry.TryGet(sectionType.Name, out _))
+            {
+                ModelState.AddModelError(nameof(Section.SectionTypeId), "Section type is not supported by the registry.");
+                return Page();
+            }
+
+            var json = (Section.SettingsJson ?? "{}").Trim();
+            var result = await _validation.ValidateAsync(sectionType.Name, json);
 
             if (!result.IsValid)
             {
                 foreach (var error in result.Errors)
-                    ModelState.AddModelError(nameof(Section.ContentJson), error);
+                    ModelState.AddModelError(nameof(Section.SettingsJson), error);
 
                 return Page();
             }
 
+            // Set tenant + audit fields
+            Section.TenantId = _tenant.TenantId;
+            Section.IsDeleted = false;
+
+            var userId = GetUserIdOrEmpty();
+            Section.CreatedAt = DateTime.UtcNow;
+            Section.CreatedBy = userId;
+
             _db.PageSections.Add(Section);
             await _db.SaveChangesAsync();
 
-            return RedirectToPage("/Admin/Pages/Sections", new { pageId = Section.PageId });
+            return RedirectToPage("/Admin/Pages/Sections", new { id = Section.PageId });
         }
 
         // Live JSON validation endpoint (AJAX)
-        public async Task<IActionResult> OnPostValidateJsonAsync([FromForm] string typeKey, [FromForm] string? contentJson)
+        public async Task<IActionResult> OnPostValidateJsonAsync([FromForm] int sectionTypeId, [FromForm] string? settingsJson)
         {
-            // Guard: unknown type -> invalid
-            if (!_registry.TryGet(typeKey, out _))
+            if (!_tenant.IsResolved)
+                return new JsonResult(new { isValid = false, errors = new[] { "Tenant not resolved." } });
+
+            var sectionType = await _db.SectionTypes
+                .AsNoTracking()
+                .FirstOrDefaultAsync(st => st.Id == sectionTypeId);
+
+            if (sectionType == null)
             {
                 return new JsonResult(new
                 {
@@ -87,7 +168,17 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages.Sections
                 });
             }
 
-            var result = await _validation.ValidateAsync(typeKey, contentJson);
+            // Guard: unknown type -> invalid (must exist in registry)
+            if (!_registry.TryGet(sectionType.Name, out _))
+            {
+                return new JsonResult(new
+                {
+                    isValid = false,
+                    errors = new[] { "Section type is not supported by the registry." }
+                });
+            }
+
+            var result = await _validation.ValidateAsync(sectionType.Name, settingsJson);
 
             return new JsonResult(new
             {
@@ -96,19 +187,27 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages.Sections
             });
         }
 
-        private void BuildSectionTypeOptions(string? selectedTypeKey)
+        private async Task BuildSectionTypeOptionsAsync(int selectedSectionTypeId)
         {
-            var selected = (selectedTypeKey ?? string.Empty).Trim();
+            var types = await _db.SectionTypes
+                .AsNoTracking()
+                .OrderBy(st => st.Name)
+                .ToListAsync();
 
-            SectionTypeOptions = _registry.All
-                .OrderBy(x => x.DisplayName)
-                .Select(x => new SelectListItem
+            SectionTypeOptions = types
+                .Select(st => new SelectListItem
                 {
-                    Value = x.TypeKey,
-                    Text = x.DisplayName,
-                    Selected = string.Equals(x.TypeKey, selected, StringComparison.OrdinalIgnoreCase)
+                    Value = st.Id.ToString(),
+                    Text = st.Name,
+                    Selected = st.Id == selectedSectionTypeId
                 })
                 .ToList();
+        }
+
+        private Guid GetUserIdOrEmpty()
+        {
+            var raw = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            return Guid.TryParse(raw, out var id) ? id : Guid.Empty;
         }
     }
 }

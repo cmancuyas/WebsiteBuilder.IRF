@@ -1,4 +1,5 @@
-﻿using System.Text.Json;
+﻿using System;
+using System.Text.Json;
 
 namespace WebsiteBuilder.IRF.Infrastructure.Sections
 {
@@ -11,13 +12,22 @@ namespace WebsiteBuilder.IRF.Infrastructure.Sections
 
             if (string.IsNullOrWhiteSpace(json))
             {
-                error = "ContentJson is required.";
+                error = "SettingsJson is required.";
                 return false;
             }
 
             try
             {
                 doc = JsonDocument.Parse(json);
+
+                if (doc.RootElement.ValueKind != JsonValueKind.Object)
+                {
+                    doc.Dispose();
+                    doc = null;
+                    error = "SettingsJson must be a JSON object (e.g., { ... }).";
+                    return false;
+                }
+
                 return true;
             }
             catch (Exception ex)
@@ -27,9 +37,9 @@ namespace WebsiteBuilder.IRF.Infrastructure.Sections
             }
         }
 
-        public static bool TryGetNonEmptyString(JsonElement root, string propName, out string? value)
+        public static bool TryGetNonEmptyString(JsonElement root, string propName, out string value)
         {
-            value = null;
+            value = string.Empty;
 
             if (!root.TryGetProperty(propName, out var el))
                 return false;

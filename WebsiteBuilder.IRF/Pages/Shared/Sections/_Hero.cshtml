@@ -5,38 +5,45 @@
     string? headline = null;
     string? subheadline = null;
 
-    if (!string.IsNullOrWhiteSpace(Model.ContentJson))
+    if (!string.IsNullOrWhiteSpace(Model.SettingsJson))
     {
         try
         {
-            using var doc = JsonDocument.Parse(Model.ContentJson);
+            using var doc = JsonDocument.Parse(Model.SettingsJson);
+            var root = doc.RootElement;
 
-            if (doc.RootElement.TryGetProperty("headline", out var h))
-                headline = h.GetString();
+            if (root.ValueKind == JsonValueKind.Object)
+            {
+                if (root.TryGetProperty("headline", out var h) && h.ValueKind == JsonValueKind.String)
+                    headline = h.GetString();
 
-            if (doc.RootElement.TryGetProperty("subheadline", out var s))
-                subheadline = s.GetString();
+                if (root.TryGetProperty("subheadline", out var sh) && sh.ValueKind == JsonValueKind.String)
+                    subheadline = sh.GetString();
+            }
         }
         catch
         {
-            <div class="alert alert-danger">
-                Invalid Hero JSON content.
-            </div>
-            return;
+            // ignore parse errors (validator should catch on publish)
         }
     }
 }
 
 <section class="py-5">
     <div class="container">
-        @if (!string.IsNullOrWhiteSpace(headline))
-        {
-            <h1 class="display-5 fw-bold mb-2">@headline</h1>
-        }
+        <div class="text-center">
+            @if (!string.IsNullOrWhiteSpace(headline))
+            {
+                <h1 class="display-5 fw-bold">@headline</h1>
+            }
+            else
+            {
+                <h1 class="display-6 fw-semibold text-muted">Hero</h1>
+            }
 
-        @if (!string.IsNullOrWhiteSpace(subheadline))
-        {
-            <p class="lead text-muted mb-0">@subheadline</p>
-        }
+            @if (!string.IsNullOrWhiteSpace(subheadline))
+            {
+                <p class="lead text-muted mt-3">@subheadline</p>
+            }
+        </div>
     </div>
 </section>

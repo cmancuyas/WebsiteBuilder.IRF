@@ -15,14 +15,15 @@ namespace WebsiteBuilder.IRF.Infrastructure.Sections
 
             if (string.IsNullOrWhiteSpace(typeKey))
             {
-                error = "TypeKey is required.";
+                error = "Section type is required.";
                 return false;
             }
 
             json = (json ?? string.Empty).Trim();
             if (string.IsNullOrWhiteSpace(json))
             {
-                error = "ContentJson is required.";
+                // Canonical payload name
+                error = "SettingsJson is required.";
                 return false;
             }
 
@@ -31,20 +32,18 @@ namespace WebsiteBuilder.IRF.Infrastructure.Sections
             {
                 doc = JsonDocument.Parse(json);
             }
-            catch (Exception)
+            catch
             {
-                error = "ContentJson must be valid JSON.";
+                error = "SettingsJson must be valid JSON.";
                 return false;
             }
 
-            // Require object at top-level for these sections (you can expand later)
             if (doc.RootElement.ValueKind != JsonValueKind.Object)
             {
-                error = "ContentJson must be a JSON object (e.g., { ... }).";
+                error = "SettingsJson must be a JSON object (e.g., { ... }).";
                 return false;
             }
 
-            // Per-section rules
             if (typeKey.Equals("Hero", StringComparison.OrdinalIgnoreCase))
                 return ValidateHero(doc, out error);
 
@@ -54,7 +53,7 @@ namespace WebsiteBuilder.IRF.Infrastructure.Sections
             if (typeKey.Equals("Gallery", StringComparison.OrdinalIgnoreCase))
                 return ValidateGallery(doc, out error);
 
-            // Unknown types: allow object (or flip this to false if you want strict enforcement)
+            // Unknown types: allow object (or change to false for strict enforcement)
             return true;
         }
 
@@ -62,7 +61,6 @@ namespace WebsiteBuilder.IRF.Infrastructure.Sections
         {
             error = string.Empty;
 
-            // Optional fields, but if present must be string
             if (doc.RootElement.TryGetProperty("headline", out var headline) &&
                 headline.ValueKind is not (JsonValueKind.String or JsonValueKind.Null))
             {
@@ -77,11 +75,6 @@ namespace WebsiteBuilder.IRF.Infrastructure.Sections
                 return false;
             }
 
-            // If you want at least one of them required:
-            // var hasHeadline = doc.RootElement.TryGetProperty("headline", out var h) && h.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(h.GetString());
-            // var hasSub = doc.RootElement.TryGetProperty("subheadline", out var s) && s.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(s.GetString());
-            // if (!hasHeadline && !hasSub) { error = "Hero requires headline or subheadline."; return false; }
-
             return true;
         }
 
@@ -89,7 +82,6 @@ namespace WebsiteBuilder.IRF.Infrastructure.Sections
         {
             error = string.Empty;
 
-            // Require "text" string (your _Text.cshtml reads "text")
             if (!doc.RootElement.TryGetProperty("text", out var text))
             {
                 error = "Text section requires property: text.";
@@ -115,7 +107,6 @@ namespace WebsiteBuilder.IRF.Infrastructure.Sections
         {
             error = string.Empty;
 
-            // Require images: [ { url: string, alt?: string } ]
             if (!doc.RootElement.TryGetProperty("images", out var images))
             {
                 error = "Gallery section requires property: images.";

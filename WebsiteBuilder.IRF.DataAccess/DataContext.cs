@@ -171,30 +171,47 @@ namespace WebsiteBuilder.IRF.DataAccess
                 b.HasKey(x => x.Id);
                 b.Property(x => x.Id).ValueGeneratedOnAdd();
 
-                b.Property(x => x.TypeKey)
-                    .HasMaxLength(100)
+                // ----------------------------
+                // Canonical fields (final)
+                // ----------------------------
+
+                // Canonical discriminator
+                b.Property(x => x.SectionTypeId)
                     .IsRequired();
 
-                // Optional: if you want ContentJson to be large, leave as nvarchar(max) by default.
-                // b.Property(x => x.ContentJson).HasColumnType("nvarchar(max)");
+                // Canonical payload
+                b.Property(x => x.SettingsJson)
+                    .HasColumnType("nvarchar(max)")
+                    .IsRequired(false);
 
-                // Deterministic ordering per page (not necessarily required to be unique, but usually desired)
-                // If you want to allow duplicate SortOrder values, change IsUnique(false).
+                // Optional label
+                b.Property(x => x.DisplayName)
+                    .HasMaxLength(200)
+                    .IsRequired(false);
+
+                // Deterministic ordering per page
                 b.HasIndex(x => new { x.TenantId, x.PageId, x.SortOrder }).IsUnique();
 
-                // Tenant-safe relationship:
-                // PageSection(TenantId, PageId) -> Page(TenantId, Id)
+                // ----------------------------
+                // Relationships
+                // ----------------------------
+
+                // Tenant-safe: PageSection(TenantId, PageId) -> Page(TenantId, Id)
                 b.HasOne(x => x.Page)
                     .WithMany(p => p.Sections)
                     .HasForeignKey(x => new { x.TenantId, x.PageId })
                     .HasPrincipalKey(p => new { p.TenantId, p.Id })
                     .OnDelete(DeleteBehavior.Cascade);
+
+                // SectionType FK
                 b.HasOne(x => x.SectionType)
-                .WithMany()
-                .HasForeignKey(x => x.SectionTypeId)
-                .OnDelete(DeleteBehavior.Restrict);
+                    .WithMany()
+                    .HasForeignKey(x => x.SectionTypeId)
+                    .OnDelete(DeleteBehavior.Restrict);
             });
         }
+
+
 
         private static void ConfigurePageStatuses(ModelBuilder modelBuilder)
         {

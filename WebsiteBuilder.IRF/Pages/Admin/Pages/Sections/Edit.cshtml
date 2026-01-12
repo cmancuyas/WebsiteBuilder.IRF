@@ -7,153 +7,90 @@
 
 <h2 class="mb-3">Edit Section</h2>
 
-<form method="post" id="sectionForm">
-    @Html.AntiForgeryToken()
-
+<form method="post">
     <input type="hidden" asp-for="Section.Id" />
-    <input type="hidden" asp-for="Section.PageId" />
 
-    <div class="row g-3">
-        <div class="col-md-4">
-            <label asp-for="Section.TypeKey" class="form-label">Section Type</label>
-            <select asp-for="Section.TypeKey" asp-items="Model.SectionTypeOptions" class="form-select" id="typeKey">
-            </select>
-            <span asp-validation-for="Section.TypeKey" class="text-danger"></span>
-        </div>
-
-        <div class="col-md-4">
-            <label asp-for="Section.SortOrder" class="form-label">Sort Order</label>
-            <input asp-for="Section.SortOrder" class="form-control" />
-            <span asp-validation-for="Section.SortOrder" class="text-danger"></span>
-        </div>
+    <div class="mb-3">
+        <label class="form-label">Section Type</label>
+        <select class="form-select" asp-for="Section.SectionTypeId" asp-items="Model.SectionTypeOptions" id="sectionTypeId"></select>
+        <span class="text-danger" asp-validation-for="Section.SectionTypeId"></span>
     </div>
 
-    <div class="mt-3">
-        <label asp-for="Section.ContentJson" class="form-label">Content JSON</label>
-        <textarea asp-for="Section.ContentJson"
-                  class="form-control font-monospace"
-                  rows="12"
-                  data-live-json-validate
-                  data-section-type="@Model.Section.TypeKey"
-                  data-validate-url="@Url.Page(null, null, new { handler = "ValidateJson" })"
-                  data-error-container="jsonErrors"
-                  data-status-container="jsonStatus"
-                  data-hints-container="jsonHints"
-                  data-autofmt-container="jsonAutoFmt">
-        </textarea>
-
-        <div id="jsonStatus" class="small mt-2"></div>
-        <div id="jsonErrors" class="mt-2"></div>
-        <div id="jsonHints" class="mt-3"></div>
-        <div id="jsonAutoFmt" class="small mt-1 text-muted"></div>
-
-        <span asp-validation-for="Section.ContentJson" class="text-danger"></span>
-
-        <!-- Live validation UI -->
-        <div class="mt-2" id="jsonStatus" style="display:none;"></div>
-        <ul class="mt-2 text-danger" id="jsonErrors" style="display:none;"></ul>
+    <div class="mb-3">
+        <label class="form-label">Sort Order</label>
+        <input class="form-control" asp-for="Section.SortOrder" />
+        <span class="text-danger" asp-validation-for="Section.SortOrder"></span>
     </div>
 
-    <div class="mt-4 d-flex gap-2">
-        <button type="submit"
-                class="btn btn-primary"
-                id="saveBtn"
-                data-save-button>
-            Save
-        </button>
+    <div class="mb-3">
+        <label class="form-label">SettingsJson</label>
+        <textarea class="form-control font-monospace" rows="10" asp-for="Section.SettingsJson" id="settingsJson"></textarea>
+        <span class="text-danger" asp-validation-for="Section.SettingsJson"></span>
+        <div class="form-text">Must be valid JSON object, e.g. <code>{}</code></div>
+    </div>
 
-        <a asp-page="/Admin/Pages/Sections"
-           asp-route-pageId="@Model.Section.PageId"
-           class="btn btn-secondary">Cancel</a>
+    <div class="d-flex gap-2">
+        <button type="submit" class="btn btn-primary">Save</button>
+        <a class="btn btn-outline-secondary" asp-page="/Admin/Pages/Sections">Cancel</a>
     </div>
 </form>
 
-@section Scripts {
+@section Scripts
+{
+    <partial name="_ValidationScriptsPartial" />
+
     <script>
         (function () {
-            const form = document.getElementById("sectionForm");
-            const typeKeyEl = document.getElementById("typeKey");
-            const jsonEl = document.getElementById("contentJson");
-            const statusEl = document.getElementById("jsonStatus");
-            const errorsEl = document.getElementById("jsonErrors");
-            const saveBtn = document.getElementById("saveBtn");
+            const ddl = document.getElementById('sectionTypeId');
+            const txt = document.getElementById('settingsJson');
 
-            const tokenEl = form.querySelector('input[name="__RequestVerificationToken"]');
+            if (!ddl || !txt) return;
 
-            let debounceHandle = null;
+            let timer = null;
 
-            function setStatus(ok, text) {
-                statusEl.style.display = "block";
-                statusEl.className = ok ? "text-success" : "text-danger";
-                statusEl.textContent = text;
-            }
+            function validateNow() {
+                const sectionTypeId = ddl.value;
+                const settingsJson = txt.value;
 
-            function setErrors(errors) {
-                errorsEl.innerHTML = "";
-                if (!errors || errors.length === 0) {
-                    errorsEl.style.display = "none";
-                    return;
-                }
-                errorsEl.style.display = "block";
-                for (const e of errors) {
-                    const li = document.createElement("li");
-                    li.textContent = e;
-                    errorsEl.appendChild(li);
-                }
-            }
+                const formData = new FormData();
+                formData.append('sectionTypeId', sectionTypeId);
+                formData.append('settingsJson', settingsJson);
 
-            function setSaveEnabled(enabled) {
-                saveBtn.disabled = !enabled;
-            }
-
-            async function validateNow() {
-                const typeKey = typeKeyEl.value || "";
-                const contentJson = jsonEl.value || "";
-
-                setStatus(true, "Validating...");
-                setErrors([]);
-                setSaveEnabled(false);
-
-                const fd = new FormData();
-                fd.append("typeKey", typeKey);
-                fd.append("contentJson", contentJson);
-
-                const resp = await fetch("?handler=ValidateJson", {
-                    method: "POST",
-                    body: fd,
-                    headers: {
-                        "RequestVerificationToken": tokenEl ? tokenEl.value : ""
+                fetch('?handler=ValidateJson', {
+                    method: 'POST',
+                    headers: { 'RequestVerificationToken': getAntiForgeryToken() },
+                    body: formData
+                })
+                .then(r => r.json())
+                .then(res => {
+                    if (!res.isValid && res.errors && res.errors.length) {
+                        console.warn('Section JSON invalid:', res.errors);
                     }
-                });
-
-                if (!resp.ok) {
-                    setStatus(false, "Validation endpoint error.");
-                    setSaveEnabled(true);
-                    return;
-                }
-
-                const data = await resp.json();
-
-                if (data.isValid) {
-                    setStatus(true, "JSON is valid for this section type.");
-                    setErrors([]);
-                    setSaveEnabled(true);
-                } else {
-                    setStatus(false, "JSON is invalid for this section type.");
-                    setErrors(data.errors || []);
-                    setSaveEnabled(false);
-                }
+                })
+                .catch(err => console.error(err));
             }
 
-            function scheduleValidation() {
-                if (debounceHandle) clearTimeout(debounceHandle);
-                debounceHandle = setTimeout(validateNow, 350);
+            ddl.addEventListener('change', validateNow);
+
+            txt.addEventListener('input', function () {
+                clearTimeout(timer);
+                timer = setTimeout(validateNow, 300);
+            });
+
+            function getAntiForgeryToken() {
+                const tokenInput = document.querySelector('input[name="__RequestVerificationToken"]');
+                return tokenInput ? tokenInput.value : '';
             }
-
-            jsonEl.addEventListener("input", scheduleValidation);
-            typeKeyEl.addEventListener("change", scheduleValidation);
-
-            scheduleValidation();
         })();
     </script>
+
+    <form method="post" style="display:none;">
+        @Html.AntiForgeryToken()
+    </form>
+
+    <style>
+        .font-monospace {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        }
+    </style>
 }

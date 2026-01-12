@@ -29,9 +29,6 @@ namespace WebsiteBuilder.IRF.Infrastructure.Sections
 
         public SectionRegistry()
         {
-            // IMPORTANT:
-            // - Use canonical TypeKey values that match what your runtime page switch expects: "Hero", "Text", "Gallery".
-            // - Dictionary is case-insensitive so "hero", "HERO" all resolve to "Hero".
             _map = new Dictionary<string, SectionDefinition>(StringComparer.OrdinalIgnoreCase)
             {
                 ["Hero"] = new SectionDefinition(
@@ -48,8 +45,6 @@ namespace WebsiteBuilder.IRF.Infrastructure.Sections
                     DefaultJson: """{"text":"Your content here."}"""
                 ),
 
-                // THIS is where you place your line:
-                // ["Gallery"] = new SectionDefinition("Gallery", "Image Gallery", "Shared/Sections/_Gallery", ...);
                 ["Gallery"] = new SectionDefinition(
                     TypeKey: "Gallery",
                     DisplayName: "Image Gallery",

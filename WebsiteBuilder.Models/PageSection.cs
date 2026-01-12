@@ -8,7 +8,8 @@ namespace WebsiteBuilder.Models
         [Key]
         public int Id { get; set; }
 
-        // TenantBaseModel should already carry TenantId, IsActive, IsDeleted, audit fields, etc.
+        // TenantBaseModel provides:
+        // TenantId, IsActive, IsDeleted, CreatedAt, CreatedBy, UpdatedAt, UpdatedBy
 
         [Required]
         public int PageId { get; set; }
@@ -18,24 +19,18 @@ namespace WebsiteBuilder.Models
         // Deterministic rendering order
         public int SortOrder { get; set; } = 0;
 
-        // Stable type discriminator for renderer (Hero, Text, Gallery, CTA, etc.)
+        // Canonical discriminator (FK → SectionTypes)
         [Required]
-        [MaxLength(100)]
-        public string TypeKey { get; set; } = "Text";
+        public int SectionTypeId { get; set; }
 
-        // Optional: allow per-section title/label (useful for admin UI)
+        public SectionType? SectionType { get; set; }
+
+        // Optional: label for admin UI
         [MaxLength(200)]
         public string? DisplayName { get; set; }
 
-        // JSON payload (use this for both content + settings if you want to keep it simple)
-        public string? ContentJson { get; set; }
-
-        // Optional: future-proofing—if you want separate “settings” without breaking existing rows
+        // Canonical JSON payload
+        // Must be valid JSON object (validated at service layer)
         public string? SettingsJson { get; set; }
-        [Required]
-        public int SectionTypeId { get; set; }
-        public SectionType? SectionType { get; set; }
-
-
     }
 }

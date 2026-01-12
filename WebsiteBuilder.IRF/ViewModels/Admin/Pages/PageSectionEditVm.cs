@@ -7,9 +7,11 @@ namespace WebsiteBuilder.IRF.ViewModels.Admin.Pages
         [Required]
         public int Id { get; set; }
 
-        [Required, MaxLength(100)]
-        public string TypeKey { get; set; } = string.Empty;
+        // Canonical discriminator
+        [Required]
+        public int SectionTypeId { get; set; }
 
-        public string? ContentJson { get; set; }
+        // Canonical payload
+        public string? SettingsJson { get; set; }
     }
 }

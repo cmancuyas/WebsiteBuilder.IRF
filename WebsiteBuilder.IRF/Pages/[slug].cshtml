@@ -1,80 +1,28 @@
 ﻿@page "/{**slug}"
 @model WebsiteBuilder.IRF.Pages._slug_Model
 
-@using WebsiteBuilder.IRF.Infrastructure.Sections
-@inject ISectionRegistry SectionRegistry
-
-@{
-    // Cache once for null-safety and cleaner code.
-    var page = Model.PageEntity;
-
-    ViewData["Title"] = page?.MetaTitle
-        ?? page?.Title
-        ?? "Page";
-}
-
-@if (page == null)
-{
-    <div class="container py-5">
-        <div class="alert alert-warning">
-            Page not found.
-        </div>
-    </div>
-    return;
-}
-
 @if (Model.IsPreview)
 {
-    var slugValue = (page.Slug ?? "home").Trim().Trim('/');
-    var exitUrl = slugValue.Equals("home", StringComparison.OrdinalIgnoreCase)
-        ? "/"
-        : "/" + slugValue;
-
-    <div class="alert alert-warning d-flex justify-content-between align-items-center">
-        <div>
-            <strong>Preview Mode</strong>
-            <span class="ms-2">This is not publicly visible.</span>
-        </div>
-
-        <a class="btn btn-sm btn-outline-dark" href="@exitUrl">
-            Exit preview
-        </a>
+    <div style="position:sticky;top:0;z-index:9999;background:#111827;color:#fff;padding:10px 14px;border-bottom:1px solid rgba(255,255,255,.15);">
+        <strong>Preview Mode</strong>
+        <span style="opacity:.85;">You are viewing an unpublished draft.</span>
     </div>
 }
 
-<div class="container py-4">
-    <h1 class="mb-4">page.Title</h1>
-
-    @if (page.Sections == null || !page.Sections.Any())
+@* Basic page shell *@
+<main>
+    @* Render sections (draft in preview, published snapshot otherwise) *@
+    @foreach (var s in Model.RenderSections)
     {
-        <div class="alert alert-info">
-            No sections available.
-        </div>
-    }
-    else
-    {
-        foreach (var s in page.Sections.OrderBy(x => x.SortOrder))
-        {
-            <div class="border rounded p-3 mb-3">
-                <div class="fw-bold mb-2">
-                    Section type: @s.TypeKey
-                    <span class="text-muted">• Order: @s.SortOrder</span>
-                </div>
-
-                @if (string.IsNullOrWhiteSpace(s.ContentJson))
+        <section data-section-type-id="@s.SectionTypeId" data-section-type="@s.SectionTypeName">
+            @* Replace this placeholder with your actual section renderer *@
+            <div style="padding:16px 0;">
+                <div style="font-weight:600;">@s.SectionTypeName (@s.SectionTypeId)</div>
+                @if (!string.IsNullOrWhiteSpace(s.SettingsJson))
                 {
-                    <div class="text-muted">No content.</div>
-                }
-                else if (SectionRegistry.TryGet(s.TypeKey, out var def))
-                {
-                    <partial name="@def.PartialViewPath" model="s" />
-                }
-                else
-                {
-                    <div class="fw-bold mb-2">Unknown section: @s.TypeKey</div>
-                    <pre class="mb-0">@s.ContentJson</pre>
+                    <pre style="white-space:pre-wrap; word-break:break-word; background:#f6f8fa; padding:12px; border-radius:8px;">@s.SettingsJson</pre>
                 }
             </div>
-        }
+        </section>
     }
-</div>
+</main>

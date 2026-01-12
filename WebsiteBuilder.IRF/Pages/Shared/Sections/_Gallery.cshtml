@@ -3,11 +3,13 @@
 
 @{
     JsonDocument? doc = null;
+
     try
     {
-        if (!string.IsNullOrWhiteSpace(Model.ContentJson))
+        // ✅ Phase 2 canonical payload
+        if (!string.IsNullOrWhiteSpace(Model.SettingsJson))
         {
-            doc = JsonDocument.Parse(Model.ContentJson);
+            doc = JsonDocument.Parse(Model.SettingsJson);
         }
     }
     catch
@@ -25,13 +27,20 @@
         {
             if (item.ValueKind != JsonValueKind.Object) continue;
 
-            var url = item.TryGetProperty("url", out var u) && u.ValueKind == JsonValueKind.String ? u.GetString() : null;
-            var alt = item.TryGetProperty("alt", out var a) && a.ValueKind == JsonValueKind.String ? a.GetString() : null;
+            var url = item.TryGetProperty("url", out var u) && u.ValueKind == JsonValueKind.String
+                ? u.GetString()
+                : null;
+
+            var alt = item.TryGetProperty("alt", out var a) && a.ValueKind == JsonValueKind.String
+                ? a.GetString()
+                : null;
 
             if (!string.IsNullOrWhiteSpace(url))
                 images.Add((url!, alt));
         }
     }
+
+    doc?.Dispose();
 }
 
 <section class="py-4">
@@ -47,7 +56,7 @@
                 {
                     <div class="col-6 col-md-4 col-lg-3">
                         <div class="border rounded overflow-hidden">
-                            <img src="@img.Url" alt="@img.Alt" class="img-fluid d-block" />
+                            <img src="@img.Url" alt="@(img.Alt ?? string.Empty)" class="img-fluid d-block" />
                         </div>
                     </div>
                 }

@@ -43,7 +43,7 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
             if (sections.Count == 0)
                 return PublishResult.Fail("Cannot publish: this page has no sections.");
 
-            // Resolve SectionTypeId → Name ONCE (deterministic, no lazy loading)
+            // Resolve SectionTypeId -> Name once
             var sectionTypeIds = sections.Select(s => s.SectionTypeId).Distinct().ToList();
 
             var sectionTypeNames = await _db.SectionTypes
@@ -56,8 +56,9 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
             {
                 var typeKey = sectionTypeNames.TryGetValue(s.SectionTypeId, out var name)
                     ? name
-                    : s.SectionTypeId.ToString();
+                    : s.SectionTypeId.ToString(); // fallback only
 
+                // Validate SettingsJson payload (service-layer hard rule)
                 var validation = await _sectionValidation.ValidateAsync(typeKey, s.SettingsJson);
 
                 if (!validation.IsValid)
@@ -78,6 +79,8 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
                         .MaxAsync(r => (int?)r.VersionNumber, ct)
                     ?? 0) + 1;
 
+                var now = DateTime.UtcNow;
+
                 var revision = new PageRevision
                 {
                     TenantId = _tenant.TenantId,
@@ -91,11 +94,11 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
                     MetaTitle = page.MetaTitle ?? string.Empty,
                     MetaDescription = page.MetaDescription ?? string.Empty,
                     OgImageAssetId = page.OgImageAssetId,
-                    PublishedAt = DateTime.UtcNow,
+                    PublishedAt = now,
 
                     IsActive = true,
                     IsDeleted = false,
-                    CreatedAt = DateTime.UtcNow,
+                    CreatedAt = now,
                     CreatedBy = actorUserId
                 };
 
@@ -112,17 +115,20 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
 
                         IsActive = true,
                         IsDeleted = false,
-                        CreatedAt = DateTime.UtcNow,
+                        CreatedAt = now,
                         CreatedBy = actorUserId
                     });
                 }
 
+                // 1) Save revision first to get real revision.Id
                 _db.PageRevisions.Add(revision);
+                await _db.SaveChangesAsync(ct);
 
+                // 2) Update canonical publish pointer on Page (now revision.Id is real)
                 page.PublishedRevisionId = revision.Id;
                 page.PublishedAt = revision.PublishedAt;
                 page.PageStatusId = PageStatusIds.Published;
-                page.UpdatedAt = DateTime.UtcNow;
+                page.UpdatedAt = now;
                 page.UpdatedBy = actorUserId;
 
                 await _db.SaveChangesAsync(ct);
@@ -136,6 +142,5 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
                 throw;
             }
         }
-
     }
 }

@@ -4,7 +4,11 @@
     {
         public int Id { get; set; }
         public int SortOrder { get; set; }
-        public string TypeKey { get; set; } = string.Empty;
-        public string? ContentJson { get; set; }
+
+        public int SectionTypeId { get; set; }
+        public string SectionTypeName { get; set; } = string.Empty;
+
+        // Used to populate the editor textarea in the UI
+        public string? SettingsJson { get; set; }
     }
 }
