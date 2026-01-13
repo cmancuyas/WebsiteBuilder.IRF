@@ -4,19 +4,14 @@
 @{
     string? text = null;
 
-    // ✅ Phase 2 canonical payload
     if (!string.IsNullOrWhiteSpace(Model.SettingsJson))
     {
         try
         {
             using var doc = JsonDocument.Parse(Model.SettingsJson);
 
-            if (doc.RootElement.ValueKind == JsonValueKind.Object &&
-                doc.RootElement.TryGetProperty("text", out var t) &&
-                t.ValueKind == JsonValueKind.String)
-            {
+            if (doc.RootElement.TryGetProperty("text", out var t))
                 text = t.GetString();
-            }
         }
         catch
         {

@@ -22,7 +22,7 @@
                     @(TenantContext.IsResolved? TenantContext.Host: "WebsiteBuilder.IRF")
                 </a>
 
-                <!-- FIX: Proper bootstrap toggler attributes -->
+                <!-- Proper bootstrap toggler attributes -->
                 <button class="navbar-toggler" type="button"
                         data-bs-toggle="collapse"
                         data-bs-target="#mainNavbar"
@@ -33,8 +33,13 @@
                 </button>
 
                 <div class="navbar-collapse collapse d-sm-inline-flex justify-content-between" id="mainNavbar">
+
                     @{
-                        var navItems = await NavService.GetNavAsync();
+                        // Avoid DB/cache calls for Admin routes
+                        var isAdmin = Context.Request.Path.StartsWithSegments("/Admin");
+                        var navItems = isAdmin
+                        ? Array.Empty<NavItem>()
+                        : await NavService.GetNavAsync(Context.RequestAborted);
                     }
 
                     <ul class="navbar-nav flex-grow-1">
@@ -45,6 +50,7 @@
                             </li>
                         }
                     </ul>
+
                 </div>
 
             </div>

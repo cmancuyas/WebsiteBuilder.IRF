@@ -16,12 +16,14 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
         private readonly DataContext _db;
         private readonly ITenantContext _tenant;
         private readonly IPagePublishingService _pagePublishingService;
+        private readonly ITenantNavigationService _nav;
 
-        public EditModel(DataContext db, ITenantContext tenant, IPagePublishingService pagePublishingService)
+        public EditModel(DataContext db, ITenantContext tenant, IPagePublishingService pagePublishingService, ITenantNavigationService nav)
         {
             _db = db;
             _tenant = tenant;
             _pagePublishingService = pagePublishingService;
+            _nav = nav;
         }
 
         [BindProperty]
@@ -147,6 +149,23 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             if (!ModelState.IsValid)
                 return Page();
 
+            var oldTitle = page.Title;
+            var oldSlug = page.Slug;
+            var oldShow = page.ShowInNavigation;
+            var oldOrder = page.NavigationOrder;
+
+            var navChanged =
+                !string.Equals(oldTitle, page.Title, StringComparison.Ordinal) ||
+                !string.Equals(oldSlug, page.Slug, StringComparison.Ordinal) ||
+                oldShow != page.ShowInNavigation ||
+                oldOrder != page.NavigationOrder;
+
+                        await _db.SaveChangesAsync(ct);
+
+                        if (navChanged)
+                            _nav.Invalidate();
+
+
             // Map fields
             page.Title = Input.Title?.Trim() ?? string.Empty;
             page.Slug = (Input.Slug ?? string.Empty).Trim().Trim('/');
@@ -197,7 +216,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                 TempData["Error"] = string.Join(" ", result.Errors);
                 return RedirectToPage(new { id });
             }
-
+            _nav.Invalidate();
             TempData["Success"] = "Page published.";
             return RedirectToPage(new { id });
         }
@@ -232,7 +251,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             page.UpdatedAt = DateTime.UtcNow;
 
             await _db.SaveChangesAsync(ct);
-
+            _nav.Invalidate();
             TempData["Success"] = "Page moved back to Draft.";
             return RedirectToPage(new { id });
         }

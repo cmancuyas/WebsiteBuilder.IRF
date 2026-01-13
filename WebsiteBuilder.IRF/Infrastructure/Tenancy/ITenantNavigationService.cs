@@ -3,5 +3,6 @@
     public interface ITenantNavigationService
     {
         Task<IReadOnlyList<NavItem>> GetNavAsync(CancellationToken ct = default);
+        void Invalidate();
     }
 }

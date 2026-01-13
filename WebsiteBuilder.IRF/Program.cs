@@ -66,6 +66,7 @@ builder.Services.AddAuthorization(options =>
 
 
 // Tenant services
+builder.Services.AddMemoryCache();
 builder.Services.AddScoped<ITenantNavigationService, TenantNavigationService>();
 
 builder.Services.AddScoped<ITenantContext, TenantContext>();
@@ -78,7 +79,6 @@ builder.Services.AddScoped<ISectionContentValidator, HeroSectionValidator>();
 builder.Services.AddScoped<ISectionContentValidator, TextSectionValidator>();
 builder.Services.AddScoped<ISectionContentValidator, GallerySectionValidator>();
 builder.Services.AddScoped<IPagePublishingService, PagePublishingService>();
-
 
 var app = builder.Build();
 
@@ -113,5 +113,8 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapRazorPages();
+
+// IMPORTANT: fallback to CMS page renderer
+app.MapFallbackToPage("/{slug?}", "/[slug]");
 
 app.Run();

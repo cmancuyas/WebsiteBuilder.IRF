@@ -13,11 +13,13 @@ namespace WebsiteBuilder.IRF.Pages
     {
         private readonly DataContext _db;
         private readonly ITenantContext _tenant;
+        private readonly IWebHostEnvironment _env;
 
-        public _slug_Model(DataContext db, ITenantContext tenant)
+        public _slug_Model(DataContext db, ITenantContext tenant, IWebHostEnvironment env)
         {
             _db = db;
             _tenant = tenant;
+            _env = env;
         }
 
         public WebsiteBuilder.Models.Page? PageEntity { get; private set; }
@@ -44,7 +46,8 @@ namespace WebsiteBuilder.IRF.Pages
 
             // Hard stop: never allow anonymous preview
             if (previewRequested && !IsPreview)
-                return Forbid();
+             //   return Forbid();
+                return NotFound(); // or Unauthorized()
 
             var normalizedSlug = NormalizeSlug(slug);
             if (string.IsNullOrWhiteSpace(normalizedSlug))
@@ -136,6 +139,10 @@ namespace WebsiteBuilder.IRF.Pages
 
         private bool UserCanPreview()
         {
+            // Temporary: allow preview without login ONLY in Development
+            if (_env.IsDevelopment())
+                return true;
+
             if (User.Identity?.IsAuthenticated != true)
                 return false;
 
@@ -147,6 +154,7 @@ namespace WebsiteBuilder.IRF.Pages
 
             return false;
         }
+
 
         private void ApplyNoCacheHeaders()
         {
