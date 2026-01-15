@@ -354,17 +354,59 @@ namespace WebsiteBuilder.IRF.DataAccess
         {
             modelBuilder.Entity<MediaCleanupRunLog>(b =>
             {
+                b.ToTable("MediaCleanupRunLogs");
+
                 b.HasKey(x => x.Id);
 
+                // Indexes for dashboard lookups / "latest run" queries
                 b.HasIndex(x => new { x.TenantId, x.StartedAtUtc });
                 b.HasIndex(x => new { x.TenantId, x.Status, x.StartedAtUtc });
 
-                b.Property(x => x.RunType).HasMaxLength(50);
-                b.Property(x => x.Status).HasMaxLength(30);
-                b.Property(x => x.ErrorSummary).HasMaxLength(2000);
-                b.Property(x => x.Notes).HasMaxLength(4000);
+                // TenantId MUST be Guid (uniqueidentifier)
+                b.Property(x => x.TenantId)
+                    .IsRequired();
+
+                // RunType / Status should be required and constrained
+                b.Property(x => x.RunType)
+                    .IsRequired()
+                    .HasMaxLength(50)
+                    .HasDefaultValue("Nightly");
+
+                b.Property(x => x.Status)
+                    .IsRequired()
+                    .HasMaxLength(30)
+                    .HasDefaultValue("Running");
+
+                // UTC timestamps
+                b.Property(x => x.StartedAtUtc)
+                    .IsRequired()
+                    .HasDefaultValueSql("SYSUTCDATETIME()");
+
+                b.Property(x => x.FinishedAtUtc)
+                    .IsRequired(false);
+
+                // Diagnostics
+                b.Property(x => x.ErrorSummary)
+                    .HasMaxLength(2000);
+
+                b.Property(x => x.Notes)
+                    .HasMaxLength(4000);
+
+                // If your BaseModel conventions already configure these, you can remove this block.
+                b.Property(x => x.IsActive)
+                    .HasDefaultValue(true);
+
+                b.Property(x => x.IsDeleted)
+                    .HasDefaultValue(false);
+
+                b.Property(x => x.CreatedAt)
+                    .HasDefaultValueSql("SYSUTCDATETIME()");
+
+                b.Property(x => x.RowVersion)
+                    .IsRowVersion();
             });
         }
+
         private static void ConfigureMediaAlerts(ModelBuilder modelBuilder)
         {
             modelBuilder.Entity<MediaAlert>(b =>

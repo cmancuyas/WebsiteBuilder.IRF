@@ -3,24 +3,42 @@
 
 @{
     ViewData["Title"] = "Media Library";
+    var isTrash = Model.IsTrashView;
 }
 
 <div class="d-flex align-items-center justify-content-between mb-3">
     <div>
         <h2 class="mb-0">Media Library</h2>
-        <div class="text-muted small">Active media only. Deleted items are in Trash.</div>
+        <div class="text-muted small">
+            @if (isTrash)
+            {
+                <span>Trash (deleted media). Restore before cleanup runs.</span>
+            }
+            else
+            {
+                <span>Active media only. Deleted items are in Trash.</span>
+            }
+        </div>
     </div>
 
     <div class="d-flex gap-2">
         <a class="btn btn-outline-secondary" asp-page="/Admin/Media/Index">Home</a>
         <a class="btn btn-primary" asp-page="/Admin/Media/Upload">Upload</a>
-        <a class="btn btn-outline-danger" asp-page="/Admin/Media/Trash">
-            Trash
-            @if (Model.DeletedCount > 0)
-            {
-                <span class="badge bg-danger ms-1">@Model.DeletedCount</span>
-            }
-        </a>
+
+        @if (isTrash)
+        {
+            <a class="btn btn-outline-secondary" asp-page="/Admin/Media/List">Active</a>
+        }
+        else
+        {
+            <a class="btn btn-outline-danger" asp-page="/Admin/Media/List" asp-route-view="deleted">
+                Trash
+                @if (Model.DeletedCount > 0)
+                {
+                    <span class="badge bg-danger ms-1">@Model.DeletedCount</span>
+                }
+            </a>
+        }
     </div>
 </div>
 
@@ -37,11 +55,32 @@
 else if (Model.Media.Count == 0)
 {
     <div class="alert alert-info mb-0">
-        No media found. Upload files to build your library.
+        @if (isTrash)
+        {
+            <span>Trash is empty.</span>
+        }
+        else
+        {
+            <span>No media found. Upload files to build your library.</span>
+        }
     </div>
 }
 else
 {
+    <div class="d-flex align-items-center gap-2 mb-2">
+        <div class="form-check">
+            <input class="form-check-input" type="checkbox" id="selectAll">
+            <label class="form-check-label small" for="selectAll">Select all</label>
+        </div>
+
+        <button type="button"
+                class="btn btn-sm @(isTrash ? "btn-success" : "btn-danger") ms-auto"
+                id="bulkActionBtn"
+                disabled>
+            @(isTrash ? "Restore Selected" : "Delete Selected")
+        </button>
+    </div>
+
     <div class="row g-3">
         @foreach (var m in Model.Media)
         {
@@ -49,7 +88,7 @@ else
             ? m.ThumbStorageKey
             : m.StorageKey;
 
-            <div class="col-6 col-md-4 col-lg-3">
+            <div class="col-6 col-md-4 col-lg-3" data-card-id="@m.Id">
                 <div class="card h-100">
                     <div class="ratio ratio-4x3 bg-light border-bottom">
                         @if (!string.IsNullOrWhiteSpace(previewUrl))
@@ -65,8 +104,16 @@ else
                     </div>
 
                     <div class="card-body">
-                        <div class="fw-semibold text-truncate" title="@m.FileName">@m.FileName</div>
-                        <div class="text-muted small text-truncate" title="@m.ContentType">@m.ContentType</div>
+                        <div class="d-flex align-items-start gap-2">
+                            <div class="form-check mt-1">
+                                <input class="form-check-input js-select" type="checkbox" value="@m.Id">
+                            </div>
+
+                            <div class="flex-grow-1 overflow-hidden">
+                                <div class="fw-semibold text-truncate" title="@m.FileName">@m.FileName</div>
+                                <div class="text-muted small text-truncate" title="@m.ContentType">@m.ContentType</div>
+                            </div>
+                        </div>
 
                         <div class="mt-2 d-flex gap-2">
                             <button type="button"
@@ -75,12 +122,24 @@ else
                                 Copy URL
                             </button>
 
-                            <button type="button"
-                                    class="btn btn-sm btn-outline-danger ms-auto js-delete"
-                                    data-id="@m.Id"
-                                    data-name="@m.FileName">
-                                Delete
-                            </button>
+                            @if (isTrash)
+                            {
+                                <button type="button"
+                                        class="btn btn-sm btn-success ms-auto js-restore"
+                                        data-id="@m.Id"
+                                        data-name="@m.FileName">
+                                    Restore
+                                </button>
+                            }
+                            else
+                            {
+                                <button type="button"
+                                        class="btn btn-sm btn-outline-danger ms-auto js-delete"
+                                        data-id="@m.Id"
+                                        data-name="@m.FileName">
+                                    Delete
+                                </button>
+                            }
                         </div>
                     </div>
                 </div>
@@ -92,6 +151,8 @@ else
 @section Scripts {
     <script>
         (function () {
+            const isTrashView = @(Model.IsTrashView.ToString().ToLowerInvariant());
+
             function getToken() {
                 const el = document.querySelector('#antiForgeryForm input[name="__RequestVerificationToken"]');
                 return el ? el.value : null;
@@ -102,7 +163,14 @@ else
                 if (!token) throw new Error("Missing antiforgery token.");
 
                 const body = new URLSearchParams();
-                for (const k in data) body.append(k, data[k]);
+                for (const k in data) {
+                    const v = data[k];
+                    if (Array.isArray(v)) {
+                        for (const x of v) body.append(k, x);
+                    } else {
+                        body.append(k, v);
+                    }
+                }
 
                 const res = await fetch(url, {
                     method: "POST",
@@ -117,60 +185,134 @@ else
                 return res;
             }
 
+            function getSelectedIds() {
+                return Array.from(document.querySelectorAll(".js-select:checked"))
+                    .map(x => parseInt(x.value, 10))
+                    .filter(x => Number.isFinite(x) && x > 0);
+            }
+
+            function updateBulkButton() {
+                const ids = getSelectedIds();
+                const btn = document.getElementById("bulkActionBtn");
+                if (!btn) return;
+                btn.disabled = ids.length === 0;
+            }
+
+            const selectAll = document.getElementById("selectAll");
+            if (selectAll) {
+                selectAll.addEventListener("change", function () {
+                    const checked = !!selectAll.checked;
+                    document.querySelectorAll(".js-select").forEach(cb => cb.checked = checked);
+                    updateBulkButton();
+                });
+            }
+
+            document.addEventListener("change", function (e) {
+                if (e.target && e.target.classList && e.target.classList.contains("js-select")) {
+                    updateBulkButton();
+                }
+            });
+
+            const bulkBtn = document.getElementById("bulkActionBtn");
+            if (bulkBtn) {
+                bulkBtn.addEventListener("click", async function () {
+                    const ids = getSelectedIds();
+                    if (ids.length === 0) return;
+
+                    const actionName = isTrashView ? "restore" : "delete";
+                    const msg = isTrashView
+                        ? `Restore ${ids.length} selected item(s)?`
+                        : `Delete ${ids.length} selected item(s)? You can restore them from Trash until cleanup runs.`;
+
+                    if (!confirm(msg)) return;
+
+                    try {
+                        const url = isTrashView ? "?handler=RestoreMany" : "?handler=DeleteMany";
+                        const res = await postFormUrlEncoded(url, { ids });
+
+                        const data = await res.json().catch(() => null);
+                        if (!res.ok || !data || data.success !== true) {
+                            alert((data && data.error) ? data.error : "Bulk action failed.");
+                            return;
+                        }
+
+                        location.reload();
+                    } catch {
+                        alert("Bulk action failed.");
+                    }
+                });
+            }
+
             document.addEventListener("click", async function (e) {
                 const copyBtn = e.target.closest(".js-copy");
                 if (copyBtn) {
                     const url = copyBtn.getAttribute("data-url") || "";
-                    if (!url) {
-                        alert("No URL available.");
-                        return;
-                    }
+                    if (!url) { alert("No URL available."); return; }
+
                     try {
                         await navigator.clipboard.writeText(url);
                         copyBtn.textContent = "Copied";
                         setTimeout(() => copyBtn.textContent = "Copy URL", 800);
                     } catch {
-                        // fallback
                         prompt("Copy URL:", url);
                     }
                     return;
                 }
 
                 const delBtn = e.target.closest(".js-delete");
-                if (!delBtn) return;
+                if (delBtn) {
+                    const id = delBtn.getAttribute("data-id");
+                    const name = delBtn.getAttribute("data-name") || "this media";
+                    if (!id) return;
 
-                const id = delBtn.getAttribute("data-id");
-                const name = delBtn.getAttribute("data-name") || "this media";
-                if (!id) return;
+                    if (!confirm(`Delete "${name}"? You can restore it from Trash until cleanup runs.`)) return;
 
-                if (!confirm(`Delete "${name}"? You can restore it from Trash until cleanup runs.`))
+                    try {
+                        const res = await postFormUrlEncoded("?handler=Delete", { id });
+                        const data = await res.json().catch(() => null);
+
+                        if (!res.ok || !data || data.success !== true) {
+                            alert((data && data.error) ? data.error : "Delete failed.");
+                            return;
+                        }
+
+                        const col = delBtn.closest("[data-card-id]");
+                        if (col) { col.style.opacity = "0.4"; setTimeout(() => col.remove(), 150); }
+                        else location.reload();
+                    } catch {
+                        alert("Delete failed.");
+                    }
                     return;
+                }
 
-                try {
-                    const res = await postFormUrlEncoded("?handler=Delete", { id });
+                const restoreBtn = e.target.closest(".js-restore");
+                if (restoreBtn) {
+                    const id = restoreBtn.getAttribute("data-id");
+                    const name = restoreBtn.getAttribute("data-name") || "this media";
+                    if (!id) return;
 
-                    if (!res.ok) {
-                        let msg = "Delete failed.";
-                        try {
-                            const data = await res.json();
-                            if (data && data.error) msg = data.error;
-                        } catch { }
-                        alert(msg);
-                        return;
+                    if (!confirm(`Restore "${name}"?`)) return;
+
+                    try {
+                        const res = await postFormUrlEncoded("?handler=Restore", { id });
+                        const data = await res.json().catch(() => null);
+
+                        if (!res.ok || !data || data.success !== true) {
+                            alert((data && data.error) ? data.error : "Restore failed.");
+                            return;
+                        }
+
+                        // in trash view, remove card immediately
+                        const col = restoreBtn.closest("[data-card-id]");
+                        if (col) { col.style.opacity = "0.4"; setTimeout(() => col.remove(), 150); }
+                        else location.reload();
+                    } catch {
+                        alert("Restore failed.");
                     }
-
-                    // remove card
-                    const cardCol = delBtn.closest(".col-6, .col-md-4, .col-lg-3");
-                    if (cardCol) {
-                        cardCol.style.opacity = "0.4";
-                        setTimeout(() => cardCol.remove(), 150);
-                    } else {
-                        location.reload();
-                    }
-                } catch (err) {
-                    alert("Delete failed.");
                 }
             });
+
+            updateBulkButton();
         })();
     </script>
 }

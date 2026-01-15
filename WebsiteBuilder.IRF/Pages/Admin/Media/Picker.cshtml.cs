@@ -25,6 +25,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
             public string ContentType { get; set; } = "";
             public string AltText { get; set; } = "";
             public string Url { get; set; } = "";
+            public string? ThumbUrl { get; set; } // optional if you have thumbnails
         }
 
         public sealed class SearchRequest
@@ -32,11 +33,28 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
             public string? Term { get; set; }
             public int Skip { get; set; }
             public int Take { get; set; } = 24;
+
+            // NEW: Trash toggle
+            public bool IncludeDeleted { get; set; } = false;
         }
 
-        public sealed class DeleteRequest
+        public sealed class DeleteRequest { public int Id { get; set; } }
+        public sealed class RestoreRequest { public int Id { get; set; } }
+
+        public sealed class BulkDeleteRequest
+        {
+            public int[] Ids { get; set; } = Array.Empty<int>();
+        }
+
+        public sealed class BulkRestoreRequest
+        {
+            public int[] Ids { get; set; } = Array.Empty<int>();
+        }
+
+        public sealed class UpdateAltRequest
         {
             public int Id { get; set; }
+            public string? AltText { get; set; }
         }
 
         public IActionResult OnGet()
@@ -48,28 +66,29 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
         }
 
         // POST /Admin/Media/Picker?handler=Search
-        public async Task<IActionResult> OnPostSearchAsync(
-            [FromBody] SearchRequest request,
-            CancellationToken ct = default)
+        public async Task<IActionResult> OnPostSearchAsync([FromBody] SearchRequest request, CancellationToken ct = default)
         {
             if (!_tenant.IsResolved)
                 return new JsonResult(new { ok = false, message = "Tenant not resolved." });
 
             request ??= new SearchRequest();
+
             var term = (request.Term ?? "").Trim();
             var take = request.Take <= 0 ? 24 : Math.Min(request.Take, 60);
             var skip = Math.Max(0, request.Skip);
+            var includeDeleted = request.IncludeDeleted;
 
             var q = _db.MediaAssets
                 .AsNoTracking()
-                .Where(m => !m.IsDeleted && m.IsActive)
+                .Where(m => m.TenantId == _tenant.TenantId)
+                .Where(m => m.IsActive)
                 .Where(m => m.ContentType.StartsWith("image/"));
+
+            q = includeDeleted ? q.Where(m => m.IsDeleted) : q.Where(m => !m.IsDeleted);
 
             if (!string.IsNullOrWhiteSpace(term))
             {
-                q = q.Where(m =>
-                    m.FileName.Contains(term) ||
-                    m.AltText!.Contains(term));
+                q = q.Where(m => m.FileName.Contains(term) || m.AltText.Contains(term));
             }
 
             var total = await q.CountAsync(ct);
@@ -83,8 +102,9 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
                     Id = m.Id,
                     FileName = m.FileName,
                     ContentType = m.ContentType,
-                    AltText = m.AltText!,
-                    Url = m.StorageKey
+                    AltText = m.AltText,
+                    Url = m.StorageKey,
+                    ThumbUrl = m.ThumbStorageKey // if your model has it; otherwise remove this line
                 })
                 .ToListAsync(ct);
 
@@ -98,9 +118,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
         }
 
         // POST /Admin/Media/Picker?handler=Delete
-        public async Task<IActionResult> OnPostDeleteAsync(
-            [FromBody] DeleteRequest request,
-            CancellationToken ct = default)
+        public async Task<IActionResult> OnPostDeleteAsync([FromBody] DeleteRequest request, CancellationToken ct = default)
         {
             if (!_tenant.IsResolved)
                 return new JsonResult(new { ok = false, message = "Tenant not resolved." });
@@ -109,13 +127,144 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
                 return new JsonResult(new { ok = false, message = "Invalid request." });
 
             var asset = await _db.MediaAssets
-                .FirstOrDefaultAsync(m => m.Id == request.Id && !m.IsDeleted, ct);
+                .FirstOrDefaultAsync(m =>
+                    m.TenantId == _tenant.TenantId &&
+                    m.Id == request.Id &&
+                    !m.IsDeleted, ct);
 
             if (asset == null)
                 return new JsonResult(new { ok = false, message = "Media not found." });
 
+            var now = DateTime.UtcNow;
+
             asset.IsDeleted = true;
-            asset.DeletedAt = DateTime.UtcNow;
+            asset.DeletedAt = now;
+            asset.UpdatedAt = now;
+
+            await _db.SaveChangesAsync(ct);
+
+            return new JsonResult(new { ok = true });
+        }
+
+        // POST /Admin/Media/Picker?handler=Restore
+        public async Task<IActionResult> OnPostRestoreAsync([FromBody] RestoreRequest request, CancellationToken ct = default)
+        {
+            if (!_tenant.IsResolved)
+                return new JsonResult(new { ok = false, message = "Tenant not resolved." });
+
+            if (request == null || request.Id <= 0)
+                return new JsonResult(new { ok = false, message = "Invalid request." });
+
+            var asset = await _db.MediaAssets
+                .FirstOrDefaultAsync(m =>
+                    m.TenantId == _tenant.TenantId &&
+                    m.Id == request.Id &&
+                    m.IsDeleted, ct);
+
+            if (asset == null)
+                return new JsonResult(new { ok = false, message = "Media not found." });
+
+            var now = DateTime.UtcNow;
+
+            asset.IsDeleted = false;
+            asset.DeletedAt = null;
+            asset.DeletedBy = null;
+            asset.UpdatedAt = now;
+
+            await _db.SaveChangesAsync(ct);
+
+            return new JsonResult(new { ok = true });
+        }
+
+        // POST /Admin/Media/Picker?handler=BulkDelete
+        public async Task<IActionResult> OnPostBulkDeleteAsync([FromBody] BulkDeleteRequest request, CancellationToken ct = default)
+        {
+            if (!_tenant.IsResolved)
+                return new JsonResult(new { ok = false, message = "Tenant not resolved." });
+
+            var ids = (request?.Ids ?? Array.Empty<int>()).Where(x => x > 0).Distinct().ToArray();
+            if (ids.Length == 0)
+                return new JsonResult(new { ok = false, message = "No items selected." });
+
+            var assets = await _db.MediaAssets
+                .Where(m =>
+                    m.TenantId == _tenant.TenantId &&
+                    ids.Contains(m.Id) &&
+                    !m.IsDeleted)
+                .ToListAsync(ct);
+
+            if (assets.Count == 0)
+                return new JsonResult(new { ok = false, message = "No matching media found." });
+
+            var now = DateTime.UtcNow;
+
+            foreach (var a in assets)
+            {
+                a.IsDeleted = true;
+                a.DeletedAt = now;
+                a.UpdatedAt = now;
+            }
+
+            await _db.SaveChangesAsync(ct);
+
+            return new JsonResult(new { ok = true, deletedIds = assets.Select(x => x.Id).ToArray() });
+        }
+
+        // POST /Admin/Media/Picker?handler=BulkRestore
+        public async Task<IActionResult> OnPostBulkRestoreAsync([FromBody] BulkRestoreRequest request, CancellationToken ct = default)
+        {
+            if (!_tenant.IsResolved)
+                return new JsonResult(new { ok = false, message = "Tenant not resolved." });
+
+            var ids = (request?.Ids ?? Array.Empty<int>()).Where(x => x > 0).Distinct().ToArray();
+            if (ids.Length == 0)
+                return new JsonResult(new { ok = false, message = "No items selected." });
+
+            var assets = await _db.MediaAssets
+                .Where(m =>
+                    m.TenantId == _tenant.TenantId &&
+                    ids.Contains(m.Id) &&
+                    m.IsDeleted)
+                .ToListAsync(ct);
+
+            if (assets.Count == 0)
+                return new JsonResult(new { ok = false, message = "No matching media found." });
+
+            var now = DateTime.UtcNow;
+
+            foreach (var a in assets)
+            {
+                a.IsDeleted = false;
+                a.DeletedAt = null;
+                a.DeletedBy = null;
+                a.UpdatedAt = now;
+            }
+
+            await _db.SaveChangesAsync(ct);
+
+            return new JsonResult(new { ok = true, restoredIds = assets.Select(x => x.Id).ToArray() });
+        }
+
+        // POST /Admin/Media/Picker?handler=UpdateAlt
+        public async Task<IActionResult> OnPostUpdateAltAsync([FromBody] UpdateAltRequest request, CancellationToken ct = default)
+        {
+            if (!_tenant.IsResolved)
+                return new JsonResult(new { ok = false, message = "Tenant not resolved." });
+
+            if (request == null || request.Id <= 0)
+                return new JsonResult(new { ok = false, message = "Invalid request." });
+
+            var asset = await _db.MediaAssets
+                .FirstOrDefaultAsync(m =>
+                    m.TenantId == _tenant.TenantId &&
+                    m.Id == request.Id &&
+                    !m.IsDeleted, ct);
+
+            if (asset == null)
+                return new JsonResult(new { ok = false, message = "Media not found." });
+
+            asset.AltText = (request.AltText ?? "").Trim();
+            asset.UpdatedAt = DateTime.UtcNow;
 
             await _db.SaveChangesAsync(ct);
 

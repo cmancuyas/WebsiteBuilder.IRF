@@ -15,6 +15,11 @@
         </div>
 
         <div class="d-flex gap-2 align-items-center">
+            <div class="btn-group" role="group" aria-label="Picker view">
+                <button type="button" class="btn btn-sm btn-secondary" id="viewActiveBtn">Active</button>
+                <button type="button" class="btn btn-sm btn-outline-danger" id="viewTrashBtn">Trash</button>
+            </div>
+
             <input type="file"
                    class="form-control form-control-sm"
                    id="mediaUploadInput"
@@ -36,9 +41,8 @@
 
         <div class="d-flex gap-2 align-items-center">
             <button type="button" class="btn btn-sm btn-outline-secondary" id="mediaSelectAllBtn">Select all</button>
-            <button type="button" class="btn btn-sm btn-danger d-none" id="mediaDeleteSelectedBtn">
-                Delete selected
-            </button>
+            <button type="button" class="btn btn-sm btn-danger d-none" id="mediaDeleteSelectedBtn">Delete selected</button>
+            <button type="button" class="btn btn-sm btn-success d-none" id="mediaRestoreSelectedBtn">Restore selected</button>
         </div>
     </div>
 
@@ -158,9 +162,16 @@
             const loadMoreBtn = document.getElementById("mediaLoadMoreBtn");
             const selectAllBtn = document.getElementById("mediaSelectAllBtn");
             const deleteSelectedBtn = document.getElementById("mediaDeleteSelectedBtn");
+            const restoreSelectedBtn = document.getElementById("mediaRestoreSelectedBtn");
+
+            const viewActiveBtn = document.getElementById("viewActiveBtn");
+            const viewTrashBtn = document.getElementById("viewTrashBtn");
 
             const tokenEl = document.querySelector('input[name="__RequestVerificationToken"]');
             const token = tokenEl ? tokenEl.value : null;
+
+            // View
+            let isTrashView = false;
 
             // Paging state
             let items = [];
@@ -172,8 +183,8 @@
             // Multi-select state
             const selectedIds = new Set();
 
-            // For undo
-            let lastDeletedIds = []; // supports single and bulk undo
+            // Undo state (immediate refresh model)
+            let lastDeletedIds = [];
 
             // Upload lock
             let isUploading = false;
@@ -205,18 +216,30 @@
                 if (undoBtn) undoBtn.addEventListener("click", undoDelete);
             }
 
+            function showRestoredMessage(count) {
+                const label = count === 1 ? "1 item" : `${count} items`;
+                show("success", `${escapeHtml(label)} restored.`);
+                setTimeout(() => show("", ""), 1200);
+            }
+
             function setUploading(on) {
                 isUploading = on;
-                uploadBtn.disabled = on;
+                uploadBtn.disabled = on || isTrashView;
                 uploadBtn.textContent = on ? "Uploading..." : "Upload";
             }
 
             function updateBulkUI() {
-                deleteSelectedBtn.classList.toggle("d-none", selectedIds.size === 0);
-                deleteSelectedBtn.textContent = selectedIds.size ? `Delete selected (${selectedIds.size})` : "Delete selected";
+                const has = selectedIds.size > 0;
+
+                deleteSelectedBtn.classList.toggle("d-none", !has || isTrashView);
+                restoreSelectedBtn.classList.toggle("d-none", !has || !isTrashView);
+
+                deleteSelectedBtn.textContent = has ? `Delete selected (${selectedIds.size})` : "Delete selected";
+                restoreSelectedBtn.textContent = has ? `Restore selected (${selectedIds.size})` : "Restore selected";
             }
 
             function postSelect(it) {
+                if (isTrashView) return;
                 window.parent?.postMessage({
                     type: "media-selected",
                     id: it.id,
@@ -247,13 +270,11 @@
                 }
 
                 if (!items.length) {
-                    show("info", "No images found.");
+                    show("info", isTrashView ? "Trash is empty." : "No images found.");
                     focusedIndex = -1;
                     loadMoreBtn.classList.add("d-none");
                     return;
                 }
-
-                show("", "");
 
                 const startIndex = append ? (items.length - (list || []).length) : 0;
                 const toRender = append ? (list || []) : items;
@@ -268,13 +289,15 @@
                     const safeAlt = it.altText || it.fileName || "";
                     const isNew = highlightId && it.id === highlightId;
 
-                    // Use thumbnail if present, fallback to original
                     const thumbSrc = (it.thumbUrl && it.thumbUrl.trim()) ? it.thumbUrl : it.url;
+
+                    const actionText = isTrashView ? "Restore" : "Delete";
+                    const actionClass = isTrashView ? "btn-success restore-btn" : "btn-danger delete-btn";
 
                     col.innerHTML = `
                         <div class="media-card ${isNew ? "is-new" : ""}" role="group" aria-label="Media item">
                             <div class="select-box">
-                                <input type="checkbox" class="form-check-input select-chk" ${selectedIds.has(it.id) ? "checked" : ""} />
+                                <input type="checkbox" class="form-check-input select-chk" ${selectedIds.has(it.id) ? "checked" : ""} ${isTrashView ? "disabled" : ""} />
                             </div>
 
                             <img class="media-thumb" src="${escapeHtml(thumbSrc)}" data-full="${escapeHtml(it.url)}" alt="${escapeHtml(safeAlt)}" />
@@ -287,9 +310,9 @@
                                 </div>
 
                                 <div class="media-toolbar">
-                                    <button type="button" class="btn btn-sm btn-outline-secondary edit-alt-btn">Alt</button>
-                                    <button type="button" class="btn btn-sm btn-danger delete-btn">Delete</button>
-                                    <button type="button" class="btn btn-sm btn-primary select-btn">Select</button>
+                                    <button type="button" class="btn btn-sm btn-outline-secondary edit-alt-btn" ${isTrashView ? "disabled" : ""}>Alt</button>
+                                    <button type="button" class="btn btn-sm ${actionClass}">${actionText}</button>
+                                    <button type="button" class="btn btn-sm btn-primary select-btn" ${isTrashView ? "disabled" : ""}>Select</button>
                                 </div>
 
                                 <div class="alt-editor d-none">
@@ -308,6 +331,7 @@
                     const chk = col.querySelector(".select-chk");
                     chk.addEventListener("click", (e) => {
                         e.stopPropagation();
+                        if (isTrashView) return;
                         if (chk.checked) selectedIds.add(it.id);
                         else selectedIds.delete(it.id);
                         updateBulkUI();
@@ -319,12 +343,20 @@
                         postSelect(it);
                     });
 
-                    // Delete single
-                    col.querySelector(".delete-btn").addEventListener("click", async (e) => {
-                        e.stopPropagation();
-                        if (!confirm("Delete this image?")) return;
-                        await deleteOne(it.id);
-                    });
+                    // Delete/Restore single
+                    if (!isTrashView) {
+                        col.querySelector(".delete-btn").addEventListener("click", async (e) => {
+                            e.stopPropagation();
+                            if (!confirm("Delete this image?")) return;
+                            await deleteOne(it.id);
+                        });
+                    } else {
+                        col.querySelector(".restore-btn").addEventListener("click", async (e) => {
+                            e.stopPropagation();
+                            if (!confirm("Restore this image?")) return;
+                            await restoreOne(it.id);
+                        });
+                    }
 
                     // Alt editor
                     const editAltBtn = col.querySelector(".edit-alt-btn");
@@ -335,6 +367,7 @@
 
                     editAltBtn.addEventListener("click", (e) => {
                         e.stopPropagation();
+                        if (isTrashView) return;
                         altEditor.classList.toggle("d-none");
                         if (!altEditor.classList.contains("d-none")) {
                             altInput.focus();
@@ -350,6 +383,8 @@
 
                     saveAltBtn.addEventListener("click", async (e) => {
                         e.stopPropagation();
+                        if (isTrashView) return;
+
                         const newAlt = (altInput.value || "").trim();
 
                         const ok = await updateAltText(it.id, newAlt);
@@ -402,7 +437,7 @@
                             "Content-Type": "application/json",
                             ...(token ? { "RequestVerificationToken": token } : {})
                         },
-                        body: JSON.stringify({ term, skip, take })
+                        body: JSON.stringify({ term, skip, take, includeDeleted: isTrashView })
                     });
 
                     const json = await res.json();
@@ -431,7 +466,7 @@
                             "Content-Type": "application/json",
                             ...(token ? { "RequestVerificationToken": token } : {})
                         },
-                        body: JSON.stringify({ term, skip, take })
+                        body: JSON.stringify({ term, skip, take, includeDeleted: isTrashView })
                     });
 
                     const json = await res.json();
@@ -467,7 +502,7 @@
                     lastDeletedIds = [id];
                     showUndoMessage(1);
 
-                    // refresh from start (keeps paging correct)
+                    // Immediate refresh
                     await search();
                 } catch {
                     show("error", "Delete failed.");
@@ -498,34 +533,86 @@
                     lastDeletedIds = json.deletedIds || ids;
                     showUndoMessage(lastDeletedIds.length);
 
+                    // Immediate refresh
                     await search();
                 } catch {
                     show("error", "Bulk delete failed.");
                 }
             }
 
+            async function restoreOne(id) {
+                try {
+                    const res = await fetch("?handler=Restore", {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                            ...(token ? { "RequestVerificationToken": token } : {})
+                        },
+                        body: JSON.stringify({ id })
+                    });
+
+                    const json = await res.json();
+                    if (!json.ok) {
+                        show("error", escapeHtml(json.message || "Restore failed."));
+                        return;
+                    }
+
+                    showRestoredMessage(1);
+                    await search();
+                } catch {
+                    show("error", "Restore failed.");
+                }
+            }
+
+            async function bulkRestore() {
+                const ids = Array.from(selectedIds);
+                if (!ids.length) return;
+                if (!confirm(`Restore ${ids.length} selected image(s)?`)) return;
+
+                try {
+                    const res = await fetch("?handler=BulkRestore", {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                            ...(token ? { "RequestVerificationToken": token } : {})
+                        },
+                        body: JSON.stringify({ ids })
+                    });
+
+                    const json = await res.json();
+                    if (!json.ok) {
+                        show("error", escapeHtml(json.message || "Bulk restore failed."));
+                        return;
+                    }
+
+                    showRestoredMessage(ids.length);
+                    await search();
+                } catch {
+                    show("error", "Bulk restore failed.");
+                }
+            }
+
             async function undoDelete() {
                 if (!lastDeletedIds.length) return;
 
-                // restore sequentially for simplicity
                 try {
-                    for (const id of lastDeletedIds) {
-                        const res = await fetch("?handler=Restore", {
-                            method: "POST",
-                            headers: {
-                                "Content-Type": "application/json",
-                                ...(token ? { "RequestVerificationToken": token } : {})
-                            },
-                            body: JSON.stringify({ id })
-                        });
-                        const json = await res.json();
-                        if (!json.ok) {
-                            show("error", escapeHtml(json.message || "Restore failed."));
-                            return;
-                        }
+                    // Bulk restore in one call
+                    const res = await fetch("?handler=BulkRestore", {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                            ...(token ? { "RequestVerificationToken": token } : {})
+                        },
+                        body: JSON.stringify({ ids: lastDeletedIds })
+                    });
+
+                    const json = await res.json();
+                    if (!json.ok) {
+                        show("error", escapeHtml(json.message || "Restore failed."));
+                        return;
                     }
 
-                    show("success", "Restore complete.");
+                    show("success", "Undo complete.");
                     setTimeout(() => show("", ""), 1200);
 
                     lastDeletedIds = [];
@@ -564,7 +651,7 @@
                     show("error", "Only image files are allowed.");
                     return null;
                 }
-                if (isUploading) return null;
+                if (isUploading || isTrashView) return null;
 
                 setUploading(true);
                 try {
@@ -590,7 +677,7 @@
 
                     await search(newId);
 
-                    if (autoSelect && newId && url) {
+                    if (autoSelect && newId && url && !isTrashView) {
                         window.parent?.postMessage({
                             type: "media-selected",
                             id: newId,
@@ -634,16 +721,14 @@
                 else if (e.key === "ArrowUp") next = Math.max(0, focusedIndex - cols);
                 else if (e.key === "Enter") {
                     e.preventDefault();
-                    postSelect(items[focusedIndex]);
+                    if (!isTrashView) postSelect(items[focusedIndex]);
                     return;
                 }
                 else if (e.key === "Escape") {
                     window.parent?.postMessage({ type: "media-picker-cancel" }, "*");
                     return;
                 }
-                else {
-                    return;
-                }
+                else return;
 
                 e.preventDefault();
                 setFocus(next);
@@ -655,7 +740,7 @@
                 ["dragenter", "dragover"].forEach(evt => {
                     grid.addEventListener(evt, (e) => {
                         prevent(e);
-                        if (!isUploading) grid.classList.add("dropzone-active");
+                        if (!isUploading && !isTrashView) grid.classList.add("dropzone-active");
                     });
                 });
 
@@ -668,7 +753,7 @@
 
                 grid.addEventListener("drop", async (e) => {
                     prevent(e);
-                    if (isUploading) return;
+                    if (isUploading || isTrashView) return;
 
                     const files = Array.from(e.dataTransfer?.files || []);
                     const images = files.filter(f => f.type && f.type.startsWith("image/"));
@@ -680,13 +765,30 @@
 
                     show("info", `Uploading ${images.length} file(s)...`);
 
-                    let last = null;
                     for (let i = 0; i < images.length; i++) {
                         const isLast = i === images.length - 1;
-                        last = await uploadFile(images[i], { autoSelect: isLast });
-                        if (!last) break;
+                        await uploadFile(images[i], { autoSelect: isLast });
                     }
                 });
+            }
+
+            function setView(trash) {
+                isTrashView = !!trash;
+
+                viewActiveBtn.classList.toggle("btn-secondary", !isTrashView);
+                viewActiveBtn.classList.toggle("btn-outline-secondary", isTrashView);
+
+                viewTrashBtn.classList.toggle("btn-danger", isTrashView);
+                viewTrashBtn.classList.toggle("btn-outline-danger", !isTrashView);
+
+                uploadInput.disabled = isTrashView;
+                uploadBtn.disabled = isTrashView || isUploading;
+
+                selectedIds.clear();
+                updateBulkUI();
+                show("", "");
+
+                search();
             }
 
             // Controls
@@ -697,26 +799,28 @@
             loadMoreBtn.addEventListener("click", loadMore);
 
             deleteSelectedBtn.addEventListener("click", bulkDelete);
+            restoreSelectedBtn.addEventListener("click", bulkRestore);
 
             selectAllBtn.addEventListener("click", () => {
-                // Toggle select all on current loaded items
+                if (isTrashView) return;
+
                 const allSelected = items.length > 0 && items.every(x => selectedIds.has(x.id));
-                if (allSelected) {
-                    selectedIds.clear();
-                } else {
-                    items.forEach(x => selectedIds.add(x.id));
-                }
-                // re-render checkboxes without losing layout
-                render([], null, false);
+                if (allSelected) selectedIds.clear();
+                else items.forEach(x => selectedIds.add(x.id));
+
+                // Re-render ONCE (do not wipe items)
                 render(items, null, false);
                 updateBulkUI();
             });
+
+            viewActiveBtn.addEventListener("click", () => setView(false));
+            viewTrashBtn.addEventListener("click", () => setView(true));
 
             grid.addEventListener("keydown", onGridKeyDown);
             enableDropzone();
 
             // initial load
-            search();
+            setView(false);
 
             root.addEventListener("click", (e) => {
                 if (e.target === root || e.target === grid) grid.focus();

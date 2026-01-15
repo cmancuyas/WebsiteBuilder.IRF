@@ -26,17 +26,22 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
         public List<MediaAsset> Media { get; private set; } = new();
         public int DeletedCount { get; private set; }
 
-        public async Task OnGetAsync()
+        // New: track current view for UI
+        public bool IsTrashView { get; private set; }
+
+        public async Task OnGetAsync(string? view = null)
         {
             if (!_tenant.IsResolved)
                 return;
+
+            IsTrashView = string.Equals(view, "deleted", StringComparison.OrdinalIgnoreCase);
 
             Media = await _db.MediaAssets
                 .AsNoTracking()
                 .Where(x =>
                     x.TenantId == _tenant.TenantId &&
-                    !x.IsDeleted)
-                .OrderByDescending(x => x.CreatedAt)
+                    x.IsDeleted == IsTrashView)
+                .OrderByDescending(x => IsTrashView ? x.DeletedAt : x.CreatedAt)
                 .ToListAsync();
 
             DeletedCount = await _db.MediaAssets
@@ -47,23 +52,20 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
         public async Task<IActionResult> OnPostDeleteAsync(int id)
         {
             if (!_tenant.IsResolved)
-                return new JsonResult(new { success = false, error = "Tenant not resolved." }) { StatusCode = 400 };
+                return BadRequestJson("Tenant not resolved.");
 
             if (id <= 0)
-                return new JsonResult(new { success = false, error = "Invalid media id." }) { StatusCode = 400 };
+                return BadRequestJson("Invalid media id.");
 
             var asset = await _db.MediaAssets
-                .FirstOrDefaultAsync(x =>
-                    x.Id == id &&
-                    x.TenantId == _tenant.TenantId);
+                .FirstOrDefaultAsync(x => x.Id == id && x.TenantId == _tenant.TenantId);
 
             if (asset == null)
-                return new JsonResult(new { success = false, error = "Media not found." }) { StatusCode = 404 };
+                return NotFoundJson("Media not found.");
 
             if (asset.IsDeleted)
                 return new JsonResult(new { success = true }); // idempotent
 
-            // Soft delete
             asset.IsDeleted = true;
             asset.DeletedAt = DateTime.UtcNow;
             asset.DeletedBy = GetUserIdOrNull();
@@ -72,8 +74,106 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
             asset.UpdatedBy = GetUserIdOrNull();
 
             await _db.SaveChangesAsync();
-
             return new JsonResult(new { success = true });
+        }
+
+        // New: single restore
+        public async Task<IActionResult> OnPostRestoreAsync(int id)
+        {
+            if (!_tenant.IsResolved)
+                return BadRequestJson("Tenant not resolved.");
+
+            if (id <= 0)
+                return BadRequestJson("Invalid media id.");
+
+            var asset = await _db.MediaAssets
+                .FirstOrDefaultAsync(x => x.Id == id && x.TenantId == _tenant.TenantId);
+
+            if (asset == null)
+                return NotFoundJson("Media not found.");
+
+            if (!asset.IsDeleted)
+                return new JsonResult(new { success = true }); // idempotent
+
+            asset.IsDeleted = false;
+            asset.DeletedAt = null;
+            asset.DeletedBy = null;
+
+            asset.UpdatedAt = DateTime.UtcNow;
+            asset.UpdatedBy = GetUserIdOrNull();
+
+            await _db.SaveChangesAsync();
+            return new JsonResult(new { success = true });
+        }
+
+        // New: bulk delete
+        public async Task<IActionResult> OnPostDeleteManyAsync([FromForm] int[] ids)
+        {
+            if (!_tenant.IsResolved)
+                return BadRequestJson("Tenant not resolved.");
+
+            if (ids == null || ids.Length == 0)
+                return BadRequestJson("No media selected.");
+
+            var now = DateTime.UtcNow;
+            var userId = GetUserIdOrNull();
+
+            var assets = await _db.MediaAssets
+                .Where(x => x.TenantId == _tenant.TenantId && ids.Contains(x.Id))
+                .ToListAsync();
+
+            if (assets.Count == 0)
+                return NotFoundJson("No matching media found.");
+
+            foreach (var a in assets)
+            {
+                if (a.IsDeleted) continue;
+
+                a.IsDeleted = true;
+                a.DeletedAt = now;
+                a.DeletedBy = userId;
+
+                a.UpdatedAt = now;
+                a.UpdatedBy = userId;
+            }
+
+            await _db.SaveChangesAsync();
+            return new JsonResult(new { success = true, count = assets.Count });
+        }
+
+        // New: bulk restore
+        public async Task<IActionResult> OnPostRestoreManyAsync([FromForm] int[] ids)
+        {
+            if (!_tenant.IsResolved)
+                return BadRequestJson("Tenant not resolved.");
+
+            if (ids == null || ids.Length == 0)
+                return BadRequestJson("No media selected.");
+
+            var now = DateTime.UtcNow;
+            var userId = GetUserIdOrNull();
+
+            var assets = await _db.MediaAssets
+                .Where(x => x.TenantId == _tenant.TenantId && ids.Contains(x.Id))
+                .ToListAsync();
+
+            if (assets.Count == 0)
+                return NotFoundJson("No matching media found.");
+
+            foreach (var a in assets)
+            {
+                if (!a.IsDeleted) continue;
+
+                a.IsDeleted = false;
+                a.DeletedAt = null;
+                a.DeletedBy = null;
+
+                a.UpdatedAt = now;
+                a.UpdatedBy = userId;
+            }
+
+            await _db.SaveChangesAsync();
+            return new JsonResult(new { success = true, count = assets.Count });
         }
 
         private Guid? GetUserIdOrNull()
@@ -84,5 +184,11 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
 
             return null;
         }
+
+        private IActionResult BadRequestJson(string error)
+            => new JsonResult(new { success = false, error }) { StatusCode = 400 };
+
+        private IActionResult NotFoundJson(string error)
+            => new JsonResult(new { success = false, error }) { StatusCode = 404 };
     }
 }
