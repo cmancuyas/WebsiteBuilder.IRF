@@ -82,23 +82,17 @@ builder.Services.AddScoped<ISectionContentValidator, GallerySectionValidator>();
 builder.Services.AddScoped<IPagePublishingService, PagePublishingService>();
 builder.Services.AddScoped<PagePublishValidator>();
 
+// =====================
+// Media (Cleanup/Quota/Alerts)
+// =====================
+
+// Cleanup options + nightly hosted service
 builder.Services.Configure<MediaCleanupOptions>(
     builder.Configuration.GetSection("Media:Cleanup"));
 
-builder.Services.AddHostedService<WebsiteBuilder.IRF.Infrastructure.Media.MediaCleanupHostedService>();
+builder.Services.AddHostedService<MediaCleanupHostedService>();
 
-builder.Services.Configure<MediaQuotaOptions>(
-    builder.Configuration.GetSection("Media:Quota"));
-
-builder.Services.AddScoped<ITenantMediaQuotaService, TenantMediaQuotaService>();
-
-// Cleanup options + hosted service
-builder.Services.Configure<MediaCleanupOptions>(
-    builder.Configuration.GetSection("Media:Cleanup"));
-
-builder.Services.AddHostedService<WebsiteBuilder.IRF.Infrastructure.Media.MediaCleanupHostedService>();
-
-// Cleanup runner (manual “Run Now”)
+// Cleanup runner (manual “Run Now” button uses this)
 builder.Services.AddScoped<IMediaCleanupRunner, MediaCleanupRunner>();
 
 // Quotas
@@ -113,6 +107,7 @@ builder.Services.Configure<MediaAlertsOptions>(
 
 builder.Services.AddHttpClient();
 builder.Services.AddScoped<IMediaAlertNotifier, CompositeMediaAlertNotifier>();
+
 
 
 var app = builder.Build();

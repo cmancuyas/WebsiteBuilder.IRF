@@ -19,6 +19,9 @@ public sealed class CompositeMediaAlertNotifier : IMediaAlertNotifier
         if (!_opts.Enabled)
             return;
 
+        if (string.IsNullOrWhiteSpace(subject) && string.IsNullOrWhiteSpace(message))
+            return;
+
         // Slack (best effort)
         if (!string.IsNullOrWhiteSpace(_opts.SlackWebhookUrl))
         {
@@ -26,7 +29,8 @@ public sealed class CompositeMediaAlertNotifier : IMediaAlertNotifier
             {
                 var http = _httpClientFactory.CreateClient();
                 var payload = new { text = $"*{subject}*\n{message}" };
-                await http.PostAsJsonAsync(_opts.SlackWebhookUrl, payload, ct);
+                var resp = await http.PostAsJsonAsync(_opts.SlackWebhookUrl, payload, ct);
+                // intentionally ignore response status (best-effort)
             }
             catch
             {
@@ -34,6 +38,7 @@ public sealed class CompositeMediaAlertNotifier : IMediaAlertNotifier
             }
         }
 
-        // Email can be added next (SMTP). For now, keep it best-effort and optional.
+        // Email can be added later (SMTP / SendGrid / SES)
     }
+
 }

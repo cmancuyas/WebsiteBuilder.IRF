@@ -15,15 +15,22 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
     {
         private readonly DataContext _db;
         private readonly ITenantContext _tenant;
-        private readonly IMediaCleanupRunner _cleanupRunner;
         private readonly MediaCleanupOptions _cleanupOptions;
+        private readonly IMediaCleanupRunner _cleanupRunner;
+        private readonly ITenantMediaQuotaService _quota;
 
-        public UsageModel(DataContext db, ITenantContext tenant, IOptions<MediaCleanupOptions> cleanupOptions, IMediaCleanupRunner cleanupRunner)
+        public UsageModel(
+            DataContext db,
+            ITenantContext tenant,
+            IOptions<MediaCleanupOptions> cleanupOptions,
+            IMediaCleanupRunner cleanupRunner,
+            ITenantMediaQuotaService quota)
         {
             _db = db;
             _tenant = tenant;
-            _cleanupRunner = cleanupRunner;
             _cleanupOptions = cleanupOptions.Value;
+            _cleanupRunner = cleanupRunner;
+            _quota = quota;
         }
 
         public bool IsTenantResolved => _tenant.IsResolved;
@@ -33,22 +40,20 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
         public List<ContentTypeRow> ByContentType { get; private set; } = new();
         public List<MediaRow> LargestActive { get; private set; } = new();
         public List<MediaRow> LargestDeleted { get; private set; } = new();
-        public CleanupEligibility Eligibility { get; private set; } = new();
-        public MediaCleanupResult? LastRunResult { get; private set; }
-        public async Task<IActionResult> OnPostRunCleanupNowAsync()
-        {
-            if (!_tenant.IsResolved)
-                return new JsonResult(new { success = false, error = "Tenant not resolved." }) { StatusCode = 400 };
 
-            var res = await _cleanupRunner.RunOnceAsync(HttpContext.RequestAborted);
-            return new JsonResult(new { success = true, result = res });
-        }
+        public CleanupEligibility Eligibility { get; private set; } = new();
+
+        // Quota panel
+        public long QuotaBytes { get; private set; }
+        public double UsedPercent => (QuotaBytes <= 0) ? 0 : (double)Summary.ActiveBytes / QuotaBytes * 100.0;
+
         public async Task OnGetAsync()
         {
             if (!_tenant.IsResolved)
                 return;
 
-            // Pull only tenant’s assets. AsNoTracking: dashboard view only.
+            QuotaBytes = _quota.GetQuotaBytes(_tenant.TenantId);
+
             var all = await _db.Set<MediaAsset>()
                 .AsNoTracking()
                 .Where(m => m.TenantId == _tenant.TenantId)
@@ -66,7 +71,6 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
                 })
                 .ToListAsync();
 
-            // Summary
             var active = all.Where(x => !x.IsDeleted).ToList();
             var deleted = all.Where(x => x.IsDeleted).ToList();
 
@@ -84,7 +88,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
                 TotalBytes = totalBytes
             };
 
-            // Monthly usage trend (last 12 months, based on CreatedAt)
+            // Monthly usage (last 12 months)
             var now = DateTime.UtcNow;
             var start = new DateTime(now.Year, now.Month, 1).AddMonths(-11);
 
@@ -101,7 +105,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
                 })
                 .ToList();
 
-            // ContentType breakdown (active only, top 10)
+            // Content type breakdown (active, top 10)
             ByContentType = active
                 .GroupBy(x => string.IsNullOrWhiteSpace(x.ContentType) ? "(unknown)" : x.ContentType.Trim().ToLowerInvariant())
                 .Select(g => new ContentTypeRow
@@ -115,7 +119,6 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
                 .Take(10)
                 .ToList();
 
-            // Largest active / deleted
             LargestActive = active
                 .Select(x => new MediaRow
                 {
@@ -147,22 +150,24 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
                 .Take(20)
                 .ToList();
 
-            // Cleanup eligibility (mirrors MediaCleanupHostedService rules)
+            // Cleanup eligibility panel (mirrors HostedService logic)
             var tz = TimeZoneInfo.FindSystemTimeZoneById("Asia/Manila");
             var retentionDays = Math.Abs(_cleanupOptions.RetentionDays);
             var cutoffUtc = DateTime.UtcNow.AddDays(-retentionDays);
 
-            // Eligible = IsDeleted && DeletedAt != null && DeletedAt <= cutoffUtc
             var eligible = all
                 .Where(x => x.IsDeleted && x.DeletedAt != null && x.DeletedAt <= cutoffUtc)
                 .ToList();
 
             var eligibleBytes = eligible.Sum(x => ParseSizeBytes(x.SizeBytes));
 
-            // Next scheduled run (local)
             var nowUtc = DateTime.UtcNow;
             var nowLocal = TimeZoneInfo.ConvertTimeFromUtc(nowUtc, tz);
-            var nextLocal = new DateTime(nowLocal.Year, nowLocal.Month, nowLocal.Day, _cleanupOptions.RunHourLocal, 0, 0);
+
+            var runHour = _cleanupOptions.RunHourLocal;
+            if (runHour < 0 || runHour > 23) runHour = 2;
+
+            var nextLocal = new DateTime(nowLocal.Year, nowLocal.Month, nowLocal.Day, runHour, 0, 0);
             if (nowLocal >= nextLocal)
                 nextLocal = nextLocal.AddDays(1);
 
@@ -170,22 +175,34 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
             {
                 CleanupEnabled = _cleanupOptions.Enabled,
                 RetentionDays = retentionDays,
-                RunHourLocal = _cleanupOptions.RunHourLocal,
+                RunHourLocal = runHour,
                 CutoffUtc = cutoffUtc,
                 NextRunLocal = nextLocal,
                 EligibleCount = eligible.Count,
                 EligibleBytes = eligibleBytes
             };
-
         }
 
-        // SizeBytes is stored as string in your model; make parsing resilient. :contentReference[oaicite:1]{index=1}
+        // POST: manual cleanup trigger
+        public async Task<IActionResult> OnPostRunCleanupNowAsync()
+        {
+            if (!_tenant.IsResolved)
+                return new JsonResult(new { success = false, error = "Tenant not resolved." }) { StatusCode = 400 };
+
+            var res = await _cleanupRunner.RunOnceAsync(HttpContext.RequestAborted);
+
+            return new JsonResult(new
+            {
+                success = true,
+                result = res
+            });
+        }
+
         private static long ParseSizeBytes(string? sizeBytes)
         {
             if (string.IsNullOrWhiteSpace(sizeBytes))
                 return 0;
 
-            // Accept "12345" or "12,345"
             var cleaned = sizeBytes.Trim().Replace(",", "");
             return long.TryParse(cleaned, out var v) && v > 0 ? v : 0;
         }
@@ -217,6 +234,19 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
             public long TotalBytes { get; set; }
         }
 
+        public sealed class CleanupEligibility
+        {
+            public bool CleanupEnabled { get; set; }
+            public int RetentionDays { get; set; }
+            public int RunHourLocal { get; set; }
+
+            public DateTime CutoffUtc { get; set; }
+            public DateTime NextRunLocal { get; set; }
+
+            public int EligibleCount { get; set; }
+            public long EligibleBytes { get; set; }
+        }
+
         public sealed class MonthlyUsageRow
         {
             public int Year { get; set; }
@@ -245,18 +275,5 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
             public DateTime CreatedAtUtc { get; set; }
             public DateTime? DeletedAtUtc { get; set; }
         }
-        public sealed class CleanupEligibility
-        {
-            public bool CleanupEnabled { get; set; }
-            public int RetentionDays { get; set; }
-            public int RunHourLocal { get; set; }
-
-            public DateTime CutoffUtc { get; set; }
-            public DateTime NextRunLocal { get; set; }
-
-            public int EligibleCount { get; set; }
-            public long EligibleBytes { get; set; }
-        }
-
     }
 }

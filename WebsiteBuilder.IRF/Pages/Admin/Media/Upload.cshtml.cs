@@ -47,9 +47,30 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
         public async Task<IActionResult> OnPostAsync()
         {
             if (!_tenant.IsResolved)
-                return NotFound("Tenant not resolved.");
+            {
+                Error = "Tenant not resolved.";
+                return Page();
+            }
 
-            var result = await HandleUploadAsync(GetPostedFile(null), HttpContext.RequestAborted);
+            var posted = GetPostedFile(null);
+            var newBytes = posted?.Length ?? 0;
+
+            if (newBytes <= 0)
+            {
+                Error = "No files selected.";
+                return Page();
+            }
+
+            var (allowed, usedBytes, quotaBytes) =
+                await _quota.CanUploadAsync(_tenant.TenantId, newBytes, HttpContext.RequestAborted);
+
+            if (!allowed)
+            {
+                Error = "Storage quota exceeded. Please delete unused media or upgrade your plan.";
+                return Page();
+            }
+
+            var result = await HandleUploadAsync(posted, HttpContext.RequestAborted);
 
             if (!result.success)
             {
@@ -61,11 +82,45 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
             return Page();
         }
 
+
         // POST /Admin/Media/Upload?handler=Json
         public async Task<IActionResult> OnPostJsonAsync(IFormFile? file)
         {
             if (!_tenant.IsResolved)
+            {
                 return new JsonResult(new { success = false, error = "Tenant not resolved." }) { StatusCode = 400 };
+            }
+
+            // 1) Compute how many bytes will be added by this upload request
+            long newBytes = 0;
+            foreach (var f in Request.Form.Files)
+            {
+                if (f?.Length > 0)
+                    newBytes += f.Length;
+            }
+
+            // If nothing to upload, return early
+            if (newBytes <= 0)
+            {
+                return new JsonResult(new { success = false, error = "No files selected." }) { StatusCode = 400 };
+            }
+
+            // 2) Ask quota service if this upload is allowed
+            var (allowed, usedBytes, quotaBytes) = await _quota.CanUploadAsync(_tenant.TenantId, newBytes, HttpContext.RequestAborted);
+
+            if (!allowed)
+            {
+                return new JsonResult(new
+                {
+                    success = false,
+                    error = "Storage quota exceeded. Please delete unused media or upgrade your plan.",
+                    usedBytes,
+                    quotaBytes,
+                    newBytes
+                })
+                { StatusCode = 409 };
+            }
+
 
             var posted = GetPostedFile(file);
             var result = await HandleUploadAsync(posted, HttpContext.RequestAborted);
@@ -140,15 +195,6 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
             var webRoot = _env.WebRootPath;
             if (string.IsNullOrWhiteSpace(webRoot))
                 return (false, "WebRootPath is not configured. Ensure app.UseStaticFiles() and wwwroot exist.", null, null, null);
-
-            // Quota check (must be before disk write)
-            var (allowed, usedBytes, quotaBytes) = await _quota.CanUploadAsync(_tenant.TenantId, file.Length, ct);
-            if (!allowed)
-            {
-                return (false,
-                    $"Storage quota exceeded. Used {usedBytes:N0} bytes out of {quotaBytes:N0} bytes.",
-                    null, null, null);
-            }
 
             // Originals: wwwroot/uploads/yyyy/MM/{guid}{ext}
             var now = DateTime.UtcNow;
