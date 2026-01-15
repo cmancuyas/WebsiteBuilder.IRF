@@ -16,27 +16,29 @@ public sealed class TenantMediaQuotaService : ITenantMediaQuotaService
         _opts = opts.Value;
     }
 
-    public async Task<(bool allowed, long usedBytes, long quotaBytes)> CanUploadAsync(Guid tenantId, long newBytes, CancellationToken ct)
+    public async Task<(bool allowed, long usedBytes, long quotaBytes)> CanUploadAsync(
+        Guid tenantId,
+        long newBytes,
+        CancellationToken ct)
     {
-        // SizeBytes is stored as string in your model; parse defensively.
-        var sizeStrings = await _db.Set<MediaAsset>()
+        // Sum happens in SQL (efficient). Cast to nullable to avoid null-sum issues.
+        var usedNullable = await _db.Set<MediaAsset>()
             .AsNoTracking()
             .Where(m => m.TenantId == tenantId && !m.IsDeleted)
-            .Select(m => m.SizeBytes)
-            .ToListAsync(ct);
+            .SumAsync(m => (long?)m.SizeBytes, ct);
 
-        long used = 0;
-        foreach (var s in sizeStrings)
-        {
-            if (long.TryParse(s, out var v) && v > 0)
-                used += v;
-        }
+        var used = usedNullable ?? 0L;
 
         var quota = _opts.DefaultQuotaBytes;
-        var allowed = used + Math.Max(0, newBytes) <= quota;
+
+        // Defensive: treat negative as 0
+        var incoming = Math.Max(0L, newBytes);
+
+        var allowed = used + incoming <= quota;
 
         return (allowed, used, quota);
     }
+
     public long GetQuotaBytes(Guid tenantId)
     {
         if (_opts.TenantQuotaBytes.TryGetValue(tenantId, out var quota) && quota > 0)

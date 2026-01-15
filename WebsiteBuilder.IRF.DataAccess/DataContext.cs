@@ -18,6 +18,7 @@ namespace WebsiteBuilder.IRF.DataAccess
         public DbSet<PageRevisionSection> PageRevisionSections => Set<PageRevisionSection>();
         public DbSet<SectionType> SectionTypes => Set<SectionType>();
         public DbSet<MediaAsset> MediaAssets => Set<MediaAsset>();
+        public DbSet<MediaCleanupRunLog> MediaCleanupRunLogs => Set<MediaCleanupRunLog>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -35,6 +36,7 @@ namespace WebsiteBuilder.IRF.DataAccess
             ConfigurePageRevisionSections(modelBuilder);
 
             ConfigureMediaAssets(modelBuilder);
+            ConfigureMediaCleanupRunLogs(modelBuilder);
         }
 
         private static void ConfigureBaseModelConventions(ModelBuilder modelBuilder)
@@ -345,6 +347,21 @@ namespace WebsiteBuilder.IRF.DataAccess
 
                 // Optional: fast thumb lookup / diagnostics
                 b.HasIndex(x => x.ThumbStorageKey);
+            });
+        }
+        private static void ConfigureMediaCleanupRunLogs(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<MediaCleanupRunLog>(b =>
+            {
+                b.HasKey(x => x.Id);
+
+                b.HasIndex(x => new { x.TenantId, x.StartedAtUtc });
+                b.HasIndex(x => new { x.TenantId, x.Status, x.StartedAtUtc });
+
+                b.Property(x => x.RunType).HasMaxLength(50);
+                b.Property(x => x.Status).HasMaxLength(30);
+                b.Property(x => x.ErrorSummary).HasMaxLength(2000);
+                b.Property(x => x.Notes).HasMaxLength(4000);
             });
         }
 

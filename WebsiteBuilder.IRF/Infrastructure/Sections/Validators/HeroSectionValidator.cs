@@ -15,7 +15,7 @@ namespace WebsiteBuilder.IRF.Infrastructure.Sections.Validators
 
             using (doc!)
             {
-                var root = doc.RootElement;
+                var root = doc!.RootElement;
                 var result = SectionValidationResult.Success();
 
                 // Required: headline (string, non-empty)

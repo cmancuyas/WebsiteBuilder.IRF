@@ -2,16 +2,17 @@
 
 namespace WebsiteBuilder.IRF.Repository.IRepository
 {
-    public interface IUnitOfWork
+    public interface IUnitOfWork : IDisposable
     {
-        Task SaveAsync();
+        Task SaveAsync(CancellationToken ct = default);
         void Save();
-        Task CompleteAsync();
-        void Dispose();
-        Task ExecuteInTransactionAsync(Func<Task> operation);
-        Task<T> ExecuteInTransactionAsync<T>(Func<Task<T>> operation);
-        Task<IDbContextTransaction> BeginTransactionAsync();
-        Task CommitTransactionAsync();
-        Task RollbackTransactionAsync();
+        Task CompleteAsync(CancellationToken ct = default);
+
+        Task ExecuteInTransactionAsync(Func<Task> operation, CancellationToken ct = default);
+        Task<T> ExecuteInTransactionAsync<T>(Func<Task<T>> operation, CancellationToken ct = default);
+
+        Task<IDbContextTransaction> BeginTransactionAsync(CancellationToken ct = default);
+        Task CommitTransactionAsync(CancellationToken ct = default);
+        Task RollbackTransactionAsync(CancellationToken ct = default);
     }
 }

@@ -69,7 +69,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
             {
                 q = q.Where(m =>
                     m.FileName.Contains(term) ||
-                    m.AltText.Contains(term));
+                    m.AltText!.Contains(term));
             }
 
             var total = await q.CountAsync(ct);
@@ -83,7 +83,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
                     Id = m.Id,
                     FileName = m.FileName,
                     ContentType = m.ContentType,
-                    AltText = m.AltText,
+                    AltText = m.AltText!,
                     Url = m.StorageKey
                 })
                 .ToListAsync(ct);

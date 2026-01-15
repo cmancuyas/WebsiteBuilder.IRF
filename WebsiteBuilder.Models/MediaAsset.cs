@@ -9,36 +9,35 @@ namespace WebsiteBuilder.Models
         [Key]
         public int Id { get; set; }
 
-        // NEW: tenant scoping (Guid matches ITenantContext usage in IRF Razor Pages)
+        // Tenant scoping
         public Guid TenantId { get; set; }
 
-        [MaxLength(255)]
+        [Required, MaxLength(255)]
         public string FileName { get; set; } = string.Empty;
 
-        [MaxLength(255)]
+        [Required, MaxLength(255)]
         public string ContentType { get; set; } = string.Empty;
 
-        [MaxLength(255)]
-        public string SizeBytes { get; set; } = string.Empty;
+        // Size in bytes (for quotas / cleanup / analytics)
+        public long SizeBytes { get; set; }
 
-        // Public URL path (e.g. /uploads/2026/01/abc.jpg)
-        [MaxLength(500)]
+        // REQUIRED: primary storage pointer
+        [Required, MaxLength(500)]
         public string StorageKey { get; set; } = string.Empty;
 
-        // NEW: thumbnail URL path (e.g. /uploads/thumbs/2026/01/abc.webp)
+        // Optional thumbnail pointer
         [MaxLength(500)]
-        public string ThumbStorageKey { get; set; } = string.Empty;
+        public string? ThumbStorageKey { get; set; }
 
-        [MaxLength(500)]
-        public string Width { get; set; } = string.Empty;
-
-        [MaxLength(500)]
-        public string Height { get; set; } = string.Empty;
+        // Image dimensions (nullable for non-images)
+        public int? Width { get; set; }
+        public int? Height { get; set; }
 
         [MaxLength(1000)]
-        public string AltText { get; set; } = string.Empty;
+        public string? AltText { get; set; }
 
-        [MaxLength(64)]
+        // Content hash (deduplication / integrity)
+        [Required, MaxLength(64)]
         public string CheckSum { get; set; } = string.Empty;
     }
 }

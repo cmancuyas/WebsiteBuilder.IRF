@@ -74,8 +74,8 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
             var active = all.Where(x => !x.IsDeleted).ToList();
             var deleted = all.Where(x => x.IsDeleted).ToList();
 
-            long activeBytes = active.Sum(x => ParseSizeBytes(x.SizeBytes));
-            long deletedBytes = deleted.Sum(x => ParseSizeBytes(x.SizeBytes));
+            long activeBytes = active.Sum(x => x.SizeBytes);
+            long deletedBytes = deleted.Sum(x => x.SizeBytes);
             long totalBytes = activeBytes + deletedBytes;
 
             Summary = new UsageSummary
@@ -101,7 +101,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
                     Year = g.Key.Year,
                     Month = g.Key.Month,
                     Count = g.Count(),
-                    Bytes = g.Sum(v => ParseSizeBytes(v.SizeBytes))
+                    Bytes = g.Sum(v => v.SizeBytes)
                 })
                 .ToList();
 
@@ -112,7 +112,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
                 {
                     ContentType = g.Key,
                     Count = g.Count(),
-                    Bytes = g.Sum(v => ParseSizeBytes(v.SizeBytes))
+                    Bytes = g.Sum(v => v.SizeBytes)
                 })
                 .OrderByDescending(x => x.Bytes)
                 .ThenByDescending(x => x.Count)
@@ -125,9 +125,9 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
                     Id = x.Id,
                     FileName = x.FileName,
                     ContentType = x.ContentType,
-                    Bytes = ParseSizeBytes(x.SizeBytes),
+                    Bytes = x.SizeBytes,
                     StorageKey = x.StorageKey,
-                    ThumbStorageKey = x.ThumbStorageKey,
+                    ThumbStorageKey = x.ThumbStorageKey!,
                     CreatedAtUtc = x.CreatedAt
                 })
                 .OrderByDescending(x => x.Bytes)
@@ -140,9 +140,9 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
                     Id = x.Id,
                     FileName = x.FileName,
                     ContentType = x.ContentType,
-                    Bytes = ParseSizeBytes(x.SizeBytes),
+                    Bytes = x.SizeBytes,
                     StorageKey = x.StorageKey,
-                    ThumbStorageKey = x.ThumbStorageKey,
+                    ThumbStorageKey = x.ThumbStorageKey!,
                     CreatedAtUtc = x.CreatedAt,
                     DeletedAtUtc = x.DeletedAt
                 })
@@ -159,7 +159,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
                 .Where(x => x.IsDeleted && x.DeletedAt != null && x.DeletedAt <= cutoffUtc)
                 .ToList();
 
-            var eligibleBytes = eligible.Sum(x => ParseSizeBytes(x.SizeBytes));
+            var eligibleBytes = eligible.Sum(x => x.SizeBytes);
 
             var nowUtc = DateTime.UtcNow;
             var nowLocal = TimeZoneInfo.ConvertTimeFromUtc(nowUtc, tz);

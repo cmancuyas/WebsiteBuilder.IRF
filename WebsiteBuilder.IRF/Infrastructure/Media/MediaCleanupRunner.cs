@@ -46,7 +46,7 @@ public sealed class MediaCleanupRunner : IMediaCleanupRunner
             .ToListAsync(ct);
 
         result.CandidatesFound = candidates.Count;
-        result.CandidateBytes = candidates.Sum(m => ParseSizeBytes(m.SizeBytes));
+        result.CandidateBytes = candidates.Sum(m => m.SizeBytes);
 
         // Alert (best-effort): if eligible bytes exceed threshold
         await MaybeAlertAsync(result, ct);

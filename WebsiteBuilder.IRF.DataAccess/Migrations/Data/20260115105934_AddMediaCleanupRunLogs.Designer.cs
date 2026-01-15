@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using WebsiteBuilder.IRF.DataAccess;
 
@@ -11,9 +12,11 @@ using WebsiteBuilder.IRF.DataAccess;
 namespace WebsiteBuilder.IRF.DataAccess.Migrations.Data
 {
     [DbContext(typeof(DataContext))]
-    partial class DataContextModelSnapshot : ModelSnapshot
+    [Migration("20260115105934_AddMediaCleanupRunLogs")]
+    partial class AddMediaCleanupRunLogs
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -114,6 +117,7 @@ namespace WebsiteBuilder.IRF.DataAccess.Migrations.Data
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
 
                     b.Property<string>("AltText")
+                        .IsRequired()
                         .HasMaxLength(1000)
                         .HasColumnType("nvarchar(1000)");
 
@@ -146,9 +150,10 @@ namespace WebsiteBuilder.IRF.DataAccess.Migrations.Data
                         .HasMaxLength(255)
                         .HasColumnType("nvarchar(255)");
 
-                    b.Property<int?>("Height")
+                    b.Property<string>("Height")
+                        .IsRequired()
                         .HasMaxLength(500)
-                        .HasColumnType("int");
+                        .HasColumnType("nvarchar(500)");
 
                     b.Property<bool>("IsActive")
                         .ValueGeneratedOnAdd()
@@ -166,9 +171,10 @@ namespace WebsiteBuilder.IRF.DataAccess.Migrations.Data
                         .ValueGeneratedOnAddOrUpdate()
                         .HasColumnType("rowversion");
 
-                    b.Property<long>("SizeBytes")
+                    b.Property<string>("SizeBytes")
+                        .IsRequired()
                         .HasMaxLength(255)
-                        .HasColumnType("bigint");
+                        .HasColumnType("nvarchar(255)");
 
                     b.Property<string>("StorageKey")
                         .IsRequired()
@@ -179,6 +185,7 @@ namespace WebsiteBuilder.IRF.DataAccess.Migrations.Data
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<string>("ThumbStorageKey")
+                        .IsRequired()
                         .HasMaxLength(500)
                         .HasColumnType("nvarchar(500)");
 
@@ -188,9 +195,10 @@ namespace WebsiteBuilder.IRF.DataAccess.Migrations.Data
                     b.Property<Guid?>("UpdatedBy")
                         .HasColumnType("uniqueidentifier");
 
-                    b.Property<int?>("Width")
+                    b.Property<string>("Width")
+                        .IsRequired()
                         .HasMaxLength(500)
-                        .HasColumnType("int");
+                        .HasColumnType("nvarchar(500)");
 
                     b.HasKey("Id");
 
