@@ -28,4 +28,8 @@
     <ProjectReference Include="..\WebsiteBuilder.Utility\WebsiteBuilder.Utility.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Folder Include="wwwroot\uploads\" />
+  </ItemGroup>
+
 </Project>

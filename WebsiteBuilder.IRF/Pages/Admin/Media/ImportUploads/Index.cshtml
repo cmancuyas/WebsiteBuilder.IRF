@@ -1,0 +1,29 @@
+﻿@page
+@model WebsiteBuilder.IRF.Pages.Admin.Media.ImportUploads.IndexModel
+@{
+    ViewData["Title"] = "Import Uploads";
+}
+
+<h2 class="mb-3">Import Uploads Folder</h2>
+
+<div class="alert alert-warning">
+    This tool imports files found in <code>wwwroot/uploads</code> into <code>MediaAssets</code>.
+    Use for dev/testing only.
+</div>
+
+<form method="post" asp-page-handler="Import">
+    <div class="mb-3">
+        <label class="form-label">Max files to import</label>
+        <input class="form-control" type="number" name="max" value="50" min="1" max="500" />
+        <div class="form-text">Limits the scan/import to avoid accidental bulk imports.</div>
+    </div>
+
+    <button type="submit" class="btn btn-primary">Import now</button>
+</form>
+
+@if (Model.ResultMessage is not null)
+{
+    <div class="alert alert-info mt-3">
+        @Model.ResultMessage
+    </div>
+}

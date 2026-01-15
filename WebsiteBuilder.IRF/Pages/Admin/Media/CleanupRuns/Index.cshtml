@@ -1,0 +1,112 @@
+﻿@page
+@model WebsiteBuilder.IRF.Pages.Admin.Media.CleanupRuns.IndexModel
+@{
+    ViewData["Title"] = "Media Cleanup Runs";
+}
+
+<h2 class="mb-3">Media Cleanup Runs</h2>
+
+<div class="card mb-3">
+    <div class="card-body">
+        <div class="d-flex justify-content-between align-items-start flex-wrap gap-2">
+            <div>
+                <div class="text-muted">Last run</div>
+                @if (Model.LastRun is null)
+                {
+                    <div>No runs yet.</div>
+                }
+                else
+                {
+                    <div class="fw-semibold">
+                        Run #@Model.LastRun.Id
+                        <span class="ms-2 badge @Model.GetStatusBadgeClass(Model.LastRun.Status)">
+                            @Model.LastRun.Status
+                        </span>
+                    </div>
+                    <div class="text-muted small">
+                        Started: @Model.LastRun.StartedAtUtc.ToString("yyyy-MM-dd HH:mm") UTC
+                        @if (Model.LastRun.FinishedAtUtc is not null)
+                        {
+                            <span class="ms-2">Finished: @Model.LastRun.FinishedAtUtc.Value.ToString("yyyy-MM-dd HH:mm") UTC</span>
+                        }
+                    </div>
+                    <div class="small mt-2">
+                        Eligible: <strong>@Model.LastRun.EligibleCount</strong> |
+                        Processed: <strong>@Model.LastRun.ProcessedCount</strong> |
+                        DB rows deleted: <strong>@Model.LastRun.HardDeletedDbRowsCount</strong> |
+                        Failed: <strong>@Model.LastRun.FailedCount</strong>
+                    </div>
+                }
+            </div>
+
+            <form method="post" asp-page-handler="RunNow">
+                <button type="submit" class="btn btn-primary">
+                    Run cleanup now
+                </button>
+            </form>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-striped mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th style="width:110px;">Run</th>
+                        <th style="width:120px;">Status</th>
+                        <th>Type</th>
+                        <th>Started (UTC)</th>
+                        <th>Finished (UTC)</th>
+                        <th class="text-end">Eligible</th>
+                        <th class="text-end">Processed</th>
+                        <th class="text-end">Orig</th>
+                        <th class="text-end">Thumb</th>
+                        <th class="text-end">DB</th>
+                        <th class="text-end">Failed</th>
+                        <th style="width:280px;">Error</th>
+                        <th style="width:110px;"></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @if (Model.Runs.Count == 0)
+                    {
+                        <tr><td colspan="13" class="text-center p-4 text-muted">No runs found.</td></tr>
+                    }
+                    else
+                    {
+                        foreach (var r in Model.Runs)
+                        {
+                            <tr>
+                                <td>#@r.Id</td>
+                                <td>
+                                    <span class="badge @Model.GetStatusBadgeClass(r.Status)">
+                                        @r.Status
+                                    </span>
+                                </td>
+                                <td>@r.RunType</td>
+                                <td>@r.StartedAtUtc.ToString("yyyy-MM-dd HH:mm")</td>
+                                <td>@(r.FinishedAtUtc?.ToString("yyyy-MM-dd HH:mm") ?? "-")</td>
+                                <td class="text-end">@r.EligibleCount</td>
+                                <td class="text-end">@r.ProcessedCount</td>
+                                <td class="text-end">@r.DeletedOriginalFilesCount</td>
+                                <td class="text-end">@r.DeletedThumbnailFilesCount</td>
+                                <td class="text-end">@r.HardDeletedDbRowsCount</td>
+                                <td class="text-end">@r.FailedCount</td>
+                                <td class="small text-truncate" style="max-width:280px;" title="@r.ErrorSummary">
+                                    @(string.IsNullOrWhiteSpace(r.ErrorSummary) ? "-" : r.ErrorSummary)
+                                </td>
+                                <td class="text-end">
+                                    <a class="btn btn-sm btn-outline-secondary" asp-page="Details" asp-route-id="@r.Id">
+                                        Details
+                                    </a>
+                                </td>
+                            </tr>
+                        }
+                    }
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>

@@ -11,4 +11,6 @@ public sealed class MediaCleanupResult
     public int FileDeleteFailures { get; set; }
 
     public long CandidateBytes { get; set; }
+    public long? RunId { get; set; }
+
 }

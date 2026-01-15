@@ -13,7 +13,12 @@ public sealed class MediaCleanupRunner : IMediaCleanupRunner
     private readonly IMediaAlertNotifier _notifier;
     private readonly MediaCleanupOptions _opts;
 
-    public MediaCleanupRunner(DataContext db, IWebHostEnvironment env, IOptions<MediaCleanupOptions> options, IOptions<MediaAlertsOptions> alertOptions, IMediaAlertNotifier notifier)
+    public MediaCleanupRunner(
+        DataContext db,
+        IWebHostEnvironment env,
+        IOptions<MediaCleanupOptions> options,
+        IOptions<MediaAlertsOptions> alertOptions,
+        IMediaAlertNotifier notifier)
     {
         _db = db;
         _env = env;
@@ -29,50 +34,95 @@ public sealed class MediaCleanupRunner : IMediaCleanupRunner
         if (!_opts.Enabled)
             return result;
 
-        var cutoffUtc = DateTime.UtcNow.AddDays(-Math.Abs(_opts.RetentionDays));
+        var startedUtc = DateTime.UtcNow;
+        var cutoffUtc = startedUtc.AddDays(-Math.Abs(_opts.RetentionDays));
         var batchSize = Math.Clamp(_opts.BatchSize, 50, 1000);
 
-        result.CutoffUtc = cutoffUtc;
-
-        var eligibleQuery = _db.Set<MediaAsset>()
-            .Where(m => m.IsDeleted && m.DeletedAt != null && m.DeletedAt <= cutoffUtc);
-
-        var eligibleCountTotal = await eligibleQuery.CountAsync(ct);
-
-        var candidates = await _db.Set<MediaAsset>()
-            .Where(m => m.IsDeleted && m.DeletedAt != null && m.DeletedAt <= cutoffUtc)
-            .OrderBy(m => m.DeletedAt)
-            .Take(batchSize)
-            .ToListAsync(ct);
-
-        result.CandidatesFound = candidates.Count;
-        result.CandidateBytes = candidates.Sum(m => m.SizeBytes);
-
-        // Alert (best-effort): if eligible bytes exceed threshold
-        await MaybeAlertAsync(result, ct);
-
-
-        if (candidates.Count == 0)
-            return result;
-
-        foreach (var m in candidates)
+        // --- create run log (Running) ---
+        var runLog = new MediaCleanupRunLog
         {
-            TryDeletePhysical(m.StorageKey, ref result);
-            TryDeletePhysical(m.ThumbStorageKey, ref result);
+            RunType = "Nightly",
+            RetentionDays = _opts.RetentionDays,
+            BatchSize = batchSize,
+            StartedAtUtc = startedUtc,
+            Status = "Running",
+            IsActive = true,
+            IsDeleted = false,
+            CreatedAt = startedUtc
+        };
+
+        _db.Set<MediaCleanupRunLog>().Add(runLog);
+        await _db.SaveChangesAsync(ct); // ensure RunLog.Id exists
+
+        try
+        {
+            result.CutoffUtc = cutoffUtc;
+
+            var eligibleQuery = _db.Set<MediaAsset>()
+                .Where(m => m.IsDeleted && m.DeletedAt != null && m.DeletedAt <= cutoffUtc);
+
+            runLog.EligibleCount = await eligibleQuery.CountAsync(ct);
+
+            var candidates = await eligibleQuery
+                .OrderBy(m => m.DeletedAt)
+                .Take(batchSize)
+                .ToListAsync(ct);
+
+            runLog.ProcessedCount = candidates.Count;
+            result.CandidatesFound = candidates.Count;
+            result.CandidateBytes = candidates.Sum(m => m.SizeBytes);
+
+            await MaybeAlertAsync(result, runLog.Id, ct);
+
+            if (candidates.Count == 0)
+            {
+                runLog.Status = "Succeeded";
+                runLog.FinishedAtUtc = DateTime.UtcNow;
+                await _db.SaveChangesAsync(ct);
+                return result;
+            }
+
+            foreach (var m in candidates)
+            {
+                if (TryDeletePhysical(m.StorageKey))
+                    runLog.DeletedOriginalFilesCount++;
+
+                if (TryDeletePhysical(m.ThumbStorageKey))
+                    runLog.DeletedThumbnailFilesCount++;
+            }
+
+            // Re-check safety
+            candidates = candidates
+                .Where(m => m.IsDeleted && m.DeletedAt != null && m.DeletedAt <= cutoffUtc)
+                .ToList();
+
+            _db.Set<MediaAsset>().RemoveRange(candidates);
+            runLog.HardDeletedDbRowsCount = candidates.Count;
+            result.RecordsDeleted = candidates.Count;
+
+            await _db.SaveChangesAsync(ct);
+
+            runLog.Status = runLog.FailedCount == 0 ? "Succeeded" : "Partial";
+            runLog.FinishedAtUtc = DateTime.UtcNow;
+
+            await _db.SaveChangesAsync(ct);
+            return result;
         }
+        catch (Exception ex)
+        {
+            runLog.Status = "Failed";
+            runLog.FailedCount = Math.Max(runLog.FailedCount, 1);
+            runLog.ErrorSummary = ex.Message.Length > 2000
+                ? ex.Message[..2000]
+                : ex.Message;
+            runLog.FinishedAtUtc = DateTime.UtcNow;
 
-        // Last-chance safety: a record could have been restored mid-run.
-        candidates = candidates
-            .Where(m => m.IsDeleted && m.DeletedAt != null && m.DeletedAt <= cutoffUtc)
-            .ToList();
-
-        _db.Set<MediaAsset>().RemoveRange(candidates);
-        result.RecordsDeleted = candidates.Count;
-
-        await _db.SaveChangesAsync(ct);
-        return result;
+            await _db.SaveChangesAsync(CancellationToken.None);
+            throw;
+        }
     }
-    private async Task MaybeAlertAsync(MediaCleanupResult result, CancellationToken ct)
+
+    private async Task MaybeAlertAsync(MediaCleanupResult result, long runId, CancellationToken ct)
     {
         if (!_alertOpts.Enabled)
             return;
@@ -85,6 +135,7 @@ public sealed class MediaCleanupRunner : IMediaCleanupRunner
 
         var subject = "Media cleanup threshold exceeded";
         var message =
+            $"RunId={runId}, " +
             $"CandidatesFound={result.CandidatesFound}, " +
             $"CandidateBytes={result.CandidateBytes}, " +
             $"CutoffUtc={result.CutoffUtc:yyyy-MM-dd HH:mm}";
@@ -95,27 +146,17 @@ public sealed class MediaCleanupRunner : IMediaCleanupRunner
         }
         catch
         {
-            // Never break cleanup if alert fails
+            // never break cleanup
         }
     }
 
-    private static long ParseSizeBytes(string? sizeBytes)
-    {
-        if (string.IsNullOrWhiteSpace(sizeBytes))
-            return 0;
-
-        var cleaned = sizeBytes.Trim().Replace(",", "");
-        return long.TryParse(cleaned, out var v) && v > 0 ? v : 0;
-    }
-
-    private void TryDeletePhysical(string? storageKey, ref MediaCleanupResult result)
+    private bool TryDeletePhysical(string? storageKey)
     {
         if (string.IsNullOrWhiteSpace(storageKey))
-            return;
+            return false;
 
-        // Safety: delete only from uploads folder
         if (!storageKey.StartsWith("/uploads/", StringComparison.OrdinalIgnoreCase))
-            return;
+            return false;
 
         var relative = storageKey.TrimStart('/').Replace('/', Path.DirectorySeparatorChar);
         var physical = Path.Combine(_env.WebRootPath, relative);
@@ -125,12 +166,14 @@ public sealed class MediaCleanupRunner : IMediaCleanupRunner
             if (File.Exists(physical))
             {
                 File.Delete(physical);
-                result.FilesDeleted++;
+                return true;
             }
         }
         catch
         {
-            result.FileDeleteFailures++;
+            // counted at run level
         }
+
+        return false;
     }
 }

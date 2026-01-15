@@ -108,6 +108,7 @@ builder.Services.Configure<MediaAlertsOptions>(
 builder.Services.AddHttpClient();
 builder.Services.AddScoped<IMediaAlertNotifier, CompositeMediaAlertNotifier>();
 
+builder.Services.AddScoped<IMediaAlertNotifier, DbMediaAlertNotifier>();
 
 
 var app = builder.Build();

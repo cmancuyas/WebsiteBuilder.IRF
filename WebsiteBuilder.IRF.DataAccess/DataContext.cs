@@ -19,7 +19,7 @@ namespace WebsiteBuilder.IRF.DataAccess
         public DbSet<SectionType> SectionTypes => Set<SectionType>();
         public DbSet<MediaAsset> MediaAssets => Set<MediaAsset>();
         public DbSet<MediaCleanupRunLog> MediaCleanupRunLogs => Set<MediaCleanupRunLog>();
-
+        public DbSet<MediaAlert> MediaAlerts => Set<MediaAlert>();
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
@@ -37,6 +37,7 @@ namespace WebsiteBuilder.IRF.DataAccess
 
             ConfigureMediaAssets(modelBuilder);
             ConfigureMediaCleanupRunLogs(modelBuilder);
+            ConfigureMediaAlerts(modelBuilder);
         }
 
         private static void ConfigureBaseModelConventions(ModelBuilder modelBuilder)
@@ -362,6 +363,34 @@ namespace WebsiteBuilder.IRF.DataAccess
                 b.Property(x => x.Status).HasMaxLength(30);
                 b.Property(x => x.ErrorSummary).HasMaxLength(2000);
                 b.Property(x => x.Notes).HasMaxLength(4000);
+            });
+        }
+        private static void ConfigureMediaAlerts(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<MediaAlert>(b =>
+            {
+                b.ToTable("MediaAlerts");
+
+                b.HasKey(x => x.Id);
+
+                b.Property(x => x.Subject)
+                    .HasMaxLength(200)
+                    .IsRequired();
+
+                b.Property(x => x.Message)
+                    .HasMaxLength(4000)
+                    .IsRequired();
+
+                b.Property(x => x.Severity)
+                    .HasMaxLength(20)
+                    .IsRequired();
+
+                // Optional link to a cleanup run
+                b.HasIndex(x => new { x.TenantId, x.CreatedAt });
+                b.HasIndex(x => x.MediaCleanupRunLogId);
+
+                // If you want tenant scoping fast:
+                b.HasIndex(x => new { x.TenantId, x.IsDeleted });
             });
         }
 
