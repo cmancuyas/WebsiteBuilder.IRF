@@ -1,0 +1,30 @@
+﻿@using WebsiteBuilder.Models
+@model IEnumerable<MediaAsset>
+
+<table class="table table-sm align-middle">
+    <thead>
+        <tr>
+            <th></th>
+            <th>File</th>
+            <th>Deleted</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var m in Model)
+        {
+            <tr data-id="@m.Id">
+                <td>
+                    <img src="@Url.MediaThumb(m)" class="rounded" width="48" />
+                </td>
+                <td>@m.FileName</td>
+                <td>@m.DeletedAt?.ToLocalTime()</td>
+                <td>
+                    <button class="btn btn-sm btn-outline-success restore-media">
+                        Restore
+                    </button>
+                </td>
+            </tr>
+        }
+    </tbody>
+</table>

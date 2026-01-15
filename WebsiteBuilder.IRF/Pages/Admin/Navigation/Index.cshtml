@@ -1,0 +1,249 @@
+﻿@page
+@model WebsiteBuilder.IRF.Pages.Admin.Navigation.IndexModel
+@using WebsiteBuilder.Models.Constants
+
+@{
+    ViewData["Title"] = "Navigation Builder";
+}
+
+<div class="container py-4">
+
+    <div class="d-flex align-items-center justify-content-between mb-3">
+        <div>
+            <h2 class="mb-0">Navigation Builder</h2>
+            <div class="text-muted small">Toggle and reorder pages shown in the site navigation.</div>
+        </div>
+
+        <a class="btn btn-outline-secondary" asp-page="/Admin/Pages/Index">Back to Pages</a>
+    </div>
+
+    <div id="navMsg" class="mb-3"></div>
+
+    <div class="card shadow-sm">
+        <div class="card-header d-flex align-items-center justify-content-between">
+            <strong>Pages</strong>
+            <div class="text-muted small">
+                Drag handle appears only for pages that are “Shown”.
+            </div>
+        </div>
+
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-hover align-middle mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th style="width: 56px;"></th>
+                            <th style="width: 160px;">Show</th>
+                            <th>Title</th>
+                            <th style="width: 260px;">Slug</th>
+                            <th style="width: 140px;">Status</th>
+                        </tr>
+                    </thead>
+
+                    <tbody id="navTableBody">
+                        @foreach (var p in Model.Pages)
+                        {
+                            var isPublished = p.PageStatusId == PageStatusIds.Published;
+
+                            <tr class="nav-row @(p.ShowInNavigation ? "" : "nav-row-hidden")"
+                                data-page-id="@p.Id">
+                                <td class="text-center">
+                                    <span class="drag-handle @(p.ShowInNavigation ? "" : "d-none")"
+                                          title="Drag to reorder"
+                                          aria-label="Drag to reorder">⋮⋮</span>
+                                </td>
+
+                                <td>
+                                    <div class="form-check form-switch m-0">
+                                        <input class="form-check-input nav-toggle"
+                                               type="checkbox"
+                                               @(p.ShowInNavigation ? "checked" : "")
+                                               data-page-id="@p.Id"
+                                               @(isPublished ? "" : "disabled") />
+
+                                        <label class="form-check-label small text-muted">
+                                            @(isPublished ? "Shown in navigation" : "Publish to enable")
+                                        </label>
+                                    </div>
+                                </td>
+
+                                <td class="fw-semibold">
+                                    @p.Title
+                                </td>
+
+                                <td class="text-muted">
+                                    @(string.IsNullOrWhiteSpace(p.Slug) ? "-" : "/" + p.Slug.Trim('/'))
+                                </td>
+
+                                <td>
+                                    @if (p.PageStatusId == PageStatusIds.Published)
+                                    {
+                                        <span class="badge bg-success">Published</span>
+                                    }
+                                    else if (p.PageStatusId == PageStatusIds.Draft)
+                                    {
+                                        <span class="badge bg-secondary">Draft</span>
+                                    }
+                                    else if (p.PageStatusId == PageStatusIds.Archived)
+                                    {
+                                        <span class="badge bg-dark">Archived</span>
+                                    }
+                                    else
+                                    {
+                                        <span class="badge bg-light text-dark">Unknown</span>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+
+                </table>
+            </div>
+        </div>
+
+        <div class="card-footer small text-muted">
+            Changes save automatically.
+        </div>
+    </div>
+</div>
+
+@section Scripts
+{
+    <style>
+        .drag-handle {
+            cursor: grab;
+            user-select: none;
+            font-weight: 700;
+        }
+
+        .nav-row-hidden {
+            opacity: .55;
+        }
+
+        .sortable-ghost {
+            opacity: .6;
+        }
+    </style>
+
+    @* Antiforgery token for fetch *@
+    @Html.AntiForgeryToken()
+
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+
+    <script>
+        (function () {
+            const body = document.getElementById("navTableBody");
+            const msg = document.getElementById("navMsg");
+            if (!body) return;
+
+            const tokenEl = document.querySelector('input[name="__RequestVerificationToken"]');
+            const token = tokenEl ? tokenEl.value : null;
+
+            function showMessage(kind, text) {
+                if (!msg) return;
+                if (!text) { msg.innerHTML = ""; return; }
+                const cls = kind === "success" ? "alert-success"
+                    : kind === "error" ? "alert-danger"
+                    : "alert-warning";
+                msg.innerHTML = `<div class="alert ${cls} py-2 mb-0">${escapeHtml(text)}</div>`;
+            }
+
+            function escapeHtml(str) {
+                return String(str ?? "")
+                    .replaceAll("&", "&amp;")
+                    .replaceAll("<", "&lt;")
+                    .replaceAll(">", "&gt;")
+                    .replaceAll('"', "&quot;")
+                    .replaceAll("'", "&#039;");
+            }
+
+            function collectVisibility() {
+                const dict = {};
+                body.querySelectorAll(".nav-toggle").forEach(cb => {
+                    const id = parseInt(cb.getAttribute("data-page-id"), 10);
+                    if (Number.isFinite(id)) dict[id] = cb.checked;
+                });
+                return dict;
+            }
+
+            function collectOrderedVisibleIds() {
+                // Visible pages in DOM order
+                const rows = Array.from(body.querySelectorAll("tr.nav-row"));
+                const ids = [];
+                rows.forEach(r => {
+                    const id = parseInt(r.getAttribute("data-page-id"), 10);
+                    if (!Number.isFinite(id)) return;
+
+                    const cb = r.querySelector(".nav-toggle");
+                    if (cb && cb.checked) ids.push(id);
+                });
+                return ids;
+            }
+
+            async function saveNavigation() {
+                const payload = {
+                    orderedVisiblePageIds: collectOrderedVisibleIds(),
+                    visibility: collectVisibility()
+                };
+
+                try {
+                    const res = await fetch("?handler=UpdateNavigation", {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                            ...(token ? { "RequestVerificationToken": token } : {})
+                        },
+                        body: JSON.stringify(payload)
+                    });
+
+                    const json = await res.json();
+                    if (!json.ok) {
+                        showMessage("error", json.message || "Failed to save navigation.");
+                        return false;
+                    }
+
+                    showMessage("success", "Navigation updated.");
+                    return true;
+                } catch {
+                    showMessage("error", "Failed to save navigation.");
+                    return false;
+                }
+            }
+
+            function applyRowVisualState(row, isShown) {
+                row.classList.toggle("nav-row-hidden", !isShown);
+                const handle = row.querySelector(".drag-handle");
+                if (handle) handle.classList.toggle("d-none", !isShown);
+            }
+
+            // Toggle behavior
+            body.querySelectorAll(".nav-toggle").forEach(cb => {
+                cb.addEventListener("change", async (e) => {
+                    const id = parseInt(cb.getAttribute("data-page-id"), 10);
+                    const row = body.querySelector(`tr[data-page-id="${id}"]`);
+                    if (row) applyRowVisualState(row, cb.checked);
+
+                    // Saving after toggle
+                    await saveNavigation();
+                });
+            });
+
+            // Drag/drop behavior
+            Sortable.create(body, {
+                handle: ".drag-handle",
+                animation: 150,
+                ghostClass: "sortable-ghost",
+                onMove: function (evt) {
+                    // Prevent dragging hidden rows (no handle anyway, but keep defensive)
+                    const tr = evt.dragged;
+                    const cb = tr ? tr.querySelector(".nav-toggle") : null;
+                    return cb ? cb.checked : false;
+                },
+                onEnd: async function () {
+                    await saveNavigation();
+                }
+            });
+
+        })();
+    </script>
+}

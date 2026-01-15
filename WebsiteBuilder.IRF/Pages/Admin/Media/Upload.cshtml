@@ -1,0 +1,30 @@
+﻿@page
+@model WebsiteBuilder.IRF.Pages.Admin.Media.UploadModel
+@{
+    ViewData["Title"] = "Upload Media";
+}
+
+<h2 class="mb-3">Upload Media</h2>
+
+<form method="post" enctype="multipart/form-data" class="card p-3">
+    <div class="mb-3">
+        <label class="form-label">Image file</label>
+        <input class="form-control" type="file" name="Upload" accept="image/*" />
+        <div class="form-text">PNG, JPG, WEBP, GIF. Max @Model.MaxBytesDisplay.</div>
+    </div>
+
+    <button type="submit" class="btn btn-primary">Upload</button>
+
+    @if (!string.IsNullOrWhiteSpace(Model.Error))
+    {
+        <div class="alert alert-danger mt-3">@Model.Error</div>
+    }
+
+    @if (!string.IsNullOrWhiteSpace(Model.SuccessUrl))
+    {
+        <div class="alert alert-success mt-3">
+            Uploaded:
+            <a href="@Model.SuccessUrl" target="_blank" rel="noopener">@Model.SuccessUrl</a>
+        </div>
+    }
+</form>

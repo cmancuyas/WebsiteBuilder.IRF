@@ -5,8 +5,10 @@ using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
 using WebsiteBuilder.IRF.DataAccess;
 using WebsiteBuilder.IRF.Infrastructure.Pages;
+using WebsiteBuilder.IRF.Infrastructure.Sections;
 using WebsiteBuilder.IRF.Infrastructure.Tenancy;
 using WebsiteBuilder.IRF.ViewModels.Admin.Pages;
+using WebsiteBuilder.Models;
 using WebsiteBuilder.Models.Constants;
 
 namespace WebsiteBuilder.IRF.Pages.Admin.Pages
@@ -17,13 +19,20 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
         private readonly ITenantContext _tenant;
         private readonly IPagePublishingService _pagePublishingService;
         private readonly ITenantNavigationService _nav;
+        private readonly PagePublishValidator _pagePublishValidator;
 
-        public EditModel(DataContext db, ITenantContext tenant, IPagePublishingService pagePublishingService, ITenantNavigationService nav)
+        public EditModel(
+            DataContext db,
+            ITenantContext tenant,
+            IPagePublishingService pagePublishingService,
+            ITenantNavigationService nav,
+            PagePublishValidator pagePublishValidator)
         {
             _db = db;
             _tenant = tenant;
             _pagePublishingService = pagePublishingService;
             _nav = nav;
+            _pagePublishValidator = pagePublishValidator;
         }
 
         [BindProperty]
@@ -32,6 +41,9 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
         public SelectList PageStatusSelect { get; private set; } = default!;
         public bool SaveSuccess { get; private set; }
         public string TenantHost => _tenant.Host ?? string.Empty;
+
+        // Sections (for drag-drop reorder UI)
+        public IReadOnlyList<PageSection> Sections { get; private set; } = Array.Empty<PageSection>();
 
         // ===== Publish/Archive UI state =====
         public int SectionCount { get; private set; }
@@ -102,6 +114,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
 
             await BuildSelectListsAsync(Input.PageStatusId, ct);
             await LoadSectionCountAsync(page.Id, ct);
+            await LoadSectionsAsync(page.Id, ct);
 
             return Page();
         }
@@ -125,8 +138,9 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             // Normalize slug (if empty, derive from Title)
             Input.Slug = SanitizeSlug(Input.Slug, Input.Title);
 
-            // Update section count for UI (in case we return Page() on validation error)
+            // Refresh section state for UI (if we return Page() on validation error)
             await LoadSectionCountAsync(page.Id, ct);
+            await LoadSectionsAsync(page.Id, ct);
 
             // Slug uniqueness per-tenant (exclude current page)
             if (!string.IsNullOrWhiteSpace(Input.Slug))
@@ -149,22 +163,11 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             if (!ModelState.IsValid)
                 return Page();
 
+            // Snapshot old nav-affecting values BEFORE mapping
             var oldTitle = page.Title;
             var oldSlug = page.Slug;
             var oldShow = page.ShowInNavigation;
             var oldOrder = page.NavigationOrder;
-
-            var navChanged =
-                !string.Equals(oldTitle, page.Title, StringComparison.Ordinal) ||
-                !string.Equals(oldSlug, page.Slug, StringComparison.Ordinal) ||
-                oldShow != page.ShowInNavigation ||
-                oldOrder != page.NavigationOrder;
-
-                        await _db.SaveChangesAsync(ct);
-
-                        if (navChanged)
-                            _nav.Invalidate();
-
 
             // Map fields
             page.Title = Input.Title?.Trim() ?? string.Empty;
@@ -194,7 +197,17 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
 
             page.UpdatedAt = DateTime.UtcNow;
 
+            // Determine if navigation needs refresh AFTER mapping
+            var navChanged =
+                !string.Equals(oldTitle, page.Title, StringComparison.Ordinal) ||
+                !string.Equals(oldSlug, page.Slug, StringComparison.Ordinal) ||
+                oldShow != page.ShowInNavigation ||
+                oldOrder != page.NavigationOrder;
+
             await _db.SaveChangesAsync(ct);
+
+            if (navChanged)
+                _nav.Invalidate();
 
             return RedirectToPage(new { id = page.Id, saveSuccess = true });
         }
@@ -204,11 +217,26 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             if (!_tenant.IsResolved)
                 return NotFound("Tenant not resolved.");
 
-            // Actor
+            // 1) Validate ALL sections before attempting publish
+            var validation = await _pagePublishValidator.ValidateDraftSectionsAsync(id, ct);
+
+            if (!validation.IsValid)
+            {
+                var message = string.Join(" ",
+                    validation.Errors.SelectMany(e =>
+                        e.Messages.Select(m => $"[Section #{e.SectionId} - {e.TypeKey}] {m}")
+                    )
+                );
+
+                TempData["Error"] = "Publish blocked. Fix invalid sections first. " + message;
+                return RedirectToPage(new { id });
+            }
+
+            // 2) Actor
             var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
             Guid.TryParse(userId, out var userGuid);
 
-            // Delegate ALL rules + transaction to the service
+            // 3) Delegate publish transaction to the service
             var result = await _pagePublishingService.PublishAsync(id, userGuid, ct);
 
             if (!result.Success)
@@ -216,11 +244,11 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                 TempData["Error"] = string.Join(" ", result.Errors);
                 return RedirectToPage(new { id });
             }
+
             _nav.Invalidate();
             TempData["Success"] = "Page published.";
             return RedirectToPage(new { id });
         }
-
 
         public async Task<IActionResult> OnPostUnpublishAsync(int id, CancellationToken ct = default)
         {
@@ -278,9 +306,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             }
 
             page.PageStatusId = PageStatusIds.Archived;
-
-            // Recommended UX: archived pages should not appear in navigation
-            page.ShowInNavigation = false;
+            page.ShowInNavigation = false; // archived pages should not appear in navigation
 
             var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
             if (Guid.TryParse(userId, out var userGuid))
@@ -289,7 +315,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             page.UpdatedAt = DateTime.UtcNow;
 
             await _db.SaveChangesAsync(ct);
-
+            _nav.Invalidate();
             TempData["Success"] = "Page archived.";
             return RedirectToPage(new { id });
         }
@@ -324,9 +350,47 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             page.UpdatedAt = DateTime.UtcNow;
 
             await _db.SaveChangesAsync(ct);
-
+            _nav.Invalidate();
             TempData["Success"] = "Page restored to Draft.";
             return RedirectToPage(new { id });
+        }
+
+        public async Task<IActionResult> OnPostReorderSectionsAsync(
+            [FromBody] ReorderSectionsRequest request,
+            CancellationToken ct = default)
+        {
+            if (!_tenant.IsResolved)
+                return new JsonResult(new { ok = false, message = "Tenant not resolved." });
+
+            if (request.OrderedSectionIds == null || request.OrderedSectionIds.Count == 0)
+                return new JsonResult(new { ok = false, message = "No sections provided." });
+
+            var sections = await _db.PageSections
+                .Where(s =>
+                    s.TenantId == _tenant.TenantId &&
+                    s.PageId == request.PageId &&
+                    !s.IsDeleted &&
+                    request.OrderedSectionIds.Contains(s.Id))
+                .ToListAsync(ct);
+
+            if (sections.Count != request.OrderedSectionIds.Count)
+                return new JsonResult(new { ok = false, message = "Invalid section list." });
+
+            Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var userGuid);
+
+            for (int i = 0; i < request.OrderedSectionIds.Count; i++)
+            {
+                var id = request.OrderedSectionIds[i];
+                var section = sections.First(s => s.Id == id);
+
+                section.SortOrder = i + 1; // 1, 2, 3, ...
+                section.UpdatedAt = DateTime.UtcNow;
+                if (userGuid != Guid.Empty)
+                    section.UpdatedBy = userGuid;
+            }
+
+            await _db.SaveChangesAsync(ct);
+            return new JsonResult(new { ok = true });
         }
 
         private async Task LoadSectionCountAsync(int pageId, CancellationToken ct)
@@ -334,6 +398,16 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             SectionCount = await _db.PageSections
                 .AsNoTracking()
                 .CountAsync(s => s.TenantId == _tenant.TenantId && s.PageId == pageId && !s.IsDeleted, ct);
+        }
+
+        private async Task LoadSectionsAsync(int pageId, CancellationToken ct)
+        {
+            Sections = await _db.PageSections
+                .AsNoTracking()
+                .Where(s => s.TenantId == _tenant.TenantId && s.PageId == pageId && !s.IsDeleted)
+                .OrderBy(s => s.SortOrder)
+                .ThenBy(s => s.Id)
+                .ToListAsync(ct);
         }
 
         private async Task BuildSelectListsAsync(int selectedPageStatusId, CancellationToken ct)
@@ -346,9 +420,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                 .ToListAsync(ct);
 
             PageStatusSelect = new SelectList(statuses, "Id", "Name", selectedPageStatusId);
-
-            // _Form.cshtml reads ViewData["PageStatuses"]
-            ViewData["PageStatuses"] = PageStatusSelect;
+            ViewData["PageStatuses"] = PageStatusSelect; // _Form.cshtml reads this
         }
 
         private static string SanitizeSlug(string? slug, string? title)
@@ -365,5 +437,20 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
 
             return value.ToLowerInvariant();
         }
+
+        // Simple label for the reorder list
+        public static string GetSectionTitle(PageSection s) => s.SectionTypeId switch
+        {
+            1 => "Hero",
+            2 => "Text",
+            3 => "Gallery",
+            _ => $"SectionType {s.SectionTypeId}"
+        };
+    }
+
+    public sealed class ReorderSectionsRequest
+    {
+        public int PageId { get; set; }
+        public List<int> OrderedSectionIds { get; set; } = new();
     }
 }

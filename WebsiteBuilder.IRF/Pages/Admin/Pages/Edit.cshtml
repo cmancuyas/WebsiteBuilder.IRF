@@ -14,7 +14,7 @@
             <div class="text-muted small">Tenant: @Model.TenantHost</div>
         </div>
 
-        <div class="d-flex gap-2">
+        <div class="d-flex gap-2 align-items-center">
 
             <a class="btn btn-outline-secondary" asp-page="/Admin/Pages/Index">Back</a>
 
@@ -27,70 +27,44 @@
             @* Publish *@
             @if (Model.CanPublish)
             {
-                <form method="post"
-                      class="d-inline"
-                      asp-page-handler="Publish"
-                      asp-route-id="@Model.Input.Id">
-                    <button type="submit" class="btn btn-success">
-                        Publish
-                    </button>
+                <form method="post" class="d-inline" asp-page-handler="Publish" asp-route-id="@Model.Input.Id">
+                    <button type="submit" class="btn btn-success">Publish</button>
                 </form>
             }
             else
             {
-                <button type="button" class="btn btn-success" disabled>
-                    Publish
-                </button>
+                <button type="button" class="btn btn-success" disabled>Publish</button>
             }
 
             @* Unpublish *@
             @if (Model.CanUnpublish)
             {
-                <form method="post"
-                      class="d-inline"
-                      asp-page-handler="Unpublish"
-                      asp-route-id="@Model.Input.Id">
-                    <button type="submit" class="btn btn-outline-warning">
-                        Unpublish
-                    </button>
+                <form method="post" class="d-inline" asp-page-handler="Unpublish" asp-route-id="@Model.Input.Id">
+                    <button type="submit" class="btn btn-outline-warning">Unpublish</button>
                 </form>
             }
             else
             {
-                <button type="button" class="btn btn-outline-warning" disabled>
-                    Unpublish
-                </button>
+                <button type="button" class="btn btn-outline-warning" disabled>Unpublish</button>
             }
 
             @* Archive *@
             @if (Model.CanArchive)
             {
-                <form method="post"
-                      class="d-inline"
-                      asp-page-handler="Archive"
-                      asp-route-id="@Model.Input.Id">
-                    <button type="submit" class="btn btn-outline-danger">
-                        Archive
-                    </button>
+                <form method="post" class="d-inline" asp-page-handler="Archive" asp-route-id="@Model.Input.Id">
+                    <button type="submit" class="btn btn-outline-danger">Archive</button>
                 </form>
             }
             else
             {
-                <button type="button" class="btn btn-outline-danger" disabled>
-                    Archive
-                </button>
+                <button type="button" class="btn btn-outline-danger" disabled>Archive</button>
             }
 
             @* Restore *@
             @if (Model.CanRestore)
             {
-                <form method="post"
-                      class="d-inline"
-                      asp-page-handler="Restore"
-                      asp-route-id="@Model.Input.Id">
-                    <button type="submit" class="btn btn-outline-secondary">
-                        Restore
-                    </button>
+                <form method="post" class="d-inline" asp-page-handler="Restore" asp-route-id="@Model.Input.Id">
+                    <button type="submit" class="btn btn-outline-secondary">Restore</button>
                 </form>
             }
         </div>
@@ -134,39 +108,137 @@
         <div class="alert alert-danger">@err</div>
     }
 
-    <form id="pageForm" method="post" class="card shadow-sm">
-        <div class="card-body">
+    <div class="row g-3">
+        <div class="col-12 col-lg-7">
+            <form id="pageForm" method="post" class="card shadow-sm">
+                <div class="card-body">
 
-            <input type="hidden" asp-for="Input.Id" />
+                    <input type="hidden" asp-for="Input.Id" />
 
-            @* Shared fields (IMPORTANT: use "for=Input" so all names post as Input.*) *@
-            <partial name="_Form" for="Input" />
+                    @* Shared fields (IMPORTANT: use "for=Input" so all names post as Input.*) *@
+                    <partial name="_Form" for="Input" />
 
-            @* Navigation fields *@
-            <div class="form-check mt-3">
-                <input asp-for="Input.ShowInNavigation" class="form-check-input" />
-                <label asp-for="Input.ShowInNavigation" class="form-check-label"></label>
-            </div>
+                    @* Navigation fields *@
+                    <div class="form-check mt-3">
+                        <input asp-for="Input.ShowInNavigation" class="form-check-input" />
+                        <label asp-for="Input.ShowInNavigation" class="form-check-label"></label>
+                    </div>
 
-            <div class="mb-3">
-                <label asp-for="Input.NavigationOrder" class="form-label"></label>
-                <input asp-for="Input.NavigationOrder" class="form-control" />
-                <span class="text-danger" asp-validation-for="Input.NavigationOrder"></span>
-            </div>
+                    <div class="mb-3">
+                        <label asp-for="Input.NavigationOrder" class="form-label"></label>
+                        <input asp-for="Input.NavigationOrder" class="form-control" />
+                        <span class="text-danger" asp-validation-for="Input.NavigationOrder"></span>
+                    </div>
 
+                </div>
+
+                <div class="card-footer d-flex justify-content-end gap-2">
+                    <button type="submit" class="btn btn-primary" id="saveBtn" data-save-button>
+                        Save
+                    </button>
+                </div>
+            </form>
         </div>
 
-        <div class="card-footer d-flex justify-content-end gap-2">
-            <button type="submit"
-                    class="btn btn-primary"
-                    id="saveBtn"
-                    data-save-button>
-                Save
-            </button>
+        <div class="col-12 col-lg-5">
+            <div class="card shadow-sm">
+                <div class="card-header d-flex align-items-center justify-content-between">
+                    <div>
+                        <strong>Sections</strong>
+                        <div class="text-muted small">Drag and drop to reorder.</div>
+                    </div>
+                    <span class="badge bg-secondary">@Model.SectionCount</span>
+                </div>
+
+                <div class="card-body">
+                    @if (!Model.HasSections)
+                    {
+                        <div class="text-muted">No sections yet.</div>
+                    }
+                    else
+                    {
+                        <div id="sectionsList" class="vstack gap-2">
+                            @foreach (var s in Model.Sections)
+                            {
+                                <div class="card section-item" data-section-id="@s.Id">
+                                    <div class="card-body py-2 d-flex align-items-center">
+                                        <span class="me-2 cursor-grab" title="Drag to reorder" aria-label="Drag to reorder">⋮⋮</span>
+                                        <div class="flex-grow-1">
+                                            <div class="fw-semibold">@WebsiteBuilder.IRF.Pages.Admin.Pages.EditModel.GetSectionTitle(s)</div>
+                                            <div class="text-muted small">Section ID: @s.Id</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+
+                <div class="card-footer small text-muted">
+                    Reordering saves automatically.
+                </div>
+            </div>
         </div>
-    </form>
+    </div>
+
 </div>
 
 @section Scripts {
     <partial name="_ValidationScriptsPartial" />
+
+    <style>
+        .cursor-grab {
+            cursor: grab;
+            user-select: none;
+        }
+
+        .sortable-ghost {
+            opacity: .6;
+        }
+    </style>
+
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+
+    <script>
+        document.addEventListener("DOMContentLoaded", function () {
+            const el = document.getElementById("sectionsList");
+            if (!el) return;
+
+            // Razor Pages anti-forgery token (generated by the main form)
+            const tokenEl = document.querySelector('input[name="__RequestVerificationToken"]');
+            const token = tokenEl ? tokenEl.value : null;
+
+            Sortable.create(el, {
+                handle: ".cursor-grab",
+                animation: 150,
+                ghostClass: "sortable-ghost",
+                onEnd: async function () {
+                    const ids = Array.from(el.querySelectorAll(".section-item"))
+                        .map(x => parseInt(x.getAttribute("data-section-id"), 10))
+                        .filter(n => Number.isFinite(n));
+
+                    try {
+                        const res = await fetch("?handler=ReorderSections", {
+                            method: "POST",
+                            headers: {
+                                "Content-Type": "application/json",
+                                ...(token ? { "RequestVerificationToken": token } : {})
+                            },
+                            body: JSON.stringify({
+                                pageId: @Model.Input.Id,
+                                orderedSectionIds: ids
+                            })
+                        });
+
+                        const json = await res.json();
+                        if (!json.ok) {
+                            alert(json.message || "Failed to save order.");
+                        }
+                    } catch (e) {
+                        alert("Failed to save order.");
+                    }
+                }
+            });
+        });
+    </script>
 }

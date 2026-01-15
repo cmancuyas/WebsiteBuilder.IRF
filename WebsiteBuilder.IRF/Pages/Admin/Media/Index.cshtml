@@ -1,0 +1,58 @@
+﻿@page
+@model WebsiteBuilder.IRF.Pages.Admin.Media.IndexModel
+
+@{
+    ViewData["Title"] = "Media";
+}
+
+<div class="d-flex align-items-center justify-content-between mb-3">
+    <div>
+        <h2 class="mb-0">Media</h2>
+        <div class="text-muted small">Manage uploads and restore deleted assets.</div>
+    </div>
+    <div class="d-flex gap-2">
+        <a class="btn btn-primary" asp-page="/Admin/Media/Upload">Upload</a>
+        <a class="btn btn-outline-secondary" asp-page="/Admin/Media/List">Library</a>
+        <a class="btn btn-outline-danger" asp-page="/Admin/Media/Trash">
+            Trash
+            @if (Model.DeletedCount > 0)
+            {
+                <span class="badge bg-danger ms-1">@Model.DeletedCount</span>
+            }
+        </a>
+    </div>
+</div>
+
+<div class="row g-3">
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-body">
+                <div class="text-muted small">Active Media</div>
+                <div class="fs-3 fw-semibold">@Model.ActiveCount</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-body">
+                <div class="text-muted small">Deleted Media</div>
+                <div class="fs-3 fw-semibold">@Model.DeletedCount</div>
+                <div class="text-muted small">Restore before cleanup retention expires.</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-body">
+                <div class="text-muted small">Shortcuts</div>
+                <div class="d-grid gap-2 mt-2">
+                    <a class="btn btn-outline-secondary" asp-page="/Admin/Media/Picker">Open Picker</a>
+                    <a class="btn btn-outline-secondary" asp-page="/Admin/Media/List">Open Library</a>
+                    <a class="btn btn-outline-danger" asp-page="/Admin/Media/Trash">Open Trash</a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>

@@ -17,6 +17,7 @@ namespace WebsiteBuilder.IRF.DataAccess
         public DbSet<PageRevision> PageRevisions => Set<PageRevision>();
         public DbSet<PageRevisionSection> PageRevisionSections => Set<PageRevisionSection>();
         public DbSet<SectionType> SectionTypes => Set<SectionType>();
+        public DbSet<MediaAsset> MediaAssets => Set<MediaAsset>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -32,6 +33,8 @@ namespace WebsiteBuilder.IRF.DataAccess
 
             ConfigurePageRevisions(modelBuilder);
             ConfigurePageRevisionSections(modelBuilder);
+
+            ConfigureMediaAssets(modelBuilder);
         }
 
         private static void ConfigureBaseModelConventions(ModelBuilder modelBuilder)
@@ -287,6 +290,64 @@ namespace WebsiteBuilder.IRF.DataAccess
                     .OnDelete(DeleteBehavior.Restrict);
             });
         }
+        private static void ConfigureMediaAssets(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<MediaAsset>(b =>
+            {
+                b.ToTable("MediaAssets");
+
+                b.HasKey(x => x.Id);
+                b.Property(x => x.Id).ValueGeneratedOnAdd();
+
+                // Tenant scoping (required)
+                b.Property(x => x.TenantId)
+                    .IsRequired();
+
+                b.Property(x => x.FileName)
+                    .HasMaxLength(255)
+                    .IsRequired();
+
+                b.Property(x => x.ContentType)
+                    .HasMaxLength(255)
+                    .IsRequired();
+
+                b.Property(x => x.SizeBytes)
+                    .HasMaxLength(255);
+
+                b.Property(x => x.StorageKey)
+                    .HasMaxLength(500)
+                    .IsRequired();
+
+                // Thumbnail URL path (optional but recommended)
+                b.Property(x => x.ThumbStorageKey)
+                    .HasMaxLength(500);
+
+                b.Property(x => x.Width)
+                    .HasMaxLength(500);
+
+                b.Property(x => x.Height)
+                    .HasMaxLength(500);
+
+                b.Property(x => x.AltText)
+                    .HasMaxLength(1000);
+
+                b.Property(x => x.CheckSum)
+                    .HasMaxLength(64);
+
+                // Indexes
+                b.HasIndex(x => x.StorageKey);
+                b.HasIndex(x => x.FileName);
+                b.HasIndex(x => x.ContentType);
+
+                // Tenant-aware indexes (important)
+                b.HasIndex(x => new { x.TenantId, x.IsDeleted });
+                b.HasIndex(x => new { x.TenantId, x.CheckSum }); // dedupe per tenant
+
+                // Optional: fast thumb lookup / diagnostics
+                b.HasIndex(x => x.ThumbStorageKey);
+            });
+        }
+
 
     }
 }

@@ -1,66 +1,116 @@
-﻿@model WebsiteBuilder.Models.PageSection
+﻿@* Pages/Shared/Sections/_Gallery.cshtml *@
+@model WebsiteBuilder.Models.PageSection
 @using System.Text.Json
 
 @{
-    JsonDocument? doc = null;
+    // PageSection only has SettingsJson (no ContentJson)
+    var json = Model.SettingsJson;
 
-    try
+    // Defaults (optional fields; safe even if not present)
+    var layout = "grid"; // "grid" | "masonry" (treated as grid for now)
+    var columns = 3;     // 1..6
+    var images = new List<(string Url, string? Alt, string? Caption)>();
+
+    if (!string.IsNullOrWhiteSpace(json))
     {
-        // ✅ Phase 2 canonical payload
-        if (!string.IsNullOrWhiteSpace(Model.SettingsJson))
+        try
         {
-            doc = JsonDocument.Parse(Model.SettingsJson);
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            if (root.ValueKind == JsonValueKind.Object)
+            {
+                if (root.TryGetProperty("layout", out var layoutEl) && layoutEl.ValueKind == JsonValueKind.String)
+                    layout = layoutEl.GetString() ?? layout;
+
+                if (root.TryGetProperty("columns", out var colsEl) && colsEl.ValueKind == JsonValueKind.Number)
+                {
+                    var c = colsEl.GetInt32();
+                    if (c >= 1 && c <= 6) columns = c;
+                }
+
+                if (root.TryGetProperty("images", out var imagesEl) && imagesEl.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var item in imagesEl.EnumerateArray())
+                    {
+                        if (item.ValueKind != JsonValueKind.Object)
+                            continue;
+
+                        if (!item.TryGetProperty("url", out var urlEl) || urlEl.ValueKind != JsonValueKind.String)
+                            continue;
+
+                        var url = (urlEl.GetString() ?? "").Trim();
+                        if (string.IsNullOrWhiteSpace(url))
+                            continue;
+
+                        string? alt = null;
+                        if (item.TryGetProperty("alt", out var altEl) && altEl.ValueKind == JsonValueKind.String)
+                            alt = altEl.GetString();
+
+                        string? caption = null;
+                        if (item.TryGetProperty("caption", out var capEl) && capEl.ValueKind == JsonValueKind.String)
+                            caption = capEl.GetString();
+
+                        images.Add((url, alt, caption));
+                    }
+                }
+            }
+        }
+        catch
+        {
+            // Fail-safe: never break page rendering due to JSON.
+            // Invalid JSON should already be blocked by validators/publish gate.
         }
     }
-    catch
+
+    if (images.Count == 0)
     {
-        doc = null;
+        return;
     }
 
-    var images = new List<(string Url, string? Alt)>();
-
-    if (doc?.RootElement.ValueKind == JsonValueKind.Object &&
-        doc.RootElement.TryGetProperty("images", out var imgs) &&
-        imgs.ValueKind == JsonValueKind.Array)
+    // Bootstrap grid mapping
+    var colClass = columns switch
     {
-        foreach (var item in imgs.EnumerateArray())
-        {
-            if (item.ValueKind != JsonValueKind.Object) continue;
+        1 => "col-12",
+        2 => "col-12 col-md-6",
+        3 => "col-12 col-md-6 col-lg-4",
+        4 => "col-12 col-md-6 col-lg-3",
+        5 => "col-12 col-md-4 col-lg-3",
+        6 => "col-12 col-md-4 col-lg-2",
+        _ => "col-12 col-md-6 col-lg-4"
+    };
 
-            var url = item.TryGetProperty("url", out var u) && u.ValueKind == JsonValueKind.String
-                ? u.GetString()
-                : null;
-
-            var alt = item.TryGetProperty("alt", out var a) && a.ValueKind == JsonValueKind.String
-                ? a.GetString()
-                : null;
-
-            if (!string.IsNullOrWhiteSpace(url))
-                images.Add((url!, alt));
-        }
-    }
-
-    doc?.Dispose();
+    var wrapperClass = (layout ?? "").ToLowerInvariant() == "masonry"
+        ? "wb-gallery wb-gallery--masonry"
+        : "wb-gallery wb-gallery--grid";
 }
 
 <section class="py-4">
     <div class="container">
-        @if (images.Count == 0)
-        {
-            <div class="text-muted">No images.</div>
-        }
-        else
-        {
+        <div class="@wrapperClass">
             <div class="row g-3">
                 @foreach (var img in images)
                 {
-                    <div class="col-6 col-md-4 col-lg-3">
-                        <div class="border rounded overflow-hidden">
-                            <img src="@img.Url" alt="@(img.Alt ?? string.Empty)" class="img-fluid d-block" />
-                        </div>
+                    var altText = string.IsNullOrWhiteSpace(img.Alt) ? "" : img.Alt!.Trim();
+                    var caption = string.IsNullOrWhiteSpace(img.Caption) ? null : img.Caption!.Trim();
+
+                    <div class="@colClass">
+                        <figure class="mb-0">
+                            <div class="ratio ratio-4x3">
+                                <img src="@img.Url"
+                                     alt="@altText"
+                                     class="w-100 h-100"
+                                     style="object-fit: cover; border-radius: .5rem;" />
+                            </div>
+
+                            @if (!string.IsNullOrWhiteSpace(caption))
+                            {
+                                <figcaption class="mt-2 small text-muted">@caption</figcaption>
+                            }
+                        </figure>
                     </div>
                 }
             </div>
-        }
+        </div>
     </div>
 </section>

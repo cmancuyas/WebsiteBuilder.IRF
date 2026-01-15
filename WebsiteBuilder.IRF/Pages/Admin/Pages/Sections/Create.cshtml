@@ -7,26 +7,39 @@
 
 <h2 class="mb-3">Add Section</h2>
 
-<form method="post">
+<form method="post" id="createSectionForm">
+    @Html.AntiForgeryToken()
+
     <input type="hidden" asp-for="Section.PageId" />
     <input type="hidden" asp-for="Section.SortOrder" />
 
     <div class="mb-3">
         <label class="form-label">Section Type</label>
-        <select class="form-select" asp-for="Section.SectionTypeId" asp-items="Model.SectionTypeOptions" id="sectionTypeId"></select>
+        <select class="form-select"
+                asp-for="Section.SectionTypeId"
+                asp-items="Model.SectionTypeOptions"
+                id="sectionTypeId"></select>
         <span class="text-danger" asp-validation-for="Section.SectionTypeId"></span>
     </div>
 
-    <div class="mb-3">
-        <label class="form-label">SettingsJson</label>
-        <textarea class="form-control font-monospace" rows="10" asp-for="Section.SettingsJson" id="settingsJson"></textarea>
-        <span class="text-danger" asp-validation-for="Section.SettingsJson"></span>
-        <div class="form-text">Must be valid JSON object, e.g. <code>{}</code></div>
+    @* Always render BOTH. Toggle with JS. *@
+    <div id="galleryEditorContainer" class="d-none">
+        <partial name="Partials/_GalleryEditor" for="Section" />
+    </div>
+
+    <div id="jsonEditorContainer">
+        <div class="mb-3">
+            <label asp-for="Section.SettingsJson" class="form-label"></label>
+            <textarea asp-for="Section.SettingsJson" class="form-control font-monospace" rows="8" id="settingsJson"></textarea>
+            <span asp-validation-for="Section.SettingsJson" class="text-danger"></span>
+        </div>
     </div>
 
     <div class="d-flex gap-2">
         <button type="submit" class="btn btn-primary">Save</button>
-        <a class="btn btn-outline-secondary" asp-page="/Admin/Pages/Sections" asp-route-id="@Model.Section.PageId">Cancel</a>
+        <a class="btn btn-outline-secondary"
+           asp-page="/Admin/Pages/Sections"
+           asp-route-id="@Model.Section.PageId">Cancel</a>
     </div>
 </form>
 
@@ -34,18 +47,67 @@
 {
     <partial name="_ValidationScriptsPartial" />
 
+    <style>
+        .font-monospace {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        }
+    </style>
+
     <script>
         (function () {
             const ddl = document.getElementById('sectionTypeId');
-            const txt = document.getElementById('settingsJson');
 
-            if (!ddl || !txt) return;
+            const galleryWrap = document.getElementById('galleryEditorContainer');
+            const jsonWrap = document.getElementById('jsonEditorContainer');
+
+            // JSON textarea for non-gallery editor
+            const jsonTextArea = document.getElementById('settingsJson');
+
+            // Gallery editor writes to this hidden textarea (from _GalleryEditor)
+            const galleryJsonField = document.getElementById('SettingsJsonField');
+
+            if (!ddl || !galleryWrap || !jsonWrap) return;
+
+            function getSelectedTypeText() {
+                const opt = ddl.options[ddl.selectedIndex];
+                return (opt && opt.text) ? opt.text.trim() : "";
+            }
+
+            function toggleEditors() {
+                const typeText = getSelectedTypeText();
+                const isGallery = typeText === "Gallery";
+
+                if (isGallery) {
+                    galleryWrap.classList.remove('d-none');
+                    jsonWrap.classList.add('d-none');
+                } else {
+                    galleryWrap.classList.add('d-none');
+                    jsonWrap.classList.remove('d-none');
+                }
+
+                // Trigger a validation pass when switching
+                validateNow();
+            }
 
             let timer = null;
 
+            function getAntiForgeryToken() {
+                const tokenInput = document.querySelector('input[name="__RequestVerificationToken"]');
+                return tokenInput ? tokenInput.value : '';
+            }
+
+            function currentSettingsJson() {
+                // If Gallery is visible, validate gallery-generated JSON
+                if (!galleryWrap.classList.contains('d-none') && galleryJsonField) {
+                    return galleryJsonField.value || '';
+                }
+                // Otherwise validate the raw textarea
+                return jsonTextArea ? (jsonTextArea.value || '') : '';
+            }
+
             function validateNow() {
                 const sectionTypeId = ddl.value;
-                const settingsJson = txt.value;
+                const settingsJson = currentSettingsJson();
 
                 const formData = new FormData();
                 formData.append('sectionTypeId', sectionTypeId);
@@ -60,8 +122,6 @@
                 })
                 .then(r => r.json())
                 .then(res => {
-                    // You can wire this into a nicer UI later (inline list, etc.).
-                    // For now, we only log errors to console to avoid spammy alerts.
                     if (!res.isValid && res.errors && res.errors.length) {
                         console.warn('Section JSON invalid:', res.errors);
                     }
@@ -69,31 +129,17 @@
                 .catch(err => console.error(err));
             }
 
-            ddl.addEventListener('change', function () {
-                // After changing type, validate the current payload against new type
-                validateNow();
-            });
+            ddl.addEventListener('change', toggleEditors);
 
-            txt.addEventListener('input', function () {
-                clearTimeout(timer);
-                timer = setTimeout(validateNow, 300);
-            });
-
-            function getAntiForgeryToken() {
-                const tokenInput = document.querySelector('input[name="__RequestVerificationToken"]');
-                return tokenInput ? tokenInput.value : '';
+            if (jsonTextArea) {
+                jsonTextArea.addEventListener('input', function () {
+                    clearTimeout(timer);
+                    timer = setTimeout(validateNow, 300);
+                });
             }
+
+            // Initial toggle on page load
+            toggleEditors();
         })();
     </script>
-
-    @* Hidden antiforgery token for fetch() *@
-    <form method="post" style="display:none;">
-        @Html.AntiForgeryToken()
-    </form>
-
-    <style>
-        .font-monospace {
-            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-        }
-    </style>
 }

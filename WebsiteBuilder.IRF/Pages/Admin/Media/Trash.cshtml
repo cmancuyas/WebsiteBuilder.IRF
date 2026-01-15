@@ -1,0 +1,146 @@
+﻿@page
+@model WebsiteBuilder.IRF.Pages.Admin.Media.TrashModel
+
+@{
+    ViewData["Title"] = "Media Trash";
+}
+
+<div class="d-flex align-items-center justify-content-between mb-3">
+    <div>
+        <h2 class="mb-0">Recently Deleted</h2>
+        <div class="text-muted small">Restore media before cleanup permanently removes files.</div>
+    </div>
+
+    <a class="btn btn-outline-secondary" asp-page="/Admin/Media/Index">
+        Back to Media
+    </a>
+
+</div>
+
+@* Anti-forgery token for fetch() posts *@
+<form id="antiForgeryForm" method="post">
+    @Html.AntiForgeryToken()
+</form>
+
+@if (Model.DeletedMedia.Count == 0)
+{
+    <div class="alert alert-info mb-0">
+        No deleted media found.
+    </div>
+}
+else
+{
+    <div class="card">
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-hover align-middle mb-0" id="mediaTrashTable">
+                    <thead class="table-light">
+                        <tr>
+                            <th style="width: 72px;">Preview</th>
+                            <th>File</th>
+                            <th style="width: 220px;">Deleted At</th>
+                            <th style="width: 140px;" class="text-end">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var m in Model.DeletedMedia)
+                        {
+                            <tr data-id="@m.Id">
+                                <td>
+                                    @* If you already have a thumbnail endpoint, use it here.
+                                   Otherwise this can be a placeholder or omitted. *@
+                                    <div class="bg-light border rounded d-flex align-items-center justify-content-center"
+                                         style="width:48px;height:48px;">
+                                        <span class="text-muted small">IMG</span>
+                                    </div>
+                                </td>
+
+                                <td>
+                                    <div class="fw-semibold">@m.FileName</div>
+                                    <div class="text-muted small">@m.ContentType</div>
+                                </td>
+
+                                <td>
+                                    <div class="small">
+                                        @(m.DeletedAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "—")
+                                    </div>
+                                </td>
+
+                                <td class="text-end">
+                                    <button type="button"
+                                            class="btn btn-sm btn-outline-success js-restore"
+                                            title="Restore this media">
+                                        Restore
+                                    </button>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+}
+
+@section Scripts {
+    <script>
+        (function () {
+            function getAntiForgeryToken() {
+                // Standard ASP.NET Core token input name is __RequestVerificationToken
+                const tokenInput = document.querySelector('#antiForgeryForm input[name="__RequestVerificationToken"]');
+                return tokenInput ? tokenInput.value : null;
+            }
+
+            async function restoreMedia(id, rowEl) {
+                const token = getAntiForgeryToken();
+                if (!token) {
+                    alert("Security token missing. Please refresh the page.");
+                    return;
+                }
+
+                // Razor Pages handler endpoint: same page + ?handler=Restore
+                const url = `?handler=Restore`;
+
+                const body = new URLSearchParams();
+                body.append("id", id);
+
+                const res = await fetch(url, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                        "RequestVerificationToken": token,
+                        "X-Requested-With": "XMLHttpRequest"
+                    },
+                    body: body.toString()
+                });
+
+                if (!res.ok) {
+                    let msg = "Restore failed.";
+                    try {
+                        const data = await res.json();
+                        if (data && data.error) msg = data.error;
+                    } catch { /* ignore */ }
+                    alert(msg);
+                    return;
+                }
+
+                // Remove row from table
+                rowEl.style.opacity = "0.4";
+                setTimeout(() => rowEl.remove(), 150);
+            }
+
+            document.addEventListener("click", function (e) {
+                const btn = e.target.closest(".js-restore");
+                if (!btn) return;
+
+                const row = btn.closest("tr");
+                const id = row?.getAttribute("data-id");
+                if (!id) return;
+
+                if (!confirm("Restore this media file?")) return;
+
+                restoreMedia(id, row);
+            });
+        })();
+    </script>
+}

@@ -1,0 +1,726 @@
+﻿@page
+@model WebsiteBuilder.IRF.Pages.Admin.Media.PickerModel
+
+@{
+    ViewData["Title"] = "Media Picker";
+}
+
+<div class="container py-3" id="mediaPickerRoot">
+    <div class="d-flex align-items-start justify-content-between mb-2 gap-3">
+        <div class="flex-grow-1">
+            <h5 class="mb-0">Select an Image</h5>
+            <div class="text-muted small">
+                Search, upload, or drag-and-drop images. Use arrow keys + Enter to select.
+            </div>
+        </div>
+
+        <div class="d-flex gap-2 align-items-center">
+            <input type="file"
+                   class="form-control form-control-sm"
+                   id="mediaUploadInput"
+                   accept="image/*"
+                   style="max-width: 260px;" />
+            <button type="button" class="btn btn-sm btn-outline-primary" id="mediaUploadBtn">Upload</button>
+        </div>
+    </div>
+
+    @Html.AntiForgeryToken()
+
+    <div class="input-group mb-2">
+        <input type="text" class="form-control" id="mediaSearch" placeholder="Search by file name or alt text..." />
+        <button class="btn btn-outline-primary" type="button" id="mediaSearchBtn">Search</button>
+    </div>
+
+    <div class="d-flex align-items-center justify-content-between mb-2 gap-2">
+        <div id="mediaMsg" class="flex-grow-1"></div>
+
+        <div class="d-flex gap-2 align-items-center">
+            <button type="button" class="btn btn-sm btn-outline-secondary" id="mediaSelectAllBtn">Select all</button>
+            <button type="button" class="btn btn-sm btn-danger d-none" id="mediaDeleteSelectedBtn">
+                Delete selected
+            </button>
+        </div>
+    </div>
+
+    <div class="row g-2" id="mediaGrid" tabindex="0" aria-label="Media grid"></div>
+
+    <div class="d-flex justify-content-center mt-3">
+        <button type="button" class="btn btn-outline-secondary d-none" id="mediaLoadMoreBtn">Load more</button>
+    </div>
+</div>
+
+@section Scripts
+{
+    <style>
+        #mediaMsg .alert {
+            width: 100%;
+        }
+
+        .media-card {
+            border: 1px solid rgba(0,0,0,.1);
+            border-radius: .75rem;
+            overflow: hidden;
+            background: #fff;
+            box-shadow: 0 1px 2px rgba(0,0,0,.03);
+            transition: transform .08s ease, box-shadow .08s ease;
+            position: relative;
+        }
+
+            .media-card:hover {
+                transform: translateY(-1px);
+                box-shadow: 0 4px 14px rgba(0,0,0,.08);
+            }
+
+        .media-thumb {
+            width: 100%;
+            height: 140px;
+            object-fit: cover;
+            background: #f6f6f6;
+            display: block;
+        }
+
+        .media-meta {
+            font-size: 12px;
+        }
+
+        .media-card.is-focused {
+            outline: 2px solid rgba(13,110,253,.8);
+            outline-offset: 2px;
+        }
+
+        .media-card.is-new {
+            outline: 2px solid rgba(25,135,84,.65);
+            outline-offset: 2px;
+        }
+
+        .media-toolbar {
+            display: flex;
+            justify-content: flex-end;
+            gap: .5rem;
+            margin-top: .5rem;
+        }
+
+        .alt-editor {
+            display: flex;
+            gap: .5rem;
+            align-items: center;
+            margin-top: .5rem;
+        }
+
+            .alt-editor input {
+                font-size: 12px;
+            }
+
+        .select-box {
+            position: absolute;
+            top: .5rem;
+            left: .5rem;
+            background: rgba(255,255,255,.92);
+            border-radius: .5rem;
+            padding: .15rem .35rem;
+            border: 1px solid rgba(0,0,0,.12);
+            z-index: 2;
+        }
+
+        .dropzone-active {
+            position: relative;
+        }
+
+            .dropzone-active::before {
+                content: "Drop images to upload";
+                position: absolute;
+                inset: 0;
+                background: rgba(13,110,253,.08);
+                border: 2px dashed rgba(13,110,253,.6);
+                border-radius: .75rem;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-weight: 600;
+                color: rgba(13,110,253,.9);
+                z-index: 5;
+                pointer-events: none;
+            }
+    </style>
+
+    <script>
+        (function () {
+            const root = document.getElementById("mediaPickerRoot");
+            const grid = document.getElementById("mediaGrid");
+            const msg = document.getElementById("mediaMsg");
+
+            const input = document.getElementById("mediaSearch");
+            const btn = document.getElementById("mediaSearchBtn");
+
+            const uploadInput = document.getElementById("mediaUploadInput");
+            const uploadBtn = document.getElementById("mediaUploadBtn");
+
+            const loadMoreBtn = document.getElementById("mediaLoadMoreBtn");
+            const selectAllBtn = document.getElementById("mediaSelectAllBtn");
+            const deleteSelectedBtn = document.getElementById("mediaDeleteSelectedBtn");
+
+            const tokenEl = document.querySelector('input[name="__RequestVerificationToken"]');
+            const token = tokenEl ? tokenEl.value : null;
+
+            // Paging state
+            let items = [];
+            let focusedIndex = -1;
+            let skip = 0;
+            const take = 24;
+            let hasMore = false;
+
+            // Multi-select state
+            const selectedIds = new Set();
+
+            // For undo
+            let lastDeletedIds = []; // supports single and bulk undo
+
+            // Upload lock
+            let isUploading = false;
+
+            function escapeHtml(str) {
+                return String(str ?? "")
+                    .replaceAll("&", "&amp;")
+                    .replaceAll("<", "&lt;")
+                    .replaceAll(">", "&gt;")
+                    .replaceAll('"', "&quot;")
+                    .replaceAll("'", "&#039;");
+            }
+
+            function show(kind, html) {
+                if (!msg) return;
+                if (!html) { msg.innerHTML = ""; return; }
+
+                const cls = kind === "error" ? "alert-danger"
+                    : kind === "success" ? "alert-success"
+                    : "alert-secondary";
+
+                msg.innerHTML = `<div class="alert ${cls} py-2 mb-0">${html}</div>`;
+            }
+
+            function showUndoMessage(count) {
+                const label = count === 1 ? "1 item" : `${count} items`;
+                show("success", `${escapeHtml(label)} deleted. <button type="button" class="btn btn-link p-0 align-baseline" id="undoDeleteBtn">Undo</button>`);
+                const undoBtn = document.getElementById("undoDeleteBtn");
+                if (undoBtn) undoBtn.addEventListener("click", undoDelete);
+            }
+
+            function setUploading(on) {
+                isUploading = on;
+                uploadBtn.disabled = on;
+                uploadBtn.textContent = on ? "Uploading..." : "Upload";
+            }
+
+            function updateBulkUI() {
+                deleteSelectedBtn.classList.toggle("d-none", selectedIds.size === 0);
+                deleteSelectedBtn.textContent = selectedIds.size ? `Delete selected (${selectedIds.size})` : "Delete selected";
+            }
+
+            function postSelect(it) {
+                window.parent?.postMessage({
+                    type: "media-selected",
+                    id: it.id,
+                    url: it.url,
+                    altText: it.altText || it.fileName
+                }, "*");
+            }
+
+            function setFocus(index) {
+                focusedIndex = index;
+                grid.querySelectorAll(".media-card.is-focused").forEach(el => el.classList.remove("is-focused"));
+
+                if (focusedIndex < 0 || focusedIndex >= items.length) return;
+
+                const card = grid.querySelector(`[data-index="${focusedIndex}"] .media-card`);
+                if (!card) return;
+
+                card.classList.add("is-focused");
+                card.scrollIntoView({ block: "nearest", inline: "nearest" });
+            }
+
+            function render(list, highlightId, append = false) {
+                if (!append) {
+                    items = list || [];
+                    grid.innerHTML = "";
+                } else {
+                    items = items.concat(list || []);
+                }
+
+                if (!items.length) {
+                    show("info", "No images found.");
+                    focusedIndex = -1;
+                    loadMoreBtn.classList.add("d-none");
+                    return;
+                }
+
+                show("", "");
+
+                const startIndex = append ? (items.length - (list || []).length) : 0;
+                const toRender = append ? (list || []) : items;
+
+                toRender.forEach((it, idxOffset) => {
+                    const idx = startIndex + idxOffset;
+
+                    const col = document.createElement("div");
+                    col.className = "col-12 col-sm-6 col-md-4 col-lg-3";
+                    col.dataset.index = idx;
+
+                    const safeAlt = it.altText || it.fileName || "";
+                    const isNew = highlightId && it.id === highlightId;
+
+                    // Use thumbnail if present, fallback to original
+                    const thumbSrc = (it.thumbUrl && it.thumbUrl.trim()) ? it.thumbUrl : it.url;
+
+                    col.innerHTML = `
+                        <div class="media-card ${isNew ? "is-new" : ""}" role="group" aria-label="Media item">
+                            <div class="select-box">
+                                <input type="checkbox" class="form-check-input select-chk" ${selectedIds.has(it.id) ? "checked" : ""} />
+                            </div>
+
+                            <img class="media-thumb" src="${escapeHtml(thumbSrc)}" data-full="${escapeHtml(it.url)}" alt="${escapeHtml(safeAlt)}" />
+
+                            <div class="p-2">
+                                <div class="fw-semibold text-truncate" title="${escapeHtml(it.fileName)}">${escapeHtml(it.fileName)}</div>
+
+                                <div class="text-muted media-meta text-truncate" title="${escapeHtml(it.altText || "")}">
+                                    ${escapeHtml(it.altText || "—")}
+                                </div>
+
+                                <div class="media-toolbar">
+                                    <button type="button" class="btn btn-sm btn-outline-secondary edit-alt-btn">Alt</button>
+                                    <button type="button" class="btn btn-sm btn-danger delete-btn">Delete</button>
+                                    <button type="button" class="btn btn-sm btn-primary select-btn">Select</button>
+                                </div>
+
+                                <div class="alt-editor d-none">
+                                    <input type="text" class="form-control form-control-sm alt-input"
+                                           placeholder="Alt text (optional)" value="${escapeHtml(it.altText || "")}" />
+                                    <button type="button" class="btn btn-sm btn-success save-alt-btn">Save</button>
+                                    <button type="button" class="btn btn-sm btn-outline-secondary cancel-alt-btn">Cancel</button>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+
+                    col.addEventListener("click", () => setFocus(idx));
+
+                    // Selection checkbox
+                    const chk = col.querySelector(".select-chk");
+                    chk.addEventListener("click", (e) => {
+                        e.stopPropagation();
+                        if (chk.checked) selectedIds.add(it.id);
+                        else selectedIds.delete(it.id);
+                        updateBulkUI();
+                    });
+
+                    // Manual select
+                    col.querySelector(".select-btn").addEventListener("click", (e) => {
+                        e.stopPropagation();
+                        postSelect(it);
+                    });
+
+                    // Delete single
+                    col.querySelector(".delete-btn").addEventListener("click", async (e) => {
+                        e.stopPropagation();
+                        if (!confirm("Delete this image?")) return;
+                        await deleteOne(it.id);
+                    });
+
+                    // Alt editor
+                    const editAltBtn = col.querySelector(".edit-alt-btn");
+                    const altEditor = col.querySelector(".alt-editor");
+                    const altInput = col.querySelector(".alt-input");
+                    const saveAltBtn = col.querySelector(".save-alt-btn");
+                    const cancelAltBtn = col.querySelector(".cancel-alt-btn");
+
+                    editAltBtn.addEventListener("click", (e) => {
+                        e.stopPropagation();
+                        altEditor.classList.toggle("d-none");
+                        if (!altEditor.classList.contains("d-none")) {
+                            altInput.focus();
+                            altInput.select();
+                        }
+                    });
+
+                    cancelAltBtn.addEventListener("click", (e) => {
+                        e.stopPropagation();
+                        altEditor.classList.add("d-none");
+                        altInput.value = it.altText || "";
+                    });
+
+                    saveAltBtn.addEventListener("click", async (e) => {
+                        e.stopPropagation();
+                        const newAlt = (altInput.value || "").trim();
+
+                        const ok = await updateAltText(it.id, newAlt);
+                        if (!ok) return;
+
+                        it.altText = newAlt;
+
+                        const meta = col.querySelector(".media-meta");
+                        meta.textContent = newAlt || "—";
+                        meta.title = newAlt;
+
+                        const img = col.querySelector(".media-thumb");
+                        img.setAttribute("alt", newAlt || it.fileName || "");
+
+                        altEditor.classList.add("d-none");
+                        show("success", "Alt text updated.");
+                        setTimeout(() => show("", ""), 1200);
+                    });
+
+                    altInput.addEventListener("keydown", (e) => {
+                        if (e.key === "Enter") saveAltBtn.click();
+                        if (e.key === "Escape") cancelAltBtn.click();
+                    });
+
+                    grid.appendChild(col);
+                });
+
+                if (!append) setFocus(0);
+
+                loadMoreBtn.classList.toggle("d-none", !hasMore);
+
+                if (highlightId) {
+                    setTimeout(() => {
+                        grid.querySelectorAll(".media-card.is-new").forEach(el => el.classList.remove("is-new"));
+                    }, 2500);
+                }
+            }
+
+            async function search(highlightId) {
+                skip = 0;
+                selectedIds.clear();
+                updateBulkUI();
+
+                const term = (input.value || "").trim();
+
+                try {
+                    const res = await fetch("?handler=Search", {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                            ...(token ? { "RequestVerificationToken": token } : {})
+                        },
+                        body: JSON.stringify({ term, skip, take })
+                    });
+
+                    const json = await res.json();
+                    if (!json.ok) {
+                        show("error", escapeHtml(json.message || "Failed to load media."));
+                        return;
+                    }
+
+                    hasMore = !!json.hasMore;
+                    render(json.items, highlightId, false);
+                } catch {
+                    show("error", "Failed to load media.");
+                }
+            }
+
+            async function loadMore() {
+                if (!hasMore) return;
+
+                skip += take;
+                const term = (input.value || "").trim();
+
+                try {
+                    const res = await fetch("?handler=Search", {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                            ...(token ? { "RequestVerificationToken": token } : {})
+                        },
+                        body: JSON.stringify({ term, skip, take })
+                    });
+
+                    const json = await res.json();
+                    if (!json.ok) {
+                        show("error", escapeHtml(json.message || "Failed to load more."));
+                        return;
+                    }
+
+                    hasMore = !!json.hasMore;
+                    render(json.items, null, true);
+                } catch {
+                    show("error", "Failed to load more.");
+                }
+            }
+
+            async function deleteOne(id) {
+                try {
+                    const res = await fetch("?handler=Delete", {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                            ...(token ? { "RequestVerificationToken": token } : {})
+                        },
+                        body: JSON.stringify({ id })
+                    });
+
+                    const json = await res.json();
+                    if (!json.ok) {
+                        show("error", escapeHtml(json.message || "Delete failed."));
+                        return;
+                    }
+
+                    lastDeletedIds = [id];
+                    showUndoMessage(1);
+
+                    // refresh from start (keeps paging correct)
+                    await search();
+                } catch {
+                    show("error", "Delete failed.");
+                }
+            }
+
+            async function bulkDelete() {
+                const ids = Array.from(selectedIds);
+                if (!ids.length) return;
+                if (!confirm(`Delete ${ids.length} selected image(s)?`)) return;
+
+                try {
+                    const res = await fetch("?handler=BulkDelete", {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                            ...(token ? { "RequestVerificationToken": token } : {})
+                        },
+                        body: JSON.stringify({ ids })
+                    });
+
+                    const json = await res.json();
+                    if (!json.ok) {
+                        show("error", escapeHtml(json.message || "Bulk delete failed."));
+                        return;
+                    }
+
+                    lastDeletedIds = json.deletedIds || ids;
+                    showUndoMessage(lastDeletedIds.length);
+
+                    await search();
+                } catch {
+                    show("error", "Bulk delete failed.");
+                }
+            }
+
+            async function undoDelete() {
+                if (!lastDeletedIds.length) return;
+
+                // restore sequentially for simplicity
+                try {
+                    for (const id of lastDeletedIds) {
+                        const res = await fetch("?handler=Restore", {
+                            method: "POST",
+                            headers: {
+                                "Content-Type": "application/json",
+                                ...(token ? { "RequestVerificationToken": token } : {})
+                            },
+                            body: JSON.stringify({ id })
+                        });
+                        const json = await res.json();
+                        if (!json.ok) {
+                            show("error", escapeHtml(json.message || "Restore failed."));
+                            return;
+                        }
+                    }
+
+                    show("success", "Restore complete.");
+                    setTimeout(() => show("", ""), 1200);
+
+                    lastDeletedIds = [];
+                    await search();
+                } catch {
+                    show("error", "Restore failed.");
+                }
+            }
+
+            async function updateAltText(id, altText) {
+                try {
+                    const res = await fetch("?handler=UpdateAlt", {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                            ...(token ? { "RequestVerificationToken": token } : {})
+                        },
+                        body: JSON.stringify({ id, altText })
+                    });
+
+                    const json = await res.json();
+                    if (!res.ok || !json.ok) {
+                        show("error", escapeHtml(json.message || "Failed to update alt text."));
+                        return false;
+                    }
+                    return true;
+                } catch {
+                    show("error", "Failed to update alt text.");
+                    return false;
+                }
+            }
+
+            async function uploadFile(file, { autoSelect = false } = {}) {
+                if (!file) return null;
+                if (!file.type || !file.type.startsWith("image/")) {
+                    show("error", "Only image files are allowed.");
+                    return null;
+                }
+                if (isUploading) return null;
+
+                setUploading(true);
+                try {
+                    const fd = new FormData();
+                    fd.append("file", file);
+
+                    const res = await fetch("/Admin/Media/Upload?handler=Json", {
+                        method: "POST",
+                        headers: {
+                            ...(token ? { "RequestVerificationToken": token } : {})
+                        },
+                        body: fd
+                    });
+
+                    const json = await res.json();
+                    if (!res.ok || !json.success) {
+                        show("error", escapeHtml(json.error || "Upload failed."));
+                        return null;
+                    }
+
+                    const newId = json.asset?.id ?? null;
+                    const url = json.url ?? json.asset?.storageKey ?? null;
+
+                    await search(newId);
+
+                    if (autoSelect && newId && url) {
+                        window.parent?.postMessage({
+                            type: "media-selected",
+                            id: newId,
+                            url: url,
+                            altText: json.asset?.fileName || ""
+                        }, "*");
+                    }
+
+                    return { id: newId, url };
+                } catch {
+                    show("error", "Upload failed.");
+                    return null;
+                } finally {
+                    setUploading(false);
+                }
+            }
+
+            async function uploadAndSelectFromInput() {
+                const file = uploadInput?.files?.[0];
+                if (!file) {
+                    show("error", "Please choose an image to upload.");
+                    return;
+                }
+                show("info", "Uploading...");
+                await uploadFile(file, { autoSelect: true });
+                uploadInput.value = "";
+            }
+
+            function onGridKeyDown(e) {
+                if (!items.length) return;
+
+                const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : "";
+                if (tag === "input" || tag === "textarea") return;
+
+                const cols = 4;
+                let next = focusedIndex;
+
+                if (e.key === "ArrowRight") next = Math.min(items.length - 1, focusedIndex + 1);
+                else if (e.key === "ArrowLeft") next = Math.max(0, focusedIndex - 1);
+                else if (e.key === "ArrowDown") next = Math.min(items.length - 1, focusedIndex + cols);
+                else if (e.key === "ArrowUp") next = Math.max(0, focusedIndex - cols);
+                else if (e.key === "Enter") {
+                    e.preventDefault();
+                    postSelect(items[focusedIndex]);
+                    return;
+                }
+                else if (e.key === "Escape") {
+                    window.parent?.postMessage({ type: "media-picker-cancel" }, "*");
+                    return;
+                }
+                else {
+                    return;
+                }
+
+                e.preventDefault();
+                setFocus(next);
+            }
+
+            function enableDropzone() {
+                const prevent = (e) => { e.preventDefault(); e.stopPropagation(); };
+
+                ["dragenter", "dragover"].forEach(evt => {
+                    grid.addEventListener(evt, (e) => {
+                        prevent(e);
+                        if (!isUploading) grid.classList.add("dropzone-active");
+                    });
+                });
+
+                ["dragleave", "drop"].forEach(evt => {
+                    grid.addEventListener(evt, (e) => {
+                        prevent(e);
+                        grid.classList.remove("dropzone-active");
+                    });
+                });
+
+                grid.addEventListener("drop", async (e) => {
+                    prevent(e);
+                    if (isUploading) return;
+
+                    const files = Array.from(e.dataTransfer?.files || []);
+                    const images = files.filter(f => f.type && f.type.startsWith("image/"));
+
+                    if (!images.length) {
+                        show("error", "Drop image files only.");
+                        return;
+                    }
+
+                    show("info", `Uploading ${images.length} file(s)...`);
+
+                    let last = null;
+                    for (let i = 0; i < images.length; i++) {
+                        const isLast = i === images.length - 1;
+                        last = await uploadFile(images[i], { autoSelect: isLast });
+                        if (!last) break;
+                    }
+                });
+            }
+
+            // Controls
+            btn.addEventListener("click", () => search());
+            input.addEventListener("keydown", (e) => { if (e.key === "Enter") search(); });
+
+            uploadBtn.addEventListener("click", uploadAndSelectFromInput);
+            loadMoreBtn.addEventListener("click", loadMore);
+
+            deleteSelectedBtn.addEventListener("click", bulkDelete);
+
+            selectAllBtn.addEventListener("click", () => {
+                // Toggle select all on current loaded items
+                const allSelected = items.length > 0 && items.every(x => selectedIds.has(x.id));
+                if (allSelected) {
+                    selectedIds.clear();
+                } else {
+                    items.forEach(x => selectedIds.add(x.id));
+                }
+                // re-render checkboxes without losing layout
+                render([], null, false);
+                render(items, null, false);
+                updateBulkUI();
+            });
+
+            grid.addEventListener("keydown", onGridKeyDown);
+            enableDropzone();
+
+            // initial load
+            search();
+
+            root.addEventListener("click", (e) => {
+                if (e.target === root || e.target === grid) grid.focus();
+            });
+        })();
+    </script>
+}

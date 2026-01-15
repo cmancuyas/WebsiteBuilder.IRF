@@ -1,6 +1,7 @@
 ﻿using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using WebsiteBuilder.IRF.DataAccess;
+using WebsiteBuilder.IRF.Infrastructure.Media;
 using WebsiteBuilder.IRF.Infrastructure.Middleware;
 using WebsiteBuilder.IRF.Infrastructure.Pages;
 using WebsiteBuilder.IRF.Infrastructure.Sections;
@@ -79,6 +80,18 @@ builder.Services.AddScoped<ISectionContentValidator, HeroSectionValidator>();
 builder.Services.AddScoped<ISectionContentValidator, TextSectionValidator>();
 builder.Services.AddScoped<ISectionContentValidator, GallerySectionValidator>();
 builder.Services.AddScoped<IPagePublishingService, PagePublishingService>();
+builder.Services.AddScoped<PagePublishValidator>();
+
+builder.Services.Configure<MediaCleanupOptions>(
+    builder.Configuration.GetSection("Media:Cleanup"));
+
+builder.Services.AddHostedService<WebsiteBuilder.IRF.Infrastructure.Media.MediaCleanupHostedService>();
+
+builder.Services.Configure<MediaQuotaOptions>(
+    builder.Configuration.GetSection("Media:Quota"));
+
+builder.Services.AddScoped<ITenantMediaQuotaService, TenantMediaQuotaService>();
+
 
 var app = builder.Build();
 
