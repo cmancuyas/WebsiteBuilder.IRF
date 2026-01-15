@@ -224,3 +224,29 @@
         </div>
     </div>
 </div>
+@using System.Text.Json
+@{
+    var labels = Model.MonthlyUsage.Select(x => x.Label).ToList();
+    var counts = Model.MonthlyUsage.Select(x => x.Count).ToList();
+    var bytes = Model.MonthlyUsage.Select(x => x.Bytes).ToList();
+
+    var labelsJson = JsonSerializer.Serialize(labels);
+    var countsJson = JsonSerializer.Serialize(counts);
+    var bytesJson = JsonSerializer.Serialize(bytes);
+}
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+    const labels = @Html.Raw(labelsJson);
+    const counts = @Html.Raw(countsJson);
+    const bytes = @Html.Raw(bytesJson);
+
+    new Chart(document.getElementById("uploadsCountChart"), {
+      type: "line",
+      data: { labels, datasets: [{ label: "Uploads", data: counts }] }
+    });
+
+    new Chart(document.getElementById("uploadsBytesChart"), {
+      type: "line",
+      data: { labels, datasets: [{ label: "Bytes", data: bytes }] }
+    });
+</script>

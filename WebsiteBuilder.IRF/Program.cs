@@ -92,6 +92,28 @@ builder.Services.Configure<MediaQuotaOptions>(
 
 builder.Services.AddScoped<ITenantMediaQuotaService, TenantMediaQuotaService>();
 
+// Cleanup options + hosted service
+builder.Services.Configure<MediaCleanupOptions>(
+    builder.Configuration.GetSection("Media:Cleanup"));
+
+builder.Services.AddHostedService<WebsiteBuilder.IRF.Infrastructure.Media.MediaCleanupHostedService>();
+
+// Cleanup runner (manual “Run Now”)
+builder.Services.AddScoped<IMediaCleanupRunner, MediaCleanupRunner>();
+
+// Quotas
+builder.Services.Configure<MediaQuotaOptions>(
+    builder.Configuration.GetSection("Media:Quota"));
+
+builder.Services.AddScoped<ITenantMediaQuotaService, TenantMediaQuotaService>();
+
+// Alerts
+builder.Services.Configure<MediaAlertsOptions>(
+    builder.Configuration.GetSection("Media:Alerts"));
+
+builder.Services.AddHttpClient();
+builder.Services.AddScoped<IMediaAlertNotifier, CompositeMediaAlertNotifier>();
+
 
 var app = builder.Build();
 

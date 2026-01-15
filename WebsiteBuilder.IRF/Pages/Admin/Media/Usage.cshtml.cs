@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -14,12 +15,14 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
     {
         private readonly DataContext _db;
         private readonly ITenantContext _tenant;
+        private readonly IMediaCleanupRunner _cleanupRunner;
         private readonly MediaCleanupOptions _cleanupOptions;
 
-        public UsageModel(DataContext db, ITenantContext tenant, IOptions<MediaCleanupOptions> cleanupOptions)
+        public UsageModel(DataContext db, ITenantContext tenant, IOptions<MediaCleanupOptions> cleanupOptions, IMediaCleanupRunner cleanupRunner)
         {
             _db = db;
             _tenant = tenant;
+            _cleanupRunner = cleanupRunner;
             _cleanupOptions = cleanupOptions.Value;
         }
 
@@ -31,7 +34,15 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
         public List<MediaRow> LargestActive { get; private set; } = new();
         public List<MediaRow> LargestDeleted { get; private set; } = new();
         public CleanupEligibility Eligibility { get; private set; } = new();
+        public MediaCleanupResult? LastRunResult { get; private set; }
+        public async Task<IActionResult> OnPostRunCleanupNowAsync()
+        {
+            if (!_tenant.IsResolved)
+                return new JsonResult(new { success = false, error = "Tenant not resolved." }) { StatusCode = 400 };
 
+            var res = await _cleanupRunner.RunOnceAsync(HttpContext.RequestAborted);
+            return new JsonResult(new { success = true, result = res });
+        }
         public async Task OnGetAsync()
         {
             if (!_tenant.IsResolved)

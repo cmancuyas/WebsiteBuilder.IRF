@@ -8,6 +8,7 @@ using WebsiteBuilder.Models.Constants;
 
 namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
 {
+    [ValidateAntiForgeryToken]
     public class IndexModel : PageModel
     {
         private readonly DataContext _db;
@@ -67,7 +68,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
             public Dictionary<int, bool> Visibility { get; set; } = new();
         }
 
-        [ValidateAntiForgeryToken]
+        
         public async Task<IActionResult> OnPostUpdateNavigationAsync(
             [FromBody] UpdateNavigationRequest request,
             CancellationToken ct = default)

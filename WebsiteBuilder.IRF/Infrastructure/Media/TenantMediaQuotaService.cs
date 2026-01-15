@@ -5,16 +5,6 @@ using WebsiteBuilder.Models;
 
 namespace WebsiteBuilder.IRF.Infrastructure.Media;
 
-public sealed class MediaQuotaOptions
-{
-    public long DefaultTenantQuotaBytes { get; set; } = 1L * 1024 * 1024 * 1024; // 1GB
-}
-
-public interface ITenantMediaQuotaService
-{
-    Task<(bool allowed, long usedBytes, long quotaBytes)> CanUploadAsync(Guid tenantId, long newBytes, CancellationToken ct);
-}
-
 public sealed class TenantMediaQuotaService : ITenantMediaQuotaService
 {
     private readonly DataContext _db;
@@ -42,9 +32,16 @@ public sealed class TenantMediaQuotaService : ITenantMediaQuotaService
                 used += v;
         }
 
-        var quota = _opts.DefaultTenantQuotaBytes;
+        var quota = _opts.DefaultQuotaBytes;
         var allowed = used + Math.Max(0, newBytes) <= quota;
 
         return (allowed, used, quota);
+    }
+    public long GetQuotaBytes(Guid tenantId)
+    {
+        if (_opts.TenantQuotaBytes.TryGetValue(tenantId, out var quota) && quota > 0)
+            return quota;
+
+        return _opts.DefaultQuotaBytes > 0 ? _opts.DefaultQuotaBytes : 0;
     }
 }
