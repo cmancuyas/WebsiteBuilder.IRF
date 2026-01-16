@@ -57,6 +57,14 @@
     <div class="d-flex justify-content-center mt-3">
         <button type="button" class="btn btn-outline-secondary d-none" id="mediaLoadMoreBtn">Load more</button>
     </div>
+
+    <button id="pickerSelectBtn"
+            class="btn btn-primary"
+            disabled
+            type="button">
+        Select
+    </button>
+
 </div>
 
 @section Scripts
@@ -159,6 +167,28 @@
             // You already have an array like:
             // selectedItems = [{ id, fileName, altText, url, thumbUrl }, ...]
 
+            const selected = new Map(); // id -> item
+
+            function toggleSelect(item) {
+                if (selected.has(item.id)) {
+                    selected.delete(item.id);
+                } else {
+                    selected.set(item.id, item);
+                }
+
+                updateSelectionUi();
+            }
+
+            function updateSelectionUi() {
+                document.querySelectorAll("[data-media-id]").forEach(el => {
+                    const id = Number(el.dataset.mediaId);
+                    el.classList.toggle("border-primary", selected.has(id));
+                    el.classList.toggle("shadow", selected.has(id));
+                });
+
+                document.getElementById("pickerSelectBtn").disabled = selected.size === 0;
+            }
+
             function confirmSelection() {
                 if (!window.opener) {
                     alert("No parent window found.");
@@ -176,7 +206,7 @@
                 window.opener.postMessage({
                     type: "media:selected",
                     items: items
-                }, "*");
+                }, window.location.origin);
 
                 window.close();
             }
@@ -297,21 +327,37 @@
                     thumbUrl: it.thumbUrl || null
                 };
 
-                // 1) Popup scenario (window.open) -> send array + close
+                const origin = window.location.origin;
+
+                // Popup scenario
                 if (window.opener && !window.opener.closed) {
-                    window.opener.postMessage({ type: "media:selected", items: [payloadItem] }, "*");
+                    window.opener.postMessage(
+                        { type: "media:selected", items: [payloadItem] },
+                        origin
+                    );
                     window.close();
                     return;
                 }
 
-                // 2) Embedded scenario (iframe/modal) -> keep backward compatibility
-                window.parent?.postMessage({
-                    type: "media-selected",
-                    id: payloadItem.id,
-                    url: payloadItem.url,
-                    altText: payloadItem.altText
-                }, "*");
+                // Embedded scenario
+                window.parent?.postMessage(
+                    { type: "media:selected", items: [payloadItem] },
+                    origin
+                );
+
+                // Legacy support (keep)
+                window.parent?.postMessage(
+                    {
+                        type: "media-selected",
+                        id: payloadItem.id,
+                        url: payloadItem.url,
+                        altText: payloadItem.altText
+                    },
+                    origin
+                );
             }
+
+
 
             function postSelectBulk() {
                 if (isTrashView) return;
@@ -325,26 +371,42 @@
                         id: x.id,
                         fileName: x.fileName,
                         altText: x.altText || x.fileName,
-                        url: x.url,
+                        url: x.url,                 // storageKey
                         thumbUrl: x.thumbUrl || null
                     }));
 
+                if (!selectedItems.length) return;
+
+                const origin = window.location.origin;
+
+                // 1) Popup scenario → send ALL items
                 if (window.opener && !window.opener.closed) {
-                    window.opener.postMessage({ type: "media:selected", items: selectedItems }, "*");
+                    window.opener.postMessage(
+                        { type: "media:selected", items: selectedItems },
+                        origin
+                    );
                     window.close();
                     return;
                 }
 
-                // Embedded fallback: send first only (or adapt if you have a bulk receiver)
-                if (selectedItems.length) {
-                    window.parent?.postMessage({
+                // 2) Embedded scenario → send ALL items (Gallery supports bulk)
+                window.parent?.postMessage(
+                    { type: "media:selected", items: selectedItems },
+                    origin
+                );
+
+                // 3) Legacy fallback (keep for older consumers)
+                window.parent?.postMessage(
+                    {
                         type: "media-selected",
                         id: selectedItems[0].id,
                         url: selectedItems[0].url,
                         altText: selectedItems[0].altText
-                    }, "*");
-                }
+                    },
+                    origin
+                );
             }
+
 
 
             function setFocus(index) {

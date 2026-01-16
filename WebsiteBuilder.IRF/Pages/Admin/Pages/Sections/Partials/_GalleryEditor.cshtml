@@ -2,214 +2,551 @@
 @using System.Text.Json
 
 @{
-    // Expected JSON shape:
-    // { "items": [ { "mediaAssetId": 123, "url": "...", "thumbUrl": "...", "altText": "...", "fileName": "..." } ] }
+    // IMPORTANT:
+    // This editor expects the saved JSON to be stored somewhere in your section record.
+    // If your actual persisted field is Model.ContentJson, change "initialJson" accordingly.
+    //
+    // Based on your project snippets, some sections used ContentJson while others used SettingsJson.
+    // Pick the one you actually persist for Gallery.
+    var sectionId = Model?.Id ?? 0;
 
-    var sectionId = Model.Id;
-    var saveUrl = Url.Page(null, null, new { handler = "SaveSection" }, null);
+    // CHANGE THIS LINE IF NEEDED:
+    var initialJson = Model?.SettingsJson ?? Model?.SettingsJson;
 
-    var initialItemsJson = "[]";
-
-    if (!string.IsNullOrWhiteSpace(Model.SettingsJson))
-    {
-        try
-        {
-            using var doc = JsonDocument.Parse(Model.SettingsJson);
-            if (doc.RootElement.TryGetProperty("items", out var items) && items.ValueKind == JsonValueKind.Array)
-            {
-                initialItemsJson = items.GetRawText();
-            }
-        }
-        catch
-        {
-            initialItemsJson = "[]";
-        }
-    }
+    var safeInitialJson = initialJson ?? "";
 }
 
 <div class="card border-0 shadow-sm">
     <div class="card-body">
-        <div class="d-flex align-items-center justify-content-between mb-2">
-            <div class="fw-semibold">Gallery</div>
-            <div class="small text-muted" id="save-status-@sectionId"></div>
+
+        <div class="d-flex align-items-center justify-content-between gap-2 flex-wrap mb-3">
+            <div>
+                <h5 class="mb-1">Gallery</h5>
+                <div class="text-muted small">Select images from Media Library, reorder, and set alt/captions.</div>
+            </div>
+
+            <div class="d-flex gap-2">
+                <button type="button" class="btn btn-outline-primary" id="galleryAddBtn_@sectionId">
+                    Add from Media Library
+                </button>
+                <button type="button" class="btn btn-outline-secondary" id="galleryClearBtn_@sectionId">
+                    Clear
+                </button>
+            </div>
         </div>
 
-        <div class="d-flex gap-2 mb-2">
-            <button type="button" class="btn btn-sm btn-primary" id="gallery-add-@sectionId">Add Images</button>
-            <button type="button" class="btn btn-sm btn-outline-secondary" id="gallery-clear-@sectionId">Clear</button>
+        <!-- Undo bar -->
+        <div class="alert alert-info d-none mb-3" id="galleryUndoBar_@sectionId" role="alert">
+            <div class="d-flex align-items-center justify-content-between gap-2 flex-wrap">
+                <div class="small mb-0">Item removed.</div>
+                <div class="d-flex gap-2">
+                    <button type="button" class="btn btn-sm btn-primary" id="galleryUndoBtn_@sectionId">Undo</button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="galleryUndoDismissBtn_@sectionId">Dismiss</button>
+                </div>
+            </div>
         </div>
 
-        <div class="mt-2 d-none" id="errors-@sectionId"></div>
+        <!-- Layout controls -->
+        <div class="row g-2 mb-3">
+            <div class="col-6 col-md-3">
+                <label class="form-label small mb-1">Columns</label>
+                <select class="form-select form-select-sm" id="galleryColumns_@sectionId">
+                    <option value="2">2</option>
+                    <option value="3" selected>3</option>
+                    <option value="4">4</option>
+                    <option value="5">5</option>
+                </select>
+            </div>
+            <div class="col-6 col-md-3">
+                <label class="form-label small mb-1">Spacing</label>
+                <select class="form-select form-select-sm" id="gallerySpacing_@sectionId">
+                    <option value="sm">Small</option>
+                    <option value="md" selected>Medium</option>
+                    <option value="lg">Large</option>
+                </select>
+            </div>
+            <div class="col-12 col-md-6 d-flex align-items-end justify-content-md-end">
+                <div class="text-muted small">Tip: Drag cards to reorder.</div>
+            </div>
+        </div>
 
-        <div id="gallery-grid-@sectionId" class="row g-2 mt-2"></div>
+        <div class="row g-3" id="galleryGrid_@sectionId"></div>
 
-        <div class="form-text mt-2">Auto-saves after changes.</div>
+        <div class="border rounded p-4 text-center text-muted d-none" id="galleryEmpty_@sectionId">
+            No images selected yet. Click <strong>Add from Media Library</strong>.
+        </div>
+
+        <!-- Hidden JSON used by autosave / form submit -->
+        <input type="hidden" id="galleryContentJson_@sectionId" value="" />
     </div>
 </div>
 
-<style>
-    .gallery-thumb {
-        width: 100%;
-        height: 140px;
-        object-fit: cover;
-        border-radius: .5rem;
-        border: 1px solid rgba(0,0,0,.08);
-        background: #f5f5f5;
-    }
-</style>
-
 <script>
     (function () {
-      const sectionId = @sectionId;
-      const saveUrl = "@saveUrl";
+        const sectionId = @sectionId;
 
-      const addBtn = document.getElementById("gallery-add-" + sectionId);
-      const clearBtn = document.getElementById("gallery-clear-" + sectionId);
-      const gridEl = document.getElementById("gallery-grid-" + sectionId);
+        // ---------- Config ----------
+        const LOOKUP_URL = "/Admin/Media/Picker?handler=Lookup";
+        const MEDIA_PUBLIC_PREFIX = "/media/"; // you confirmed: /media/{storageKey}
 
-      const statusEl = document.getElementById("save-status-" + sectionId);
-      const errorsEl = document.getElementById("errors-" + sectionId);
+        // ---------- DOM ----------
+        const addBtn = document.getElementById(`galleryAddBtn_${sectionId}`);
+        const clearBtn = document.getElementById(`galleryClearBtn_${sectionId}`);
+        const grid = document.getElementById(`galleryGrid_${sectionId}`);
+        const empty = document.getElementById(`galleryEmpty_${sectionId}`);
+        const hidden = document.getElementById(`galleryContentJson_${sectionId}`);
 
-      let items = @Html.Raw(initialItemsJson);
+        const undoBar = document.getElementById(`galleryUndoBar_${sectionId}`);
+        const undoBtn = document.getElementById(`galleryUndoBtn_${sectionId}`);
+        const undoDismissBtn = document.getElementById(`galleryUndoDismissBtn_${sectionId}`);
 
-      function normalizeExistingItems() {
-        items = (items || []).map(x => ({
-          mediaAssetId: parseInt(x.mediaAssetId ?? x.MediaAssetId ?? x.id ?? x.Id ?? 0, 10),
-          url: x.url ?? x.Url ?? "",
-          thumbUrl: x.thumbUrl ?? x.ThumbUrl ?? "",
-          altText: x.altText ?? x.AltText ?? "",
-          fileName: x.fileName ?? x.FileName ?? ""
-        })).filter(x => Number.isFinite(x.mediaAssetId) && x.mediaAssetId > 0);
-      }
+        const ddlColumns = document.getElementById(`galleryColumns_${sectionId}`);
+        const ddlSpacing = document.getElementById(`gallerySpacing_${sectionId}`);
 
-      function normalizePickerItem(p) {
-        return {
-          mediaAssetId: parseInt(p.id ?? p.Id ?? 0, 10),
-          url: p.url ?? p.Url ?? p.storageKey ?? p.StorageKey ?? "",
-          thumbUrl: p.thumbUrl ?? p.ThumbUrl ?? p.thumbnailUrl ?? p.ThumbnailUrl ?? "",
-          altText: p.altText ?? p.AltText ?? "",
-          fileName: p.fileName ?? p.FileName ?? ""
-        };
-      }
+        // server initial JSON
+        const serverInitialJson = @Html.Raw(JsonSerializer.Serialize(safeInitialJson));
 
-      function toSettingsJson() {
-        return JSON.stringify({
-          items: (items || []).map(x => ({
-            mediaAssetId: x.mediaAssetId,
-            url: x.url || "",
-            thumbUrl: x.thumbUrl || "",
-            altText: x.altText || "",
-            fileName: x.fileName || ""
-          }))
-        });
-      }
+        // ---------- State ----------
+        // Persisted minimal shape:
+        // { items:[{ mediaAssetId, altText, caption }], layout:{ columns, spacing } }
+        let items = [];   // persisted items
+        let layout = { columns: 3, spacing: "md" };
 
-      function esc(s) {
-        return String(s ?? "")
-          .replaceAll("&", "&amp;")
-          .replaceAll("<", "&lt;")
-          .replaceAll(">", "&gt;")
-          .replaceAll('"', "&quot;")
-          .replaceAll("'", "&#039;");
-      }
+        // hydrated lookup info keyed by id (from Picker Lookup)
+        // { id: { Id, FileName, ContentType, AltText, Url, ThumbUrl, IsDeleted } }
+        const lookup = new Map();
 
-      function render() {
-        if (!gridEl) return;
+        // Undo
+        let lastRemoved = null; // { item, index }
 
-        gridEl.innerHTML = "";
-
-        if (!items || items.length === 0) {
-          gridEl.innerHTML = `<div class="text-muted small">No images selected yet.</div>`;
-          return;
+        // ---------- Antiforgery ----------
+        function getToken() {
+            // common patterns in your project:
+            // - a form with id antiForgeryForm containing the token
+            // - any hidden input named __RequestVerificationToken
+            const el =
+                document.querySelector('#antiForgeryForm input[name="__RequestVerificationToken"]') ||
+                document.querySelector('input[name="__RequestVerificationToken"]');
+            return el ? el.value : null;
         }
 
-        items.forEach((it, idx) => {
-          const col = document.createElement("div");
-          col.className = "col-6 col-md-4";
+        async function postJson(url, body) {
+            const token = getToken();
+            const headers = { "Content-Type": "application/json" };
 
-          const thumb = it.thumbUrl || it.url || "";
+            // ASP.NET Core antiforgery header name commonly used in Razor Pages AJAX
+            if (token) headers["RequestVerificationToken"] = token;
 
-          col.innerHTML = `
-            <div class="border rounded p-2 h-100">
-              <img class="gallery-thumb" src="${esc(thumb)}" alt="${esc(it.altText || it.fileName || "")}">
-              <div class="small text-muted mt-2">${esc(it.fileName || ("MediaAssetId: " + it.mediaAssetId))}</div>
-              <div class="d-flex justify-content-end mt-2">
-                <button type="button" class="btn btn-sm btn-outline-danger" data-action="remove">Remove</button>
-              </div>
-            </div>
-          `;
+            const res = await fetch(url, {
+                method: "POST",
+                headers,
+                body: JSON.stringify(body || {})
+            });
 
-          col.querySelector('[data-action="remove"]').addEventListener("click", () => {
-            items.splice(idx, 1);
-            render();
-            autosave.notifyChanged();
-          });
-
-          gridEl.appendChild(col);
-        });
-      }
-
-      // Autosave binding (with retry like TextEditor)
-      let autosave = null;
-
-      function init() {
-        if (!addBtn || !clearBtn || !gridEl) return true;
-
-        if (!window.SectionAutoSave || !window.SectionAutoSave.bindSectionAutoSave) return false;
-
-        autosave = window.SectionAutoSave.bindSectionAutoSave(
-          sectionId,
-          () => toSettingsJson(),
-          saveUrl,
-          statusEl,
-          errorsEl
-        );
-
-        addBtn.addEventListener("click", () => {
-          if (!window.MediaPicker || typeof window.MediaPicker.open !== "function") {
-            if (statusEl) {
-              statusEl.textContent = "Media picker is not available.";
-              statusEl.classList.add("text-danger");
+            if (!res.ok) {
+                const text = await res.text().catch(() => "");
+                throw new Error(`Request failed (${res.status}): ${text}`);
             }
-            return;
-          }
+            return await res.json();
+        }
 
-          window.MediaPicker.open({
-            multiple: true,
-            onSelect: (selected) => {
-              const incoming = (selected || []).map(normalizePickerItem).filter(x => x.mediaAssetId > 0);
+        // ---------- JSON helpers ----------
+        function safeParseJson(str) {
+            if (!str || typeof str !== "string") return null;
+            try { return JSON.parse(str); } catch { return null; }
+        }
 
-              const existing = new Set(items.map(x => x.mediaAssetId));
-              incoming.forEach(x => {
-                if (!existing.has(x.mediaAssetId)) {
-                  items.push(x);
-                  existing.add(x.mediaAssetId);
+        function escapeHtml(s) {
+            return String(s ?? "")
+                .replaceAll("&", "&amp;")
+                .replaceAll("<", "&lt;")
+                .replaceAll(">", "&gt;")
+                .replaceAll('"', "&quot;")
+                .replaceAll("'", "&#039;");
+        }
+
+        function uniqueById(arr) {
+            const seen = new Set();
+            const out = [];
+            for (const x of arr) {
+                const id = Number(x.mediaAssetId);
+                if (!id || seen.has(id)) continue;
+                seen.add(id);
+                out.push(x);
+            }
+            return out;
+        }
+
+        function toContentJson() {
+            return JSON.stringify({
+                items: items.map(x => ({
+                    mediaAssetId: Number(x.mediaAssetId),
+                    altText: x.altText || "",
+                    caption: x.caption || ""
+                })),
+                layout: {
+                    columns: Number(layout.columns || 3),
+                    spacing: layout.spacing || "md"
                 }
-              });
+            });
+        }
 
-              render();
-              autosave.notifyChanged();
+        // ---------- Persist / autosave ----------
+        function updateHiddenAndAutosave() {
+            const content = toContentJson();
+            hidden.value = content;
+
+            // If parent page has a specific autosave contract, use it.
+            if (typeof window.autoSaveSectionContentJson === "function") {
+                window.autoSaveSectionContentJson(sectionId, content);
+            } else if (typeof window.saveSectionContentJson === "function") {
+                window.saveSectionContentJson(sectionId, content);
+            } else {
+                // Fallback: dispatch an event for your existing page-level handler
+                window.dispatchEvent(new CustomEvent("section:contentChanged", {
+                    detail: { sectionId, contentJson: content }
+                }));
             }
-          });
+        }
+
+        // ---------- Layout ----------
+        function spacingClass(spacing) {
+            switch (spacing) {
+                case "sm": return "g-2";
+                case "lg": return "g-4";
+                case "md":
+                default: return "g-3";
+            }
+        }
+
+        function colClass(columns) {
+            const c = Number(columns || 3);
+            if (c <= 2) return "col-12 col-md-6";
+            if (c === 3) return "col-12 col-sm-6 col-lg-4";
+            if (c === 4) return "col-12 col-sm-6 col-lg-3";
+            if (c >= 5) return "col-12 col-sm-6 col-lg-2";
+            return "col-12 col-sm-6 col-lg-4";
+        }
+
+        function applyLayoutToGrid() {
+            grid.className = `row ${spacingClass(layout.spacing)}`;
+        }
+
+        // ---------- Lookup / hydration ----------
+        function resolvePreviewUrl(id) {
+            const vm = lookup.get(Number(id));
+            if (!vm) return "";
+            const storageKey = vm.ThumbUrl || vm.Url;
+            if (!storageKey) return "";
+            return MEDIA_PUBLIC_PREFIX + storageKey;
+        }
+
+        function resolveTitle(id) {
+            const vm = lookup.get(Number(id));
+            if (!vm) return `Media #${id}`;
+            return vm.FileName || `Media #${id}`;
+        }
+
+        function resolveIsDeleted(id) {
+            const vm = lookup.get(Number(id));
+            return vm ? !!vm.IsDeleted : false;
+        }
+
+        async function hydrate(ids) {
+            const uniq = Array.from(new Set((ids || []).map(x => Number(x)).filter(x => x > 0)));
+            const missing = uniq.filter(id => !lookup.has(id));
+            if (!missing.length) return;
+
+            const result = await postJson(LOOKUP_URL, { ids: missing });
+            if (!result || result.ok !== true) return;
+
+            const list = Array.isArray(result.items) ? result.items : [];
+            for (const it of list) {
+                if (!it || !it.id) continue;
+
+                // Picker LookupItemVm uses PascalCase in C#, but JSON serializer will output camelCase by default
+                // depending on your configuration. To be safe, support both.
+                const Id = Number(it.id ?? it.Id);
+                lookup.set(Id, {
+                    Id,
+                    FileName: it.fileName ?? it.FileName ?? "",
+                    ContentType: it.contentType ?? it.ContentType ?? "",
+                    AltText: it.altText ?? it.AltText ?? "",
+                    Url: it.url ?? it.Url ?? "",
+                    ThumbUrl: it.thumbUrl ?? it.ThumbUrl ?? null,
+                    IsDeleted: !!(it.isDeleted ?? it.IsDeleted)
+                });
+            }
+        }
+
+        // ---------- Render ----------
+        function showUndoBar() { undoBar.classList.remove("d-none"); }
+        function hideUndoBar() { undoBar.classList.add("d-none"); lastRemoved = null; }
+
+        function render() {
+            grid.innerHTML = "";
+            applyLayoutToGrid();
+
+            if (!items.length) empty.classList.remove("d-none");
+            else empty.classList.add("d-none");
+
+            items.forEach((it, idx) => {
+                const id = Number(it.mediaAssetId);
+                const preview = resolvePreviewUrl(id);
+                const title = resolveTitle(id);
+                const isDeleted = resolveIsDeleted(id);
+
+                const col = document.createElement("div");
+                col.className = colClass(layout.columns);
+
+                col.innerHTML = `
+                    <div class="card h-100 shadow-sm" draggable="true" data-index="${idx}">
+                        <div class="ratio ratio-4x3 bg-light rounded-top overflow-hidden position-relative">
+                            ${preview
+                                ? `<img src="${preview}" alt="" style="object-fit:cover;width:100%;height:100%;">`
+                                : `<div class="d-flex align-items-center justify-content-center text-muted small">No preview</div>`}
+                            ${isDeleted
+                                ? `<div class="position-absolute top-0 start-0 m-2 badge bg-danger">Deleted</div>`
+                                : ``}
+                        </div>
+
+                        <div class="card-body p-2">
+                            <div class="d-flex align-items-center justify-content-between gap-2 mb-2">
+                                <div class="small text-muted text-truncate" title="${escapeHtml(title)}">
+                                    ${escapeHtml(title)}
+                                </div>
+                                <button type="button" class="btn btn-sm btn-outline-danger" data-remove="${idx}">
+                                    Remove
+                                </button>
+                            </div>
+
+                            <div class="mb-2">
+                                <label class="form-label small mb-1">Alt text</label>
+                                <input type="text" class="form-control form-control-sm" value="${escapeHtml(it.altText || "")}" data-alt="${idx}" />
+                            </div>
+
+                            <div>
+                                <label class="form-label small mb-1">Caption</label>
+                                <input type="text" class="form-control form-control-sm" value="${escapeHtml(it.caption || "")}" data-caption="${idx}" />
+                            </div>
+                        </div>
+                    </div>
+                `;
+
+                grid.appendChild(col);
+            });
+
+            // actions
+            grid.querySelectorAll("[data-remove]").forEach(btn => {
+                btn.addEventListener("click", () => removeAt(Number(btn.getAttribute("data-remove"))));
+            });
+
+            grid.querySelectorAll("[data-alt]").forEach(inp => {
+                inp.addEventListener("input", () => {
+                    const i = Number(inp.getAttribute("data-alt"));
+                    items[i].altText = inp.value || "";
+                    updateHiddenAndAutosave();
+                });
+            });
+
+            grid.querySelectorAll("[data-caption]").forEach(inp => {
+                inp.addEventListener("input", () => {
+                    const i = Number(inp.getAttribute("data-caption"));
+                    items[i].caption = inp.value || "";
+                    updateHiddenAndAutosave();
+                });
+            });
+
+            setupDragAndDrop();
+        }
+
+        // ---------- Undo remove ----------
+        function removeAt(index) {
+            if (index < 0 || index >= items.length) return;
+            lastRemoved = { item: items[index], index };
+            items.splice(index, 1);
+
+            render();
+            updateHiddenAndAutosave();
+            showUndoBar();
+        }
+
+        undoBtn.addEventListener("click", () => {
+            if (!lastRemoved) return;
+            const { item, index } = lastRemoved;
+
+            items.splice(Math.min(index, items.length), 0, item);
+            hideUndoBar();
+            render();
+            updateHiddenAndAutosave();
         });
 
+        undoDismissBtn.addEventListener("click", hideUndoBar);
+
+        // ---------- Drag & drop ----------
+        function setupDragAndDrop() {
+            const cards = grid.querySelectorAll(".card[draggable='true']");
+            let dragIndex = null;
+
+            cards.forEach(card => {
+                card.addEventListener("dragstart", (e) => {
+                    dragIndex = Number(card.getAttribute("data-index"));
+                    e.dataTransfer.effectAllowed = "move";
+                });
+
+                card.addEventListener("dragover", (e) => {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = "move";
+                });
+
+                card.addEventListener("drop", (e) => {
+                    e.preventDefault();
+                    const dropIndex = Number(card.getAttribute("data-index"));
+                    if (dragIndex === null || dropIndex === null || dragIndex === dropIndex) return;
+
+                    const moved = items.splice(dragIndex, 1)[0];
+                    items.splice(dropIndex, 0, moved);
+
+                    dragIndex = null;
+                    render();
+                    updateHiddenAndAutosave();
+                });
+
+                card.addEventListener("dragend", () => { dragIndex = null; });
+            });
+        }
+
+        // ---------- Picker integration ----------
+        function normalizePickerItems(payload) {
+            // supports:
+            // { items:[{ id, fileName, altText, url, thumbUrl }] }
+            // { assets:[...] }
+            // [{...}]
+            if (!payload) return [];
+            if (Array.isArray(payload)) return payload;
+
+            if (Array.isArray(payload.items)) return payload.items;
+            if (Array.isArray(payload.assets)) return payload.assets;
+            if (payload.item) return [payload.item];
+            if (payload.asset) return [payload.asset];
+
+            return [];
+        }
+
+        async function onPickerSelection(payload) {
+            const raw = normalizePickerItems(payload);
+
+            // Accept both camelCase and PascalCase fields.
+            const selected = raw.map(x => {
+                const id = Number(x.id ?? x.Id ?? x.mediaAssetId ?? x.MediaAssetId);
+                return {
+                    mediaAssetId: id,
+                    altText: (x.altText ?? x.AltText ?? ""),     // initial suggestion
+                    caption: (x.caption ?? x.Caption ?? "")
+                };
+            }).filter(x => x.mediaAssetId > 0);
+
+            if (!selected.length) return;
+
+            // Merge without duplicates
+            items = uniqueById([...items, ...selected]);
+
+            // Hydrate lookup data for previews and file names
+            await hydrate(items.map(x => x.mediaAssetId));
+
+            hideUndoBar();
+            render();
+            updateHiddenAndAutosave();
+        }
+
+        function openPicker() {
+            // If you already have a JS open function for the picker modal, use it.
+            if (typeof window.openMediaPicker === "function") {
+                window.openMediaPicker({
+                    multiple: true,
+                    onSelect: (payload) => onPickerSelection(payload)
+                });
+                return;
+            }
+
+            // Otherwise, open the picker in a popup window.
+            // Picker can return selected items via postMessage (supported below).
+            const w = window.open("/Admin/Media/Picker", "MediaPicker", "width=1200,height=800");
+            if (!w) {
+                alert("Popup blocked. Please allow popups for this site to use the Media Picker.");
+            }
+        }
+
+        addBtn.addEventListener("click", openPicker);
+
+        // CustomEvent support
+        window.addEventListener("media:selected", (e) => onPickerSelection(e.detail));
+
+        // postMessage support (popup -> opener)
+        window.addEventListener("message", (e) => {
+            // Optionally restrict origin if your environments are strict.
+            // if (e.origin !== window.location.origin) return;
+
+            const data = e.data;
+            if (!data) return;
+
+            // Expected: { type:"media:selected", items:[...] } or { type:"media:selected", payload:{items:[...]}}
+            if (data.type === "media:selected") {
+                onPickerSelection(data.payload || data);
+            }
+        });
+
+        // Clear
         clearBtn.addEventListener("click", () => {
-          items = [];
-          render();
-          autosave.notifyChanged();
+            items = [];
+            lookup.clear();
+            hideUndoBar();
+            render();
+            updateHiddenAndAutosave();
         });
 
-        normalizeExistingItems();
-        render();
-        return true;
-      }
+        // Layout controls
+        ddlColumns.addEventListener("change", () => {
+            layout.columns = Number(ddlColumns.value || 3);
+            render();
+            updateHiddenAndAutosave();
+        });
 
-      if (init()) return;
+        ddlSpacing.addEventListener("change", () => {
+            layout.spacing = ddlSpacing.value || "md";
+            render();
+            updateHiddenAndAutosave();
+        });
 
-      let tries = 0;
-      const t = setInterval(() => {
-        tries++;
-        if (init() || tries > 20) clearInterval(t);
-      }, 100);
+        // ---------- Init ----------
+        (async function init() {
+            const parsed = safeParseJson(serverInitialJson);
+
+            if (parsed && typeof parsed === "object") {
+                if (parsed.layout) {
+                    layout.columns = Number(parsed.layout.columns || 3);
+                    layout.spacing = parsed.layout.spacing || "md";
+                }
+
+                if (Array.isArray(parsed.items)) {
+                    items = parsed.items.map(x => ({
+                        mediaAssetId: Number(x.mediaAssetId || x.id),
+                        altText: x.altText || "",
+                        caption: x.caption || ""
+                    })).filter(x => x.mediaAssetId > 0);
+                }
+            }
+
+            ddlColumns.value = String(layout.columns || 3);
+            ddlSpacing.value = String(layout.spacing || "md");
+
+            // hydrate to get FileName/ThumbUrl/Url/IsDeleted
+            await hydrate(items.map(x => x.mediaAssetId));
+
+            // Set hidden immediately so Save won't wipe content even if user does nothing
+            hidden.value = toContentJson();
+
+            render();
+        })();
     })();
 </script>
