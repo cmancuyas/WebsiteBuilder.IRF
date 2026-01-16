@@ -56,6 +56,51 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
             public int Id { get; set; }
             public string? AltText { get; set; }
         }
+        public sealed class LookupRequest
+        {
+            public int[] Ids { get; set; } = Array.Empty<int>();
+        }
+
+        public sealed class LookupItemVm
+        {
+            public int Id { get; set; }
+            public string FileName { get; set; } = "";
+            public string ContentType { get; set; } = "";
+            public string AltText { get; set; } = "";
+            public string Url { get; set; } = "";
+            public string? ThumbUrl { get; set; }
+            public bool IsDeleted { get; set; }
+        }
+
+
+        public async Task<IActionResult> OnPostLookupAsync([FromBody] LookupRequest request, CancellationToken ct = default)
+        {
+            if (!_tenant.IsResolved)
+                return new JsonResult(new { ok = false, message = "Tenant not resolved." });
+
+            var ids = (request?.Ids ?? Array.Empty<int>()).Where(x => x > 0).Distinct().ToArray();
+            if (ids.Length == 0)
+                return new JsonResult(new { ok = true, items = Array.Empty<LookupItemVm>() });
+
+            var items = await _db.MediaAssets
+                .AsNoTracking()
+                .Where(m => m.TenantId == _tenant.TenantId)
+                .Where(m => ids.Contains(m.Id))
+                .Select(m => new LookupItemVm
+                {
+                    Id = m.Id,
+                    FileName = m.FileName,
+                    ContentType = m.ContentType,
+                    AltText = m.AltText!,
+                    Url = m.StorageKey,
+                    ThumbUrl = m.ThumbStorageKey,
+                    IsDeleted = m.IsDeleted
+                })
+                .ToListAsync(ct);
+
+            return new JsonResult(new { ok = true, items });
+        }
+
 
         public IActionResult OnGet()
         {
@@ -88,7 +133,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
 
             if (!string.IsNullOrWhiteSpace(term))
             {
-                q = q.Where(m => m.FileName.Contains(term) || m.AltText.Contains(term));
+                q = q.Where(m => m.FileName.Contains(term) || m.AltText!.Contains(term));
             }
 
             var total = await q.CountAsync(ct);
@@ -102,7 +147,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
                     Id = m.Id,
                     FileName = m.FileName,
                     ContentType = m.ContentType,
-                    AltText = m.AltText,
+                    AltText = m.AltText!,
                     Url = m.StorageKey,
                     ThumbUrl = m.ThumbStorageKey // if your model has it; otherwise remove this line
                 })

@@ -451,6 +451,14 @@ namespace WebsiteBuilder.IRF.DataAccess
                     .IsRequired()
                     .HasMaxLength(100);
 
+                // ✅ Key is required + bounded + unique (matches the DB rule we want)
+                entity.Property(x => x.Key)
+                    .IsRequired()
+                    .HasMaxLength(100);
+
+                entity.HasIndex(x => x.Key)
+                    .IsUnique();
+
                 // BaseModel fields (consistent defaults)
                 entity.Property(x => x.IsActive)
                     .HasDefaultValue(true);
@@ -463,7 +471,6 @@ namespace WebsiteBuilder.IRF.DataAccess
                     .HasDefaultValueSql("SYSUTCDATETIME()");
 
                 // CreatedBy is non-nullable in your BaseModel, so the DB needs a default
-                // if you already have seeded rows / existing data.
                 entity.Property(x => x.CreatedBy)
                     .HasDefaultValue(Guid.Empty);
 
@@ -471,6 +478,7 @@ namespace WebsiteBuilder.IRF.DataAccess
                 entity.HasIndex(x => new { x.IsActive, x.IsDeleted });
             });
         }
+
 
     }
 }

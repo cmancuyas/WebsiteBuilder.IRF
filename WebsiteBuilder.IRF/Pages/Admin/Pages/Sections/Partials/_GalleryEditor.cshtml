@@ -1,208 +1,215 @@
 ﻿@model WebsiteBuilder.Models.PageSection
+@using System.Text.Json
 
 @{
-    var sid = Model.Id;
-    var rootId = $"gallery-editor-{sid}";
-    var jsonId = $"gallerySettingsJson-{sid}";
-    var rowsId = $"galleryRows-{sid}";
-    var addBtnId = $"addGalleryRow-{sid}";
-    var pickerModalId = $"mediaPickerModal-{sid}";
-    var pickerFrameId = $"mediaPickerFrame-{sid}";
+    // Expected JSON shape:
+    // { "items": [ { "mediaAssetId": 123, "url": "...", "thumbUrl": "...", "altText": "...", "fileName": "..." } ] }
+
+    var sectionId = Model.Id;
+    var saveUrl = Url.Page(null, null, new { handler = "SaveSection" }, null);
+
+    var initialItemsJson = "[]";
+
+    if (!string.IsNullOrWhiteSpace(Model.SettingsJson))
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(Model.SettingsJson);
+            if (doc.RootElement.TryGetProperty("items", out var items) && items.ValueKind == JsonValueKind.Array)
+            {
+                initialItemsJson = items.GetRawText();
+            }
+        }
+        catch
+        {
+            initialItemsJson = "[]";
+        }
+    }
 }
 
-<div id="@rootId">
-
-    <input type="hidden"
-           name="SettingsJson"
-           value="@Model.SettingsJson"
-           id="@jsonId"
-           class="gallery-settings-json" />
-
-    <div class="card mb-0">
-        <div class="card-header d-flex justify-content-between align-items-center">
-            <strong>Gallery Images</strong>
-            <button type="button" class="btn btn-sm btn-outline-primary" id="@addBtnId">
-                + Add Image
-            </button>
+<div class="card border-0 shadow-sm">
+    <div class="card-body">
+        <div class="d-flex align-items-center justify-content-between mb-2">
+            <div class="fw-semibold">Gallery</div>
+            <div class="small text-muted" id="save-status-@sectionId"></div>
         </div>
 
-        <div class="card-body p-0">
-            <div class="table-responsive">
-                <table class="table table-sm align-middle mb-0">
-                    <thead class="table-light">
-                        <tr>
-                            <th style="width: 40%;">Image URL</th>
-                            <th style="width: 25%;">Alt Text</th>
-                            <th style="width: 25%;">Caption</th>
-                            <th style="width: 10%;"></th>
-                        </tr>
-                    </thead>
-                    <tbody id="@rowsId"></tbody>
-                </table>
-            </div>
+        <div class="d-flex gap-2 mb-2">
+            <button type="button" class="btn btn-sm btn-primary" id="gallery-add-@sectionId">Add Images</button>
+            <button type="button" class="btn btn-sm btn-outline-secondary" id="gallery-clear-@sectionId">Clear</button>
         </div>
 
-        <div class="card-footer small text-muted">
-            Images are displayed in order.
-        </div>
+        <div class="mt-2 d-none" id="errors-@sectionId"></div>
+
+        <div id="gallery-grid-@sectionId" class="row g-2 mt-2"></div>
+
+        <div class="form-text mt-2">Auto-saves after changes.</div>
     </div>
-
-    <!-- Media Picker Modal -->
-    <div class="modal fade" id="@pickerModalId" tabindex="-1" aria-hidden="true">
-        <div class="modal-dialog modal-xl modal-dialog-scrollable">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h5 class="modal-title">Media Picker</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                </div>
-                <div class="modal-body p-0" style="height:70vh;">
-                    <iframe id="@pickerFrameId"
-                            src="/Admin/Media/Picker"
-                            style="width:100%;height:100%;border:0;"></iframe>
-                </div>
-            </div>
-        </div>
-    </div>
-
 </div>
 
 <style>
-    .gallery-row-remove {
-        cursor: pointer;
-        color: #dc3545;
-        font-size: 1.1rem;
+    .gallery-thumb {
+        width: 100%;
+        height: 140px;
+        object-fit: cover;
+        border-radius: .5rem;
+        border: 1px solid rgba(0,0,0,.08);
+        background: #f5f5f5;
     }
 </style>
 
 <script>
     (function () {
-        const root = document.getElementById("@rootId");
-        if (!root) return;
+      const sectionId = @sectionId;
+      const saveUrl = "@saveUrl";
 
-        const rowsEl = document.getElementById("@rowsId");
-        const jsonInput = document.getElementById("@jsonId");
-        const addBtn = document.getElementById("@addBtnId");
-        const pickerModalEl = document.getElementById("@pickerModalId");
+      const addBtn = document.getElementById("gallery-add-" + sectionId);
+      const clearBtn = document.getElementById("gallery-clear-" + sectionId);
+      const gridEl = document.getElementById("gallery-grid-" + sectionId);
 
-        if (!rowsEl || !jsonInput || !addBtn || !pickerModalEl) return;
+      const statusEl = document.getElementById("save-status-" + sectionId);
+      const errorsEl = document.getElementById("errors-" + sectionId);
 
-        let pickerCallback = null;
+      let items = @Html.Raw(initialItemsJson);
 
-        function parseJson() {
-            try { return JSON.parse(jsonInput.value || "{}"); }
-            catch { return {}; }
-        }
+      function normalizeExistingItems() {
+        items = (items || []).map(x => ({
+          mediaAssetId: parseInt(x.mediaAssetId ?? x.MediaAssetId ?? x.id ?? x.Id ?? 0, 10),
+          url: x.url ?? x.Url ?? "",
+          thumbUrl: x.thumbUrl ?? x.ThumbUrl ?? "",
+          altText: x.altText ?? x.AltText ?? "",
+          fileName: x.fileName ?? x.FileName ?? ""
+        })).filter(x => Number.isFinite(x.mediaAssetId) && x.mediaAssetId > 0);
+      }
 
-        function writeJson(data) {
-            jsonInput.value = JSON.stringify(data, null, 2);
-        }
+      function normalizePickerItem(p) {
+        return {
+          mediaAssetId: parseInt(p.id ?? p.Id ?? 0, 10),
+          url: p.url ?? p.Url ?? p.storageKey ?? p.StorageKey ?? "",
+          thumbUrl: p.thumbUrl ?? p.ThumbUrl ?? p.thumbnailUrl ?? p.ThumbnailUrl ?? "",
+          altText: p.altText ?? p.AltText ?? "",
+          fileName: p.fileName ?? p.FileName ?? ""
+        };
+      }
 
-        function syncJsonFromRows() {
-            const images = [];
-            rowsEl.querySelectorAll("tr").forEach(tr => {
-                const url = tr.querySelector(".gallery-url")?.value.trim();
-                if (!url) return;
-
-                images.push({
-                    url: url,
-                    alt: tr.querySelector(".gallery-alt")?.value.trim() || "",
-                    caption: tr.querySelector(".gallery-caption")?.value.trim() || ""
-                });
-            });
-
-            writeJson({
-                layout: "grid",
-                columns: 3,
-                images: images
-            });
-        }
-
-        function escapeHtml(str) {
-            return String(str || "")
-                .replaceAll("&", "&amp;")
-                .replaceAll("<", "&lt;")
-                .replaceAll(">", "&gt;")
-                .replaceAll('"', "&quot;")
-                .replaceAll("'", "&#039;");
-        }
-
-        function openMediaPicker(cb) {
-            pickerCallback = cb;
-            const modal = bootstrap.Modal.getOrCreateInstance(pickerModalEl);
-            modal.show();
-        }
-
-        function buildRow(item) {
-            const tr = document.createElement("tr");
-
-            tr.innerHTML = `
-                <td>
-                    <div class="input-group input-group-sm">
-                        <input type="text" class="form-control gallery-url"
-                               placeholder="/media/123 or https://..."
-                               value="${escapeHtml(item.url || "")}" />
-                        <button type="button" class="btn btn-outline-secondary gallery-pick">Pick</button>
-                    </div>
-                </td>
-                <td>
-                    <input type="text" class="form-control form-control-sm gallery-alt"
-                           value="${escapeHtml(item.alt || "")}" />
-                </td>
-                <td>
-                    <input type="text" class="form-control form-control-sm gallery-caption"
-                           value="${escapeHtml(item.caption || "")}" />
-                </td>
-                <td class="text-center">
-                    <span class="gallery-row-remove" title="Remove">✕</span>
-                </td>
-            `;
-
-            tr.querySelectorAll("input").forEach(i => i.addEventListener("input", syncJsonFromRows));
-
-            tr.querySelector(".gallery-row-remove").addEventListener("click", () => {
-                tr.remove();
-                syncJsonFromRows();
-            });
-
-            tr.querySelector(".gallery-pick").addEventListener("click", () => {
-                openMediaPicker(selected => {
-                    tr.querySelector(".gallery-url").value = selected.url || "";
-                    const alt = tr.querySelector(".gallery-alt");
-                    if (alt && !alt.value)
-                        alt.value = selected.altText || "";
-                    syncJsonFromRows();
-                });
-            });
-
-            rowsEl.appendChild(tr);
-        }
-
-        function loadInitial() {
-            const data = parseJson();
-            const images = Array.isArray(data.images) ? data.images : [];
-
-            rowsEl.innerHTML = "";
-            if (images.length === 0) buildRow({});
-            else images.forEach(buildRow);
-
-            syncJsonFromRows();
-        }
-
-        window.addEventListener("message", function (e) {
-            if (!e.data || e.data.type !== "media-selected") return;
-            if (pickerCallback) {
-                pickerCallback(e.data);
-                pickerCallback = null;
-            }
-            const modal = bootstrap.Modal.getOrCreateInstance(pickerModalEl);
-            modal.hide();
+      function toSettingsJson() {
+        return JSON.stringify({
+          items: (items || []).map(x => ({
+            mediaAssetId: x.mediaAssetId,
+            url: x.url || "",
+            thumbUrl: x.thumbUrl || "",
+            altText: x.altText || "",
+            fileName: x.fileName || ""
+          }))
         });
+      }
+
+      function esc(s) {
+        return String(s ?? "")
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#039;");
+      }
+
+      function render() {
+        if (!gridEl) return;
+
+        gridEl.innerHTML = "";
+
+        if (!items || items.length === 0) {
+          gridEl.innerHTML = `<div class="text-muted small">No images selected yet.</div>`;
+          return;
+        }
+
+        items.forEach((it, idx) => {
+          const col = document.createElement("div");
+          col.className = "col-6 col-md-4";
+
+          const thumb = it.thumbUrl || it.url || "";
+
+          col.innerHTML = `
+            <div class="border rounded p-2 h-100">
+              <img class="gallery-thumb" src="${esc(thumb)}" alt="${esc(it.altText || it.fileName || "")}">
+              <div class="small text-muted mt-2">${esc(it.fileName || ("MediaAssetId: " + it.mediaAssetId))}</div>
+              <div class="d-flex justify-content-end mt-2">
+                <button type="button" class="btn btn-sm btn-outline-danger" data-action="remove">Remove</button>
+              </div>
+            </div>
+          `;
+
+          col.querySelector('[data-action="remove"]').addEventListener("click", () => {
+            items.splice(idx, 1);
+            render();
+            autosave.notifyChanged();
+          });
+
+          gridEl.appendChild(col);
+        });
+      }
+
+      // Autosave binding (with retry like TextEditor)
+      let autosave = null;
+
+      function init() {
+        if (!addBtn || !clearBtn || !gridEl) return true;
+
+        if (!window.SectionAutoSave || !window.SectionAutoSave.bindSectionAutoSave) return false;
+
+        autosave = window.SectionAutoSave.bindSectionAutoSave(
+          sectionId,
+          () => toSettingsJson(),
+          saveUrl,
+          statusEl,
+          errorsEl
+        );
 
         addBtn.addEventListener("click", () => {
-            buildRow({});
-            syncJsonFromRows();
+          if (!window.MediaPicker || typeof window.MediaPicker.open !== "function") {
+            if (statusEl) {
+              statusEl.textContent = "Media picker is not available.";
+              statusEl.classList.add("text-danger");
+            }
+            return;
+          }
+
+          window.MediaPicker.open({
+            multiple: true,
+            onSelect: (selected) => {
+              const incoming = (selected || []).map(normalizePickerItem).filter(x => x.mediaAssetId > 0);
+
+              const existing = new Set(items.map(x => x.mediaAssetId));
+              incoming.forEach(x => {
+                if (!existing.has(x.mediaAssetId)) {
+                  items.push(x);
+                  existing.add(x.mediaAssetId);
+                }
+              });
+
+              render();
+              autosave.notifyChanged();
+            }
+          });
         });
 
-        loadInitial();
+        clearBtn.addEventListener("click", () => {
+          items = [];
+          render();
+          autosave.notifyChanged();
+        });
+
+        normalizeExistingItems();
+        render();
+        return true;
+      }
+
+      if (init()) return;
+
+      let tries = 0;
+      const t = setInterval(() => {
+        tries++;
+        if (init() || tries > 20) clearInterval(t);
+      }, 100);
     })();
 </script>

@@ -6,6 +6,11 @@
     ViewData["Title"] = "Edit Page";
 }
 
+<!-- Global anti-forgery token available for JS fetch calls -->
+<form id="antiForgeryForm" method="post">
+    @Html.AntiForgeryToken()
+</form>
+
 <div class="container py-4">
 
     <div class="d-flex align-items-center justify-content-between mb-3">
@@ -212,7 +217,7 @@
 
 </div>
 
-@* Add Section Modal (kept on Edit page) *@
+@* Add Section Modal *@
 <div class="modal fade" id="addSectionModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog">
         <div class="modal-content">
@@ -265,13 +270,18 @@
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
 
     <script>
+        // Shared anti-forgery token getter (robust)
+        function getAntiForgeryToken() {
+            const el = document.querySelector('input[name="__RequestVerificationToken"]');
+            return el ? el.value : null;
+        }
+    </script>
+
+    <script>
+        // Section reorder (auto-save order)
         document.addEventListener("DOMContentLoaded", function () {
             const el = document.getElementById("sectionsList");
             if (!el) return;
-
-            // Anti-forgery token from main page form
-            const tokenEl = document.querySelector('input[name="__RequestVerificationToken"]');
-            const token = tokenEl ? tokenEl.value : null;
 
             Sortable.create(el, {
                 handle: ".cursor-grab",
@@ -281,6 +291,8 @@
                     const ids = Array.from(el.querySelectorAll(".section-item"))
                         .map(x => parseInt(x.getAttribute("data-section-id"), 10))
                         .filter(n => Number.isFinite(n));
+
+                    const token = getAntiForgeryToken();
 
                     try {
                         const res = await fetch("?handler=ReorderSections", {
@@ -295,13 +307,127 @@
                             })
                         });
 
-                        const json = await res.json();
-                        if (!json.ok) alert(json.message || "Failed to save order.");
+                        const json = await res.json().catch(() => null);
+                        if (!json || !json.ok) {
+                            alert((json && json.message) ? json.message : "Failed to save order.");
+                        }
                     } catch {
                         alert("Failed to save order.");
                     }
                 }
             });
         });
+    </script>
+
+    <script>
+        // Section autosave helper (authoritative)
+        (function () {
+
+            function debounce(fn, delay) {
+                let t = null;
+                return function () {
+                    const ctx = this, args = arguments;
+                    clearTimeout(t);
+                    t = setTimeout(() => fn.apply(ctx, args), delay);
+                };
+            }
+
+            function bindSectionAutoSave(sectionId, getSettingsJson, saveUrl, statusEl, errorsEl) {
+                let inFlight = 0;
+
+                function clearErrors() {
+                    if (!errorsEl) return;
+                    errorsEl.classList.add("d-none");
+                    errorsEl.innerHTML = "";
+                }
+
+                function showErrors(errors) {
+                    if (!errorsEl) return;
+
+                    const list = Array.isArray(errors) ? errors : [];
+                    if (!list.length) {
+                        clearErrors();
+                        return;
+                    }
+
+                    errorsEl.classList.remove("d-none");
+                    errorsEl.innerHTML = `
+                        <div class="alert alert-danger py-2 mb-0">
+                            <div class="fw-semibold small mb-1">Please fix the following:</div>
+                            <ul class="small mb-0">
+                                ${list.map(e => `<li>${String(e)}</li>`).join("")}
+                            </ul>
+                        </div>
+                    `;
+                }
+
+                async function runSave() {
+                    const settingsJson = getSettingsJson();
+
+                    inFlight++;
+                    if (statusEl) {
+                        statusEl.textContent = "Saving...";
+                        statusEl.classList.remove("text-danger", "text-success");
+                        statusEl.classList.add("text-muted");
+                        statusEl.title = "";
+                    }
+
+                    try {
+                        const token = getAntiForgeryToken();
+
+                        const res = await fetch(saveUrl, {
+                            method: "POST",
+                            headers: {
+                                "Content-Type": "application/json",
+                                ...(token ? { "RequestVerificationToken": token } : {})
+                            },
+                            body: JSON.stringify({ sectionId, settingsJson })
+                        });
+
+                        const data = await res.json().catch(() => null);
+
+                        if (!res.ok || !data || data.ok !== true) {
+                            const errors = (data && (data.errors || data.Errors)) || [];
+                            const message = (data && (data.message || data.Message)) || "Save failed.";
+                            throw { message, errors };
+                        }
+
+                        inFlight--;
+                        clearErrors();
+
+                        if (inFlight === 0 && statusEl) {
+                            statusEl.textContent = "Saved";
+                            statusEl.classList.remove("text-muted", "text-danger");
+                            statusEl.classList.add("text-success");
+                        }
+
+                        return data;
+                    } catch (e) {
+                        inFlight--;
+
+                        if (statusEl) {
+                            statusEl.textContent = "Save failed";
+                            statusEl.classList.remove("text-muted", "text-success");
+                            statusEl.classList.add("text-danger");
+                            statusEl.title = (e && e.message) ? e.message : "Error";
+                        }
+
+                        showErrors(e && e.errors ? e.errors : []);
+                    }
+                }
+
+                const debounced = debounce(runSave, 600);
+
+                return {
+                    notifyChanged: () => debounced(),
+                    saveNow: () => runSave()
+                };
+            }
+
+            window.SectionAutoSave = {
+                bindSectionAutoSave
+            };
+
+        })();
     </script>
 }

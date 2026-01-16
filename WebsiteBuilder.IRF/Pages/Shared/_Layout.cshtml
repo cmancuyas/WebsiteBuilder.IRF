@@ -73,7 +73,38 @@
     <script src="~/lib/bootstrap/dist/js/bootstrap.bundle.min.js"></script>
     <script src="~/js/site.js" asp-append-version="true"></script>
 
-    @await RenderSectionAsync("Scripts", required: false)
+    <script>
+        (function () {
+            // Global Media Picker bridge (authoritative)
+            window.MediaPicker = {
+                open: function ({ multiple, onSelect }) {
+                    const pickerUrl = "/Admin/Media/Picker";
+
+                    const w = window.open(
+                        pickerUrl,
+                        "mediaPicker",
+                        "width=1200,height=800"
+                    );
+
+                    function handler(e) {
+                        if (!e.data || e.data.type !== "media:selected") return;
+
+                        window.removeEventListener("message", handler);
+                        w.close();
+
+                        if (typeof onSelect === "function") {
+                            onSelect(e.data.items || []);
+                        }
+                    }
+
+                    window.addEventListener("message", handler);
+                }
+            };
+        })();
+    </script>
+
+    @RenderSection("Scripts", required: false)
+
     <script src="~/js/admin/sections/live-json-validate.js"></script>
 </body>
 </html>

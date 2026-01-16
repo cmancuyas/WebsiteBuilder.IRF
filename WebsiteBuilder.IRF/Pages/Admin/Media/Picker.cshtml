@@ -41,9 +41,15 @@
 
         <div class="d-flex gap-2 align-items-center">
             <button type="button" class="btn btn-sm btn-outline-secondary" id="mediaSelectAllBtn">Select all</button>
+
+            <button type="button" class="btn btn-sm btn-primary d-none" id="mediaUseSelectedBtn">
+                Use selected
+            </button>
+
             <button type="button" class="btn btn-sm btn-danger d-none" id="mediaDeleteSelectedBtn">Delete selected</button>
             <button type="button" class="btn btn-sm btn-success d-none" id="mediaRestoreSelectedBtn">Restore selected</button>
         </div>
+
     </div>
 
     <div class="row g-2" id="mediaGrid" tabindex="0" aria-label="Media grid"></div>
@@ -146,6 +152,43 @@
                 pointer-events: none;
             }
     </style>
+    <script>
+        (function () {
+
+            // EXPECTATION:
+            // You already have an array like:
+            // selectedItems = [{ id, fileName, altText, url, thumbUrl }, ...]
+
+            function confirmSelection() {
+                if (!window.opener) {
+                    alert("No parent window found.");
+                    return;
+                }
+
+                const items = (selectedItems || []).map(x => ({
+                    id: x.id,
+                    fileName: x.fileName,
+                    altText: x.altText,
+                    url: x.url,
+                    thumbUrl: x.thumbUrl
+                }));
+
+                window.opener.postMessage({
+                    type: "media:selected",
+                    items: items
+                }, "*");
+
+                window.close();
+            }
+
+            // 🔽 Bind this to your existing “Select / Use Selected” button
+            const btn = document.getElementById("btnSelect");
+            if (btn) {
+                btn.addEventListener("click", confirmSelection);
+            }
+
+        })();
+    </script>
 
     <script>
         (function () {
@@ -169,6 +212,8 @@
 
             const tokenEl = document.querySelector('input[name="__RequestVerificationToken"]');
             const token = tokenEl ? tokenEl.value : null;
+
+            const useSelectedBtn = document.getElementById("mediaUseSelectedBtn");
 
             // View
             let isTrashView = false;
@@ -227,26 +272,80 @@
                 uploadBtn.disabled = on || isTrashView;
                 uploadBtn.textContent = on ? "Uploading..." : "Upload";
             }
-
             function updateBulkUI() {
                 const has = selectedIds.size > 0;
+
+                useSelectedBtn.classList.toggle("d-none", !has || isTrashView);
 
                 deleteSelectedBtn.classList.toggle("d-none", !has || isTrashView);
                 restoreSelectedBtn.classList.toggle("d-none", !has || !isTrashView);
 
+                useSelectedBtn.textContent = has ? `Use selected (${selectedIds.size})` : "Use selected";
                 deleteSelectedBtn.textContent = has ? `Delete selected (${selectedIds.size})` : "Delete selected";
                 restoreSelectedBtn.textContent = has ? `Restore selected (${selectedIds.size})` : "Restore selected";
             }
 
-            function postSelect(it) {
+
+            function postSelectSingle(it) {
                 if (isTrashView) return;
+
+                const payloadItem = {
+                    id: it.id,
+                    fileName: it.fileName,
+                    altText: it.altText || it.fileName,
+                    url: it.url,
+                    thumbUrl: it.thumbUrl || null
+                };
+
+                // 1) Popup scenario (window.open) -> send array + close
+                if (window.opener && !window.opener.closed) {
+                    window.opener.postMessage({ type: "media:selected", items: [payloadItem] }, "*");
+                    window.close();
+                    return;
+                }
+
+                // 2) Embedded scenario (iframe/modal) -> keep backward compatibility
                 window.parent?.postMessage({
                     type: "media-selected",
-                    id: it.id,
-                    url: it.url,
-                    altText: it.altText || it.fileName
+                    id: payloadItem.id,
+                    url: payloadItem.url,
+                    altText: payloadItem.altText
                 }, "*");
             }
+
+            function postSelectBulk() {
+                if (isTrashView) return;
+
+                const ids = Array.from(selectedIds);
+                if (!ids.length) return;
+
+                const selectedItems = items
+                    .filter(x => selectedIds.has(x.id))
+                    .map(x => ({
+                        id: x.id,
+                        fileName: x.fileName,
+                        altText: x.altText || x.fileName,
+                        url: x.url,
+                        thumbUrl: x.thumbUrl || null
+                    }));
+
+                if (window.opener && !window.opener.closed) {
+                    window.opener.postMessage({ type: "media:selected", items: selectedItems }, "*");
+                    window.close();
+                    return;
+                }
+
+                // Embedded fallback: send first only (or adapt if you have a bulk receiver)
+                if (selectedItems.length) {
+                    window.parent?.postMessage({
+                        type: "media-selected",
+                        id: selectedItems[0].id,
+                        url: selectedItems[0].url,
+                        altText: selectedItems[0].altText
+                    }, "*");
+                }
+            }
+
 
             function setFocus(index) {
                 focusedIndex = index;
@@ -340,7 +439,8 @@
                     // Manual select
                     col.querySelector(".select-btn").addEventListener("click", (e) => {
                         e.stopPropagation();
-                        postSelect(it);
+                        postSelectSingle(it);
+
                     });
 
                     // Delete/Restore single
@@ -825,6 +925,12 @@
             root.addEventListener("click", (e) => {
                 if (e.target === root || e.target === grid) grid.focus();
             });
+
+        if (useSelectedBtn) {
+            useSelectedBtn.addEventListener("click", postSelectBulk);
+        }
+
+
         })();
     </script>
 }

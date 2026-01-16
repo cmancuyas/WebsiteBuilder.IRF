@@ -1,116 +1,56 @@
-﻿@* Pages/Shared/Sections/_Gallery.cshtml *@
-@model WebsiteBuilder.Models.PageSection
+﻿@model WebsiteBuilder.Models.PageSection
 @using System.Text.Json
 
 @{
-    // PageSection only has SettingsJson (no ContentJson)
-    var json = Model.SettingsJson;
+    // Reads from SettingsJson
+    // { "items": [ { "mediaAssetId": 123, "caption": "", "alt": "", "url": "", "thumbUrl": "", "fileName": "" } ] }
 
-    // Defaults (optional fields; safe even if not present)
-    var layout = "grid"; // "grid" | "masonry" (treated as grid for now)
-    var columns = 3;     // 1..6
-    var images = new List<(string Url, string? Alt, string? Caption)>();
+    var items = new List<(string Url, string Alt, string Caption)>();
 
-    if (!string.IsNullOrWhiteSpace(json))
+    if (!string.IsNullOrWhiteSpace(Model.SettingsJson))
     {
         try
         {
-            using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
-
-            if (root.ValueKind == JsonValueKind.Object)
+            using var doc = JsonDocument.Parse(Model.SettingsJson);
+            if (doc.RootElement.TryGetProperty("items", out var arr) && arr.ValueKind == JsonValueKind.Array)
             {
-                if (root.TryGetProperty("layout", out var layoutEl) && layoutEl.ValueKind == JsonValueKind.String)
-                    layout = layoutEl.GetString() ?? layout;
-
-                if (root.TryGetProperty("columns", out var colsEl) && colsEl.ValueKind == JsonValueKind.Number)
+                foreach (var it in arr.EnumerateArray())
                 {
-                    var c = colsEl.GetInt32();
-                    if (c >= 1 && c <= 6) columns = c;
-                }
+                    var url = it.TryGetProperty("url", out var u) ? (u.GetString() ?? "") : "";
+                    var alt = it.TryGetProperty("alt", out var a) ? (a.GetString() ?? "") : "";
+                    var caption = it.TryGetProperty("caption", out var c) ? (c.GetString() ?? "") : "";
 
-                if (root.TryGetProperty("images", out var imagesEl) && imagesEl.ValueKind == JsonValueKind.Array)
-                {
-                    foreach (var item in imagesEl.EnumerateArray())
-                    {
-                        if (item.ValueKind != JsonValueKind.Object)
-                            continue;
-
-                        if (!item.TryGetProperty("url", out var urlEl) || urlEl.ValueKind != JsonValueKind.String)
-                            continue;
-
-                        var url = (urlEl.GetString() ?? "").Trim();
-                        if (string.IsNullOrWhiteSpace(url))
-                            continue;
-
-                        string? alt = null;
-                        if (item.TryGetProperty("alt", out var altEl) && altEl.ValueKind == JsonValueKind.String)
-                            alt = altEl.GetString();
-
-                        string? caption = null;
-                        if (item.TryGetProperty("caption", out var capEl) && capEl.ValueKind == JsonValueKind.String)
-                            caption = capEl.GetString();
-
-                        images.Add((url, alt, caption));
-                    }
+                    if (!string.IsNullOrWhiteSpace(url))
+                        items.Add((url, alt, caption));
                 }
             }
         }
-        catch
-        {
-            // Fail-safe: never break page rendering due to JSON.
-            // Invalid JSON should already be blocked by validators/publish gate.
-        }
+        catch { /* ignore */ }
     }
-
-    if (images.Count == 0)
-    {
-        return;
-    }
-
-    // Bootstrap grid mapping
-    var colClass = columns switch
-    {
-        1 => "col-12",
-        2 => "col-12 col-md-6",
-        3 => "col-12 col-md-6 col-lg-4",
-        4 => "col-12 col-md-6 col-lg-3",
-        5 => "col-12 col-md-4 col-lg-3",
-        6 => "col-12 col-md-4 col-lg-2",
-        _ => "col-12 col-md-6 col-lg-4"
-    };
-
-    var wrapperClass = (layout ?? "").ToLowerInvariant() == "masonry"
-        ? "wb-gallery wb-gallery--masonry"
-        : "wb-gallery wb-gallery--grid";
 }
 
-<section class="py-4">
-    <div class="container">
-        <div class="@wrapperClass">
+@if (items.Count == 0)
+{
+    <!-- No gallery items -->
+}
+else
+{
+    <section class="py-4">
+        <div class="container">
             <div class="row g-3">
-                @foreach (var img in images)
+                @foreach (var it in items)
                 {
-                    var altText = string.IsNullOrWhiteSpace(img.Alt) ? "" : img.Alt!.Trim();
-                    var caption = string.IsNullOrWhiteSpace(img.Caption) ? null : img.Caption!.Trim();
-
-                    <div class="@colClass">
-                        <figure class="mb-0">
-                            <div class="ratio ratio-4x3">
-                                <img src="@img.Url"
-                                     alt="@altText"
-                                     class="w-100 h-100"
-                                     style="object-fit: cover; border-radius: .5rem;" />
-                            </div>
-
-                            @if (!string.IsNullOrWhiteSpace(caption))
+                    <div class="col-12 col-sm-6 col-md-4">
+                        <figure class="m-0">
+                            <img src="@it.Url" alt="@it.Alt" class="img-fluid rounded shadow-sm" />
+                            @if (!string.IsNullOrWhiteSpace(it.Caption))
                             {
-                                <figcaption class="mt-2 small text-muted">@caption</figcaption>
+                                <figcaption class="small text-muted mt-2">@it.Caption</figcaption>
                             }
                         </figure>
                     </div>
                 }
             </div>
         </div>
-    </div>
-</section>
+    </section>
+}

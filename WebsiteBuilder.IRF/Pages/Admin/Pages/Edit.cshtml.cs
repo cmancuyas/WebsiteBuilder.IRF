@@ -542,12 +542,95 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
             return Guid.TryParse(userId, out var g) ? g : Guid.Empty;
         }
+        public async Task<IActionResult> OnPostSaveSectionAsync(
+            [FromBody] SaveSectionRequest request,
+            CancellationToken ct = default)
+        {
+            if (!_tenant.IsResolved)
+                return new JsonResult(new { ok = false, message = "Tenant not resolved." });
 
-    }
+            if (request == null || request.SectionId <= 0)
+                return new JsonResult(new { ok = false, message = "Invalid section id." });
 
-    public sealed class ReorderSectionsRequest
-    {
-        public int PageId { get; set; }
-        public List<int> OrderedSectionIds { get; set; } = new();
+            var section = await _db.PageSections
+                .AsTracking()
+                .Include(s => s.SectionType)
+                .FirstOrDefaultAsync(s =>
+                    s.Id == request.SectionId &&
+                    s.TenantId == _tenant.TenantId &&
+                    !s.IsDeleted, ct);
+
+            if (section == null)
+                return new JsonResult(new { ok = false, message = "Section not found." });
+
+            // IMPORTANT: this is what is failing for you right now
+            if (section.SectionType == null)
+            {
+                return new JsonResult(new
+                {
+                    ok = false,
+                    message = "Section type not resolved (navigation is null).",
+                    sectionId = section.Id,
+                    sectionTypeId = section.SectionTypeId
+                });
+            }
+
+            if (string.IsNullOrWhiteSpace(section.SectionType.Key))
+            {
+                return new JsonResult(new
+                {
+                    ok = false,
+                    message = "Section type key is empty. Populate SectionType.Key in DB.",
+                    sectionId = section.Id,
+                    sectionTypeId = section.SectionTypeId,
+                    sectionTypeName = section.SectionType.Name
+                });
+            }
+
+            // Normalize JSON
+            var json = string.IsNullOrWhiteSpace(request.SettingsJson)
+                ? "{}"
+                : request.SettingsJson.Trim();
+
+            // Validate JSON shape for this section type
+            var validation = await HttpContext.RequestServices
+                .GetRequiredService<ISectionValidationService>()
+                .ValidateAsync(section.SectionType.Key, json);
+
+            if (!validation.IsValid)
+            {
+                return new JsonResult(new
+                {
+                    ok = false,
+                    message = "Validation failed.",
+                    errors = validation.Errors
+                });
+            }
+
+            // Apply
+            section.SettingsJson = json;
+
+            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (Guid.TryParse(userId, out var userGuid))
+                section.UpdatedBy = userGuid;
+
+            section.UpdatedAt = DateTime.UtcNow;
+
+            await _db.SaveChangesAsync(ct);
+
+            return new JsonResult(new { ok = true });
+        }
+
+
+        public sealed class ReorderSectionsRequest
+        {
+            public int PageId { get; set; }
+            public List<int> OrderedSectionIds { get; set; } = new();
+        }
+        public sealed class SaveSectionRequest
+        {
+            public int SectionId { get; set; }
+            public string? SettingsJson { get; set; }
+        }
     }
 }
