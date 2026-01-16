@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using WebsiteBuilder.IRF.DataAccess;
 
@@ -11,9 +12,11 @@ using WebsiteBuilder.IRF.DataAccess;
 namespace WebsiteBuilder.IRF.DataAccess.Migrations.Data
 {
     [DbContext(typeof(DataContext))]
-    partial class DataContextModelSnapshot : ModelSnapshot
+    [Migration("20260116183420_AddSectionTypeKey")]
+    partial class AddSectionTypeKey
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -417,9 +420,6 @@ namespace WebsiteBuilder.IRF.DataAccess.Migrations.Data
                     b.Property<Guid?>("DeletedBy")
                         .HasColumnType("uniqueidentifier");
 
-                    b.Property<int?>("DraftRevisionId")
-                        .HasColumnType("int");
-
                     b.Property<bool>("IsActive")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("bit")
@@ -488,8 +488,6 @@ namespace WebsiteBuilder.IRF.DataAccess.Migrations.Data
                         .HasColumnType("uniqueidentifier");
 
                     b.HasKey("Id");
-
-                    b.HasIndex("DraftRevisionId");
 
                     b.HasIndex("PublishedRevisionId");
 
@@ -1071,11 +1069,6 @@ namespace WebsiteBuilder.IRF.DataAccess.Migrations.Data
 
             modelBuilder.Entity("WebsiteBuilder.Models.Page", b =>
                 {
-                    b.HasOne("WebsiteBuilder.Models.PageRevision", "DraftRevision")
-                        .WithMany()
-                        .HasForeignKey("DraftRevisionId")
-                        .OnDelete(DeleteBehavior.Restrict);
-
                     b.HasOne("WebsiteBuilder.Models.PageRevision", "PublishedRevision")
                         .WithMany()
                         .HasForeignKey("PublishedRevisionId")
@@ -1086,8 +1079,6 @@ namespace WebsiteBuilder.IRF.DataAccess.Migrations.Data
                         .HasForeignKey("TenantId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
-
-                    b.Navigation("DraftRevision");
 
                     b.Navigation("PublishedRevision");
 

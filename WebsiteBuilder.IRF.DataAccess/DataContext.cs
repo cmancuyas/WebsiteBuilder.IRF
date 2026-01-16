@@ -158,6 +158,15 @@ namespace WebsiteBuilder.IRF.DataAccess
                 b.Property(x => x.PageStatusId)
                     .HasDefaultValue(1);
 
+                // ✅ Draft revision pointer (nullable)
+                b.Property(x => x.DraftRevisionId)
+                    .IsRequired(false);
+
+                b.HasOne(x => x.DraftRevision)
+                    .WithMany()
+                    .HasForeignKey(x => x.DraftRevisionId)
+                    .OnDelete(DeleteBehavior.Restrict);
+
                 // Published revision pointer (nullable)
                 b.Property(x => x.PublishedRevisionId)
                     .IsRequired(false);

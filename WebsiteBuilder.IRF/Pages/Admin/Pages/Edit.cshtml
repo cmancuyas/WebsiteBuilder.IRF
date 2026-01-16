@@ -176,14 +176,14 @@
                             @foreach (var s in Model.Sections)
                             {
                                 var collapseId = $"sec-editor-{s.Id}";
-                                var editorPath = WebsiteBuilder.IRF.Pages.Admin.Pages.EditModel.GetEditorPartialPath(s);
+                                var editorPath = Model.GetEditorPartialPath(s);
 
                                 <div class="card section-item" data-section-id="@s.Id">
                                     <div class="card-body py-2 d-flex align-items-center">
                                         <span class="me-2 cursor-grab" title="Drag to reorder" aria-label="Drag to reorder">⋮⋮</span>
 
                                         <div class="flex-grow-1">
-                                            <div class="fw-semibold">@WebsiteBuilder.IRF.Pages.Admin.Pages.EditModel.GetSectionTitle(s)</div>
+                                            <div class="fw-semibold">Model.GetSectionTitle(s)</div>
                                             <div class="text-muted small">Section ID: @s.Id</div>
                                         </div>
 

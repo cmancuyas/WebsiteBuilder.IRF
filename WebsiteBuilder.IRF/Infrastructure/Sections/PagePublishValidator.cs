@@ -45,9 +45,16 @@ public sealed class PagePublishValidator
             .AsNoTracking()
             .Where(s =>
                 s.TenantId == _tenant.TenantId &&
-                s.PageId == pageId &&          // <-- adjust if your FK is different
-                !s.IsDeleted && s.IsActive)    // optional, but typical in your models
+                s.PageId == pageId &&
+                !s.IsDeleted && s.IsActive)
             .OrderBy(s => s.SortOrder)
+            .Select(s => new
+            {
+                s.Id,
+                s.SectionTypeId,
+                s.SettingsJson,
+                TypeKey = s.SectionType!.Key // requires navigation OR join; see note below
+            })
             .ToListAsync(ct);
 
         // Rule: cannot publish a page with no sections
