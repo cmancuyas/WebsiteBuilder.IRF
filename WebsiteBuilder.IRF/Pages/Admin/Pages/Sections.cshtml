@@ -69,6 +69,13 @@
         </div>
 
         <div class="card-body p-0">
+            <button type="button"
+                    class="btn btn-sm btn-primary"
+                    data-bs-toggle="modal"
+                    data-bs-target="#addSectionModal">
+                Add Section
+            </button>
+
             @if (Model.Sections == null || Model.Sections.Count == 0)
             {
                 <div class="p-3">
@@ -121,6 +128,40 @@
                     </table>
                 </div>
             }
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="addSectionModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form method="post"
+                  asp-page-handler="AddSection"
+                  asp-route-id="@Model.Id">
+                @Html.AntiForgeryToken()
+
+                <div class="modal-header">
+                    <h5 class="modal-title">Add Section</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">Section Type</label>
+                        <select class="form-select" name="SectionTypeId" required>
+                            <option value="">-- Select --</option>
+                            <option value="1">Hero</option>
+                            <option value="2">Text</option>
+                            <option value="3">Gallery</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Add</button>
+                </div>
+            </form>
         </div>
     </div>
 </div>

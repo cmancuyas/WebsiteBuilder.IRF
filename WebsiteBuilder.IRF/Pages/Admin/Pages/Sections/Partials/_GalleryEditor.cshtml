@@ -1,211 +1,208 @@
 ﻿@model WebsiteBuilder.Models.PageSection
 
 @{
-    // Ensure SettingsJson is never null
-    var initialJson = string.IsNullOrWhiteSpace(Model.SettingsJson)
-        ? "{}"
-        : Model.SettingsJson;
+    var sid = Model.Id;
+    var rootId = $"gallery-editor-{sid}";
+    var jsonId = $"gallerySettingsJson-{sid}";
+    var rowsId = $"galleryRows-{sid}";
+    var addBtnId = $"addGalleryRow-{sid}";
+    var pickerModalId = $"mediaPickerModal-{sid}";
+    var pickerFrameId = $"mediaPickerFrame-{sid}";
 }
 
-<input type="hidden"
-       asp-for="SettingsJson"
-       id="settingsJson"
-       class="gallery-settings-json" />
+<div id="@rootId">
 
-<div class="card mb-3">
-    <div class="card-header d-flex justify-content-between align-items-center">
-        <strong>Gallery Images</strong>
-        <button type="button" class="btn btn-sm btn-outline-primary" id="addGalleryRow">
-            + Add Image
-        </button>
-    </div>
+    <input type="hidden"
+           name="SettingsJson"
+           value="@Model.SettingsJson"
+           id="@jsonId"
+           class="gallery-settings-json" />
 
-    <div class="card-body p-0">
-        <div class="table-responsive">
-            <table class="table table-sm align-middle mb-0">
-                <thead class="table-light">
-                    <tr>
-                        <th style="width: 40%;">Image URL</th>
-                        <th style="width: 25%;">Alt Text</th>
-                        <th style="width: 25%;">Caption</th>
-                        <th style="width: 10%;"></th>
-                    </tr>
-                </thead>
-                <tbody id="galleryRows"></tbody>
-            </table>
+    <div class="card mb-0">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <strong>Gallery Images</strong>
+            <button type="button" class="btn btn-sm btn-outline-primary" id="@addBtnId">
+                + Add Image
+            </button>
+        </div>
+
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-sm align-middle mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th style="width: 40%;">Image URL</th>
+                            <th style="width: 25%;">Alt Text</th>
+                            <th style="width: 25%;">Caption</th>
+                            <th style="width: 10%;"></th>
+                        </tr>
+                    </thead>
+                    <tbody id="@rowsId"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="card-footer small text-muted">
+            Images are displayed in order.
         </div>
     </div>
 
-    <div class="card-footer small text-muted">
-        Images are displayed in order. At least one image is required.
-    </div>
-</div>
-
-<!-- Media Picker Modal -->
-<div class="modal fade" id="mediaPickerModal" tabindex="-1" aria-hidden="true">
-    <div class="modal-dialog modal-xl modal-dialog-scrollable">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title">Media Picker</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body p-0" style="height:70vh;">
-                <iframe id="mediaPickerFrame"
-                        src="/Admin/Media/Picker"
-                        style="width:100%;height:100%;border:0;"></iframe>
+    <!-- Media Picker Modal -->
+    <div class="modal fade" id="@pickerModalId" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Media Picker</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body p-0" style="height:70vh;">
+                    <iframe id="@pickerFrameId"
+                            src="/Admin/Media/Picker"
+                            style="width:100%;height:100%;border:0;"></iframe>
+                </div>
             </div>
         </div>
     </div>
+
 </div>
 
-@section Scripts
-{
-    <style>
-        .gallery-row-remove {
-            cursor: pointer;
-            color: #dc3545;
-            font-size: 1.1rem;
+<style>
+    .gallery-row-remove {
+        cursor: pointer;
+        color: #dc3545;
+        font-size: 1.1rem;
+    }
+</style>
+
+<script>
+    (function () {
+        const root = document.getElementById("@rootId");
+        if (!root) return;
+
+        const rowsEl = document.getElementById("@rowsId");
+        const jsonInput = document.getElementById("@jsonId");
+        const addBtn = document.getElementById("@addBtnId");
+        const pickerModalEl = document.getElementById("@pickerModalId");
+
+        if (!rowsEl || !jsonInput || !addBtn || !pickerModalEl) return;
+
+        let pickerCallback = null;
+
+        function parseJson() {
+            try { return JSON.parse(jsonInput.value || "{}"); }
+            catch { return {}; }
         }
-    </style>
 
-    <script>
-        (function () {
-            const rowsEl = document.getElementById("galleryRows");
-            const jsonInput = document.getElementById("settingsJson");
-            const addBtn = document.getElementById("addGalleryRow");
+        function writeJson(data) {
+            jsonInput.value = JSON.stringify(data, null, 2);
+        }
 
-            if (!rowsEl || !jsonInput || !addBtn) return;
+        function syncJsonFromRows() {
+            const images = [];
+            rowsEl.querySelectorAll("tr").forEach(tr => {
+                const url = tr.querySelector(".gallery-url")?.value.trim();
+                if (!url) return;
 
-            let pickerCallback = null;
-
-            function parseJson() {
-                try {
-                    return JSON.parse(jsonInput.value || "{}");
-                } catch {
-                    return {};
-                }
-            }
-
-            function writeJson(data) {
-                jsonInput.value = JSON.stringify(data, null, 2);
-            }
-
-            function syncJsonFromRows() {
-                const images = [];
-                rowsEl.querySelectorAll("tr").forEach(tr => {
-                    const url = tr.querySelector(".gallery-url")?.value.trim();
-                    if (!url) return;
-
-                    images.push({
-                        url: url,
-                        alt: tr.querySelector(".gallery-alt")?.value.trim() || "",
-                        caption: tr.querySelector(".gallery-caption")?.value.trim() || ""
-                    });
+                images.push({
+                    url: url,
+                    alt: tr.querySelector(".gallery-alt")?.value.trim() || "",
+                    caption: tr.querySelector(".gallery-caption")?.value.trim() || ""
                 });
+            });
 
-                writeJson({
-                    layout: "grid",
-                    columns: 3,
-                    images: images
-                });
-            }
+            writeJson({
+                layout: "grid",
+                columns: 3,
+                images: images
+            });
+        }
 
-            function buildRow(item) {
-                const tr = document.createElement("tr");
+        function escapeHtml(str) {
+            return String(str || "")
+                .replaceAll("&", "&amp;")
+                .replaceAll("<", "&lt;")
+                .replaceAll(">", "&gt;")
+                .replaceAll('"', "&quot;")
+                .replaceAll("'", "&#039;");
+        }
 
-                tr.innerHTML = `
-                    <td>
-                        <div class="input-group input-group-sm">
-                            <input type="text" class="form-control gallery-url"
-                                   placeholder="/media/123 or https://..."
-                                   value="${escapeHtml(item.url || "")}" />
-                            <button type="button" class="btn btn-outline-secondary gallery-pick">
-                                Pick
-                            </button>
-                        </div>
-                    </td>
-                    <td>
-                        <input type="text" class="form-control form-control-sm gallery-alt"
-                               value="${escapeHtml(item.alt || "")}" />
-                    </td>
-                    <td>
-                        <input type="text" class="form-control form-control-sm gallery-caption"
-                               value="${escapeHtml(item.caption || "")}" />
-                    </td>
-                    <td class="text-center">
-                        <span class="gallery-row-remove" title="Remove">✕</span>
-                    </td>
-                `;
+        function openMediaPicker(cb) {
+            pickerCallback = cb;
+            const modal = bootstrap.Modal.getOrCreateInstance(pickerModalEl);
+            modal.show();
+        }
 
-                tr.querySelectorAll("input").forEach(i =>
-                    i.addEventListener("input", syncJsonFromRows)
-                );
+        function buildRow(item) {
+            const tr = document.createElement("tr");
 
-                tr.querySelector(".gallery-row-remove").addEventListener("click", () => {
-                    tr.remove();
+            tr.innerHTML = `
+                <td>
+                    <div class="input-group input-group-sm">
+                        <input type="text" class="form-control gallery-url"
+                               placeholder="/media/123 or https://..."
+                               value="${escapeHtml(item.url || "")}" />
+                        <button type="button" class="btn btn-outline-secondary gallery-pick">Pick</button>
+                    </div>
+                </td>
+                <td>
+                    <input type="text" class="form-control form-control-sm gallery-alt"
+                           value="${escapeHtml(item.alt || "")}" />
+                </td>
+                <td>
+                    <input type="text" class="form-control form-control-sm gallery-caption"
+                           value="${escapeHtml(item.caption || "")}" />
+                </td>
+                <td class="text-center">
+                    <span class="gallery-row-remove" title="Remove">✕</span>
+                </td>
+            `;
+
+            tr.querySelectorAll("input").forEach(i => i.addEventListener("input", syncJsonFromRows));
+
+            tr.querySelector(".gallery-row-remove").addEventListener("click", () => {
+                tr.remove();
+                syncJsonFromRows();
+            });
+
+            tr.querySelector(".gallery-pick").addEventListener("click", () => {
+                openMediaPicker(selected => {
+                    tr.querySelector(".gallery-url").value = selected.url || "";
+                    const alt = tr.querySelector(".gallery-alt");
+                    if (alt && !alt.value)
+                        alt.value = selected.altText || "";
                     syncJsonFromRows();
                 });
-
-                tr.querySelector(".gallery-pick").addEventListener("click", () => {
-                    openMediaPicker(selected => {
-                        tr.querySelector(".gallery-url").value = selected.url || "";
-                        const alt = tr.querySelector(".gallery-alt");
-                        if (alt && !alt.value)
-                            alt.value = selected.altText || "";
-                        syncJsonFromRows();
-                    });
-                });
-
-                rowsEl.appendChild(tr);
-            }
-
-            function loadInitial() {
-                const data = parseJson();
-                const images = Array.isArray(data.images) ? data.images : [];
-
-                if (images.length === 0) {
-                    buildRow({});
-                } else {
-                    images.forEach(buildRow);
-                }
-
-                syncJsonFromRows();
-            }
-
-            function escapeHtml(str) {
-                return String(str || "")
-                    .replaceAll("&", "&amp;")
-                    .replaceAll("<", "&lt;")
-                    .replaceAll(">", "&gt;")
-                    .replaceAll('"', "&quot;")
-                    .replaceAll("'", "&#039;");
-            }
-
-            // Media picker integration
-            window.openMediaPicker = function (cb) {
-                pickerCallback = cb;
-                const modal = bootstrap.Modal.getOrCreateInstance(
-                    document.getElementById("mediaPickerModal"));
-                modal.show();
-            };
-
-            window.addEventListener("message", function (e) {
-                if (!e.data || e.data.type !== "media-selected") return;
-                if (pickerCallback) {
-                    pickerCallback(e.data);
-                    pickerCallback = null;
-                }
-                const modal = bootstrap.Modal.getOrCreateInstance(
-                    document.getElementById("mediaPickerModal"));
-                modal.hide();
             });
 
-            addBtn.addEventListener("click", () => {
-                buildRow({});
-                syncJsonFromRows();
-            });
+            rowsEl.appendChild(tr);
+        }
 
-            loadInitial();
-        })();
-    </script>
-}
+        function loadInitial() {
+            const data = parseJson();
+            const images = Array.isArray(data.images) ? data.images : [];
+
+            rowsEl.innerHTML = "";
+            if (images.length === 0) buildRow({});
+            else images.forEach(buildRow);
+
+            syncJsonFromRows();
+        }
+
+        window.addEventListener("message", function (e) {
+            if (!e.data || e.data.type !== "media-selected") return;
+            if (pickerCallback) {
+                pickerCallback(e.data);
+                pickerCallback = null;
+            }
+            const modal = bootstrap.Modal.getOrCreateInstance(pickerModalEl);
+            modal.hide();
+        });
+
+        addBtn.addEventListener("click", () => {
+            buildRow({});
+            syncJsonFromRows();
+        });
+
+        loadInitial();
+    })();
+</script>

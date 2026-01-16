@@ -237,6 +237,66 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             await _db.SaveChangesAsync();
             return new JsonResult(new { ok = true });
         }
+        public async Task<IActionResult> OnPostAddSectionAsync(int id, int sectionTypeId, CancellationToken ct = default)
+        {
+            if (!_tenant.IsResolved)
+                return NotFound("Tenant not resolved.");
+
+            // Validate sectionTypeId (basic allow-list for now)
+            if (sectionTypeId is not (1 or 2 or 3))
+                return BadRequest("Invalid section type.");
+
+            // Ensure page exists and belongs to tenant
+            var pageExists = await _db.Pages
+                .AsNoTracking()
+                .AnyAsync(p => p.Id == id && p.TenantId == _tenant.TenantId && !p.IsDeleted, ct);
+
+            if (!pageExists)
+                return NotFound();
+
+            // Next sort order
+            var nextSort = await _db.PageSections
+                .AsNoTracking()
+                .Where(s => s.TenantId == _tenant.TenantId && s.PageId == id && !s.IsDeleted)
+                .Select(s => (int?)s.SortOrder)
+                .MaxAsync(ct) ?? 0;
+
+            // CreatedBy is NON-nullable in BaseModel, so always use a Guid
+            var userGuid = GetUserIdOrEmpty();
+
+            // Use SettingsJson (PageSection does NOT have ContentJson)
+            var settingsJson = sectionTypeId switch
+            {
+                1 => """{"headline":"Headline","subheadline":"Subheadline","ctaText":"Learn more","ctaUrl":"/"}""",
+                2 => """{"text":"Your text here..."}""",
+                3 => """{"items":[]}""",
+                _ => "{}"
+            };
+
+            var section = new PageSection
+            {
+                TenantId = _tenant.TenantId,
+                PageId = id,
+                SectionTypeId = sectionTypeId,
+                SortOrder = nextSort + 1,
+                IsActive = true,
+                IsDeleted = false,
+
+                SettingsJson = settingsJson,
+
+                CreatedAt = DateTime.UtcNow,
+                CreatedBy = userGuid,
+                UpdatedAt = DateTime.UtcNow,
+                UpdatedBy = userGuid
+            };
+
+            _db.PageSections.Add(section);
+            await _db.SaveChangesAsync(ct);
+
+            // IMPORTANT: This is a handler inside SectionsModel, so redirect back to the Sections page (or where you want)
+            return RedirectToPage("./Sections", new { id });
+        }
+
 
         private Guid GetUserIdOrEmpty()
         {

@@ -65,6 +65,14 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
 
         // CanRestore: allowed only when archived
         public bool CanRestore => IsArchived;
+        public List<SelectListItem> SectionTypeOptions { get; private set; } = new();
+        public static string GetEditorPartialPath(PageSection s) => s.SectionTypeId switch
+        {
+            1 => "/Pages/Admin/Pages/Sections/Partials/_HeroEditor.cshtml",
+            2 => "/Pages/Admin/Pages/Sections/Partials/_TextEditor.cshtml",
+            3 => "/Pages/Admin/Pages/Sections/Partials/_GalleryEditor.cshtml",
+            _ => "/Pages/Admin/Pages/Sections/Partials/_TextEditor.cshtml"
+        };
 
         public string PreviewUrl
         {
@@ -115,6 +123,8 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             await BuildSelectListsAsync(Input.PageStatusId, ct);
             await LoadSectionCountAsync(page.Id, ct);
             await LoadSectionsAsync(page.Id, ct);
+            await LoadSectionTypeOptionsAsync(ct);
+
 
             return Page();
         }
@@ -141,6 +151,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             // Refresh section state for UI (if we return Page() on validation error)
             await LoadSectionCountAsync(page.Id, ct);
             await LoadSectionsAsync(page.Id, ct);
+            await LoadSectionTypeOptionsAsync(ct);
 
             // Slug uniqueness per-tenant (exclude current page)
             if (!string.IsNullOrWhiteSpace(Input.Slug))
@@ -446,6 +457,92 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             3 => "Gallery",
             _ => $"SectionType {s.SectionTypeId}"
         };
+
+        private async Task LoadSectionTypeOptionsAsync(CancellationToken ct)
+        {
+            SectionTypeOptions = await _db.SectionTypes
+                .AsNoTracking()
+                .Where(st => st.IsActive && !st.IsDeleted)
+                .OrderBy(st => st.SortOrder)
+                .ThenBy(st => st.Name)
+                .Select(st => new SelectListItem
+                {
+                    Value = st.Id.ToString(),
+                    Text = st.Name
+                })
+                .ToListAsync(ct);
+        }
+        public async Task<IActionResult> OnPostAddSectionAsync(int id, int sectionTypeId, CancellationToken ct = default)
+        {
+            if (!_tenant.IsResolved)
+                return NotFound("Tenant not resolved.");
+
+            // Ensure page exists & belongs to tenant
+            var pageExists = await _db.Pages
+                .AsNoTracking()
+                .AnyAsync(p => p.Id == id && p.TenantId == _tenant.TenantId && !p.IsDeleted, ct);
+
+            if (!pageExists)
+                return NotFound();
+
+            // Ensure section type exists (and is active)
+            var sectionTypeExists = await _db.SectionTypes
+                .AsNoTracking()
+                .AnyAsync(st => st.Id == sectionTypeId && st.IsActive && !st.IsDeleted, ct);
+
+            if (!sectionTypeExists)
+            {
+                TempData["Error"] = "Invalid section type.";
+                return RedirectToPage(new { id });
+            }
+
+            // Next sort order
+            var nextSort = await _db.PageSections
+                .AsNoTracking()
+                .Where(s => s.TenantId == _tenant.TenantId && s.PageId == id && !s.IsDeleted)
+                .Select(s => (int?)s.SortOrder)
+                .MaxAsync(ct) ?? 0;
+
+            var userGuid = GetUserIdOrEmpty();
+
+            // IMPORTANT: your PageSection uses SettingsJson (not ContentJson)
+            var settingsJson = sectionTypeId switch
+            {
+                1 => """{"headline":"Headline","subheadline":"Subheadline","ctaText":"Learn more","ctaUrl":"/"}""",
+                2 => """{"text":"Your text here..."}""",
+                3 => """{"items":[]}""",
+                _ => "{}"
+            };
+
+            var section = new PageSection
+            {
+                TenantId = _tenant.TenantId,
+                PageId = id,
+                SectionTypeId = sectionTypeId,
+                SortOrder = nextSort + 1,
+                IsActive = true,
+                IsDeleted = false,
+
+                SettingsJson = settingsJson,
+
+                CreatedAt = DateTime.UtcNow,
+                CreatedBy = userGuid,
+                UpdatedAt = DateTime.UtcNow,
+                UpdatedBy = userGuid
+            };
+
+            _db.PageSections.Add(section);
+            await _db.SaveChangesAsync(ct);
+
+            return RedirectToPage(new { id });
+        }
+
+        private Guid GetUserIdOrEmpty()
+        {
+            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            return Guid.TryParse(userId, out var g) ? g : Guid.Empty;
+        }
+
     }
 
     public sealed class ReorderSectionsRequest

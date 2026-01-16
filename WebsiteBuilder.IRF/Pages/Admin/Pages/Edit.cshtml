@@ -70,7 +70,7 @@
         </div>
     </div>
 
-    @* Why Publish is disabled (specific) *@
+    @* Why Publish is disabled *@
     @if (!Model.CanPublish && Model.Input.PageStatusId != PageStatusIds.Published)
     {
         <div class="text-muted small mb-3">
@@ -115,7 +115,7 @@
 
                     <input type="hidden" asp-for="Input.Id" />
 
-                    @* Shared fields (IMPORTANT: use "for=Input" so all names post as Input.*) *@
+                    @* Shared fields *@
                     <partial name="_Form" for="Input" />
 
                     @* Navigation fields *@
@@ -147,25 +147,54 @@
                         <strong>Sections</strong>
                         <div class="text-muted small">Drag and drop to reorder.</div>
                     </div>
-                    <span class="badge bg-secondary">@Model.SectionCount</span>
+
+                    <div class="d-flex align-items-center gap-2">
+                        <span class="badge bg-secondary">@Model.SectionCount</span>
+
+                        <button type="button"
+                                class="btn btn-sm btn-primary"
+                                data-bs-toggle="modal"
+                                data-bs-target="#addSectionModal">
+                            Add Section
+                        </button>
+                    </div>
                 </div>
 
                 <div class="card-body">
                     @if (!Model.HasSections)
                     {
-                        <div class="text-muted">No sections yet.</div>
+                        <div class="text-muted">No sections yet. Click <strong>Add Section</strong> to begin.</div>
                     }
                     else
                     {
                         <div id="sectionsList" class="vstack gap-2">
                             @foreach (var s in Model.Sections)
                             {
+                                var collapseId = $"sec-editor-{s.Id}";
+                                var editorPath = WebsiteBuilder.IRF.Pages.Admin.Pages.EditModel.GetEditorPartialPath(s);
+
                                 <div class="card section-item" data-section-id="@s.Id">
                                     <div class="card-body py-2 d-flex align-items-center">
                                         <span class="me-2 cursor-grab" title="Drag to reorder" aria-label="Drag to reorder">⋮⋮</span>
+
                                         <div class="flex-grow-1">
                                             <div class="fw-semibold">@WebsiteBuilder.IRF.Pages.Admin.Pages.EditModel.GetSectionTitle(s)</div>
                                             <div class="text-muted small">Section ID: @s.Id</div>
+                                        </div>
+
+                                        <button type="button"
+                                                class="btn btn-sm btn-outline-secondary"
+                                                data-bs-toggle="collapse"
+                                                data-bs-target="#@collapseId"
+                                                aria-expanded="false"
+                                                aria-controls="@collapseId">
+                                            Edit
+                                        </button>
+                                    </div>
+
+                                    <div id="@collapseId" class="collapse border-top">
+                                        <div class="p-3">
+                                            <partial name="@editorPath" model="s" />
                                         </div>
                                     </div>
                                 </div>
@@ -181,6 +210,42 @@
         </div>
     </div>
 
+</div>
+
+@* Add Section Modal (kept on Edit page) *@
+<div class="modal fade" id="addSectionModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form method="post"
+                  asp-page-handler="AddSection"
+                  asp-route-id="@Model.Input.Id">
+                @Html.AntiForgeryToken()
+
+                <div class="modal-header">
+                    <h5 class="modal-title">Add Section</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label">Section Type</label>
+                        <select class="form-select" name="sectionTypeId" required>
+                            <option value="">-- Select --</option>
+                            @foreach (var opt in Model.SectionTypeOptions)
+                            {
+                                <option value="@opt.Value">@opt.Text</option>
+                            }
+                        </select>
+                    </div>
+                </div>
+
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Add</button>
+                </div>
+            </form>
+        </div>
+    </div>
 </div>
 
 @section Scripts {
@@ -204,7 +269,7 @@
             const el = document.getElementById("sectionsList");
             if (!el) return;
 
-            // Razor Pages anti-forgery token (generated by the main form)
+            // Anti-forgery token from main page form
             const tokenEl = document.querySelector('input[name="__RequestVerificationToken"]');
             const token = tokenEl ? tokenEl.value : null;
 
@@ -231,10 +296,8 @@
                         });
 
                         const json = await res.json();
-                        if (!json.ok) {
-                            alert(json.message || "Failed to save order.");
-                        }
-                    } catch (e) {
+                        if (!json.ok) alert(json.message || "Failed to save order.");
+                    } catch {
                         alert("Failed to save order.");
                     }
                 }

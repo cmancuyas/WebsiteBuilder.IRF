@@ -38,6 +38,9 @@ namespace WebsiteBuilder.IRF.DataAccess
             ConfigureMediaAssets(modelBuilder);
             ConfigureMediaCleanupRunLogs(modelBuilder);
             ConfigureMediaAlerts(modelBuilder);
+
+            ConfigureSectionTypes(modelBuilder);
+
         }
 
         private static void ConfigureBaseModelConventions(ModelBuilder modelBuilder)
@@ -436,6 +439,38 @@ namespace WebsiteBuilder.IRF.DataAccess
             });
         }
 
+        private static void ConfigureSectionTypes(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<SectionType>(entity =>
+            {
+                entity.ToTable("SectionTypes");
+
+                entity.HasKey(x => x.Id);
+
+                entity.Property(x => x.Name)
+                    .IsRequired()
+                    .HasMaxLength(100);
+
+                // BaseModel fields (consistent defaults)
+                entity.Property(x => x.IsActive)
+                    .HasDefaultValue(true);
+
+                entity.Property(x => x.IsDeleted)
+                    .HasDefaultValue(false);
+
+                // Since BaseModel.CreatedAt is non-nullable, give it a DB default
+                entity.Property(x => x.CreatedAt)
+                    .HasDefaultValueSql("SYSUTCDATETIME()");
+
+                // CreatedBy is non-nullable in your BaseModel, so the DB needs a default
+                // if you already have seeded rows / existing data.
+                entity.Property(x => x.CreatedBy)
+                    .HasDefaultValue(Guid.Empty);
+
+                // Optional but useful index for your common filter
+                entity.HasIndex(x => new { x.IsActive, x.IsDeleted });
+            });
+        }
 
     }
 }
