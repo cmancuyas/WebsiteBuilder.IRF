@@ -6,14 +6,10 @@
     ViewData["Title"] = "Edit Page";
 }
 
-<!-- Global anti-forgery token available for JS fetch calls -->
-<form id="pageForm" method="post">
+<!-- Anti-forgery token carrier for JS fetch calls -->
+<form id="antiForgeryForm" method="post" class="d-none">
     @Html.AntiForgeryToken()
 </form>
-<div id="sectionFeedback"
-     class="alert alert-info py-2 d-none"
-     role="alert">
-</div>
 
 <div class="container py-4">
 
@@ -47,14 +43,11 @@
                 </span>
             </div>
 
-
             @* Publish *@
             @if (Model.CanPublish)
             {
                 <form method="post" class="d-inline" asp-page-handler="Publish" asp-route-id="@Model.Input.Id">
-                    <button id="btnPublish"
-                            class="btn btn-success page-action-btn"
-                            type="submit">
+                    <button id="btnPublish" class="btn btn-success page-action-btn" type="submit">
                         Publish
                     </button>
                 </form>
@@ -68,8 +61,7 @@
             @if (Model.CanUnpublish)
             {
                 <form method="post" class="d-inline" asp-page-handler="Unpublish" asp-route-id="@Model.Input.Id">
-                    <button class="btn btn-warning page-action-btn"
-                            type="submit">
+                    <button class="btn btn-warning page-action-btn" type="submit">
                         Unpublish
                     </button>
                 </form>
@@ -83,8 +75,7 @@
             @if (Model.CanArchive)
             {
                 <form method="post" class="d-inline" asp-page-handler="Archive" asp-route-id="@Model.Input.Id">
-                    <button class="btn btn-danger page-action-btn"
-                            type="submit">
+                    <button class="btn btn-danger page-action-btn" type="submit">
                         Archive
                     </button>
                 </form>
@@ -142,9 +133,11 @@
         <div class="alert alert-danger">@err</div>
     }
 
+    <div id="sectionFeedback" class="alert alert-info py-2 d-none" role="alert"></div>
+
     <div class="row g-3">
         <div class="col-12 col-lg-7">
-            <form id="pageForm" method="post" class="card shadow-sm">
+            <form id="pageEditForm" method="post" class="card shadow-sm">
                 <div class="card-body">
 
                     <input type="hidden" asp-for="Input.Id" />
@@ -202,9 +195,9 @@
                     </div>
                 </div>
 
-
                 <div class="card-body">
-                    <!-- Undo banner -->
+
+                    <!-- Undo banner (single source of truth) -->
                     <div id="sectionUndoBanner" class="alert alert-warning d-none py-2" role="alert">
                         <div class="d-flex align-items-center justify-content-between gap-2">
                             <div class="small">
@@ -225,13 +218,20 @@
                         }
                         else
                         {
-                            <div id="sectionsList" class="vstack gap-2">
+                            <div id="sectionsContainer" class="vstack gap-2">
                                 @foreach (var s in Model.Sections)
                                 {
                                     var collapseId = $"sec-editor-{s.Id}";
                                     var editorPath = Model.GetEditorPartialPath(s);
 
-                                    <div class="card section-item" id="section-@s.Id" data-section-id="@s.Id">
+                                    var vm = Model.BuildSectionRowRenderVm(s);
+                                    <partial name="~/Pages/Admin/Pages/Partials/_PageRevisionSectionRow.cshtml" model="vm" />
+
+                                    <div class="card section-item"
+                                         id="section-@s.Id"
+                                         data-section-id="@s.Id"
+                                         data-revision-section-id="@s.Id">
+
                                         <div class="card-body py-2 d-flex align-items-center">
                                             <span class="me-2 cursor-grab" title="Drag to reorder" aria-label="Drag to reorder">⋮⋮</span>
 
@@ -243,7 +243,7 @@
                                             <div class="d-flex align-items-center gap-2">
                                                 <button type="button"
                                                         class="btn btn-sm btn-outline-danger"
-                                                        onclick="deleteRevisionSection(@s.Id)">
+                                                        data-delete-revision-section="@s.Id">
                                                     Delete
                                                 </button>
 
@@ -280,7 +280,11 @@
                             <div id="trashList" class="vstack gap-2">
                                 @foreach (var s in Model.TrashedSections)
                                 {
-                                    <div class="card" id="trash-section-@s.Id" data-section-id="@s.Id">
+                                    <div class="card"
+                                         id="trash-section-@s.Id"
+                                         data-section-id="@s.Id"
+                                         data-revision-section-id="@s.Id">
+
                                         <div class="card-body py-2 d-flex align-items-center justify-content-between">
                                             <div>
                                                 <div class="fw-semibold">@Model.GetSectionTitle(s)</div>
@@ -363,7 +367,10 @@
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
 
     <script>
+        // -----------------------------
         // Shared anti-forgery token getter (robust)
+        // Requires: <form id="antiForgeryForm">@Html.AntiForgeryToken()</form>
+        // -----------------------------
         function getAntiForgeryToken() {
             const scoped = document.querySelector('#antiForgeryForm input[name="__RequestVerificationToken"]');
             if (scoped?.value) return scoped.value;
@@ -371,14 +378,18 @@
             const el = document.querySelector('input[name="__RequestVerificationToken"]');
             return el ? el.value : null;
         }
-
     </script>
+
     <script>
+        // -----------------------------
+        // Autosave UX indicator (single authoritative state)
+        // -----------------------------
         (function () {
             const indicator = document.getElementById("globalSaveIndicator");
             const retryBtn = document.getElementById("retryFailedAutosavesBtn");
             const offlineBadge = document.getElementById("offlineBadge");
 
+            // authoritative counters live here
             const state = {
                 saving: 0,
                 failed: 0,
@@ -386,9 +397,12 @@
                 retryQueue: new Map()
             };
 
+            // expose state so other blocks can read it safely
+            window.AutosaveUxState = state;
+
             function fmt(d) {
                 return d
-                    ? `${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`
+                    ? `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`
                     : "";
             }
 
@@ -431,11 +445,11 @@
             }
 
             window.AutosaveUx = {
-                onSaving() {
+                onSaving(sectionId) {
                     state.saving++;
                     render();
                 },
-                onSaved() {
+                onSaved(sectionId) {
                     state.saving = Math.max(0, state.saving - 1);
                     state.lastSavedAt = new Date();
                     render();
@@ -447,7 +461,7 @@
                     render();
                 },
                 onRecovered(sectionId) {
-                    // decrement saving just like a normal save completion
+                    // recovery counts as a successful completion of a previously failing item
                     state.saving = Math.max(0, state.saving - 1);
 
                     if (state.failed > 0) state.failed--;
@@ -455,12 +469,11 @@
                     state.lastSavedAt = new Date();
                     render();
                 }
-
             };
 
             retryBtn?.addEventListener("click", async () => {
                 for (const fn of state.retryQueue.values()) {
-                    try { await fn(); } catch {}
+                    try { await fn(); } catch { }
                 }
                 render();
             });
@@ -471,15 +484,65 @@
         })();
     </script>
 
+    <script>
+        // -----------------------------
+        // Disable page action buttons while autosave is in-flight
+        // -----------------------------
+        (function () {
+            function updatePageActionButtons(disabled) {
+                document.querySelectorAll(".page-action-btn").forEach(btn => {
+                    btn.disabled = disabled;
+                    btn.classList.toggle("disabled", disabled);
 
+                    if (disabled) btn.setAttribute("title", "Saving changes…");
+                    else btn.removeAttribute("title");
+                });
+            }
+
+            const ux = window.AutosaveUx;
+            if (!ux) return;
+
+            const originalOnSaving = ux.onSaving;
+            const originalOnSaved = ux.onSaved;
+            const originalOnFailed = ux.onFailed;
+            const originalOnRecovered = ux.onRecovered;
+
+            ux.onSaving = function (...args) {
+                originalOnSaving?.apply(this, args);
+                updatePageActionButtons(true);
+            };
+
+            ux.onSaved = function (...args) {
+                originalOnSaved?.apply(this, args);
+                // only enable if nothing is saving anymore
+                if ((window.AutosaveUxState?.saving ?? 0) === 0) {
+                    updatePageActionButtons(false);
+                }
+            };
+
+            ux.onFailed = function (...args) {
+                originalOnFailed?.apply(this, args);
+                // allow publish actions if user wants, despite failed autosave
+                updatePageActionButtons(false);
+            };
+
+            ux.onRecovered = function (...args) {
+                originalOnRecovered?.apply(this, args);
+                if ((window.AutosaveUxState?.saving ?? 0) === 0) {
+                    updatePageActionButtons(false);
+                }
+            };
+        })();
+    </script>
 
     <script>
+        // -----------------------------
         // Section reorder (auto-save order)
+        // Targets: #sectionsContainer (matches your markup)
+        // -----------------------------
         document.addEventListener("DOMContentLoaded", function () {
-            const el = document.getElementById("sectionsList");
+            const el = document.getElementById("sectionsContainer");
             if (!el) return;
-
-            const publishBtn = document.getElementById("btnPublish");
 
             function getIds() {
                 return Array.from(el.querySelectorAll(".section-item"))
@@ -494,7 +557,6 @@
                     if (Number.isFinite(id)) map.set(id, node);
                 });
 
-                // Re-append in the desired order (moves existing nodes)
                 for (const id of ids) {
                     const node = map.get(id);
                     if (node) el.appendChild(node);
@@ -504,10 +566,10 @@
             let isSaving = false;
             let hasPendingChanges = false;
 
-            // mark dirty during reorder
             function setSaving(state) {
                 isSaving = state;
                 hasPendingChanges = state;
+
                 document.querySelectorAll(".page-action-btn").forEach(btn => {
                     btn.disabled = state || btn.disabled;
                 });
@@ -524,7 +586,6 @@
                 animation: 150,
                 ghostClass: "sortable-ghost",
                 onStart: function () {
-                    // Capture order BEFORE drag, so we can rollback if save fails
                     el.dataset.prevOrder = JSON.stringify(getIds());
                 },
                 onEnd: async function () {
@@ -536,7 +597,6 @@
                     })();
 
                     const token = getAntiForgeryToken();
-
                     setSaving(true);
 
                     try {
@@ -554,15 +614,11 @@
 
                         const json = await res.json().catch(() => null);
 
-                        if (!json || !json.ok) {
-                            // rollback DOM
+                        if (!json || json.ok !== true) {
                             if (prev && prev.length) applyOrder(prev);
-                            alert((json && json.message) ? json.message : "Failed to save order.");
+                            alert((json && (json.message || json.Message)) ? (json.message || json.Message) : "Failed to save order.");
                             return;
                         }
-
-                        // Success (replace with your toast later)
-                        // console.log("Section order saved");
                     } catch {
                         if (prev && prev.length) applyOrder(prev);
                         alert("Failed to save order.");
@@ -575,9 +631,13 @@
     </script>
 
     <script>
+        // -----------------------------
         // Soft delete / Undo / Trash UI for draft sections
+        // Single implementation. Uses in-card banner (#sectionUndoBanner).
+        // Delete button hook: [data-delete-revision-section]
+        // -----------------------------
         (function () {
-            let lastDeleted = null;
+            let lastDeletedId = null;
             let undoTimer = null;
 
             function q(id) { return document.getElementById(id); }
@@ -599,12 +659,12 @@
                 if (!banner) return;
 
                 banner.classList.remove("d-none");
-                lastDeleted = sectionId;
+                lastDeletedId = sectionId;
 
                 if (undoTimer) clearTimeout(undoTimer);
                 undoTimer = setTimeout(() => {
                     banner.classList.add("d-none");
-                    lastDeleted = null;
+                    lastDeletedId = null;
                 }, 12000);
             }
 
@@ -612,7 +672,7 @@
                 const banner = q("sectionUndoBanner");
                 if (!banner) return;
                 banner.classList.add("d-none");
-                lastDeleted = null;
+                lastDeletedId = null;
                 if (undoTimer) clearTimeout(undoTimer);
                 undoTimer = null;
             }
@@ -661,14 +721,13 @@
 
             function appendToTrash(sectionId, titleText) {
                 const trashPanel = q("trashPanel");
-                const trashList = q("trashList");
+                let trashList = q("trashList");
 
                 if (!trashList && trashPanel) {
                     trashPanel.innerHTML = `<div id="trashList" class="vstack gap-2"></div>`;
+                    trashList = q("trashList");
                 }
-
-                const list = q("trashList");
-                if (!list) return;
+                if (!trashList) return;
 
                 const emptyMsg = trashPanel && trashPanel.querySelector('.text-muted');
                 if (emptyMsg) emptyMsg.remove();
@@ -683,11 +742,11 @@
                             <div class="fw-semibold">${titleText || "Section"}</div>
                             <div class="text-muted small">Section ID: ${sectionId}</div>
                         </div>
-                        <button type="button" class="btn btn-sm btn-outline-primary" onclick="restoreRevisionSection(${sectionId})">Restore</button>
+                        <button type="button" class="btn btn-sm btn-outline-primary" data-restore-revision-section="${sectionId}">Restore</button>
                     </div>
                 `;
 
-                list.prepend(card);
+                trashList.prepend(card);
             }
 
             window.deleteRevisionSection = async function (sectionId) {
@@ -718,32 +777,83 @@
                 if (!id) return;
 
                 try {
+                    // 1) flip IsDeleted=false
                     await postJson("?handler=RestoreRevisionSection", { sectionId: id });
 
+                    // 2) remove from trash UI
                     const trashCard = document.getElementById(`trash-section-${id}`);
                     if (trashCard) trashCard.remove();
 
                     incBadge("trashCountBadge", -1);
+                    incBadge("activeCountBadge", +1);
 
-                    // Reload to reconstruct full editor card (partial views)
+                    // 3) fetch server-rendered row HTML (no reload)
+                    const htmlRes = await fetch(`?handler=RevisionSectionRow&sectionId=${id}`, {
+                        method: "GET",
+                        headers: { "X-Requested-With": "XMLHttpRequest" }
+                    });
+
+                    const html = await htmlRes.text();
+                    if (!htmlRes.ok || !html || !html.trim()) {
+                        throw new Error("Failed to load restored section markup.");
+                    }
+
+                    // Ensure we are on Sections tab
+                    setActiveTab("sections");
                     hideUndoBanner();
-                    window.location.reload();
+
+                    // Remove "No sections" message if present
+                    const sectionsPanel = q("sectionsPanel");
+                    const emptyMsg = sectionsPanel?.querySelector(".text-muted");
+                    if (emptyMsg && emptyMsg.textContent?.toLowerCase().includes("no sections")) {
+                        emptyMsg.remove();
+                    }
+
+                    const container = document.getElementById("sectionsContainer");
+                    if (!container) throw new Error("sectionsContainer not found.");
+
+                    const wrap = document.createElement("div");
+                    wrap.innerHTML = html.trim();
+                    const restoredEl = wrap.firstElementChild;
+                    if (!restoredEl) throw new Error("Invalid restored HTML.");
+
+                    // Insert back into active list (prepend is fine; reorder is the user’s choice)
+                    container.prepend(restoredEl);
 
                 } catch (e) {
                     alert(e && e.message ? e.message : "Restore failed.");
                 }
             };
 
+
             document.addEventListener("DOMContentLoaded", function () {
                 q("tabSectionsBtn")?.addEventListener("click", () => setActiveTab("sections"));
                 q("tabTrashBtn")?.addEventListener("click", () => setActiveTab("trash"));
 
                 q("undoDeleteBtn")?.addEventListener("click", function () {
-                    if (!lastDeleted) return;
-                    window.restoreRevisionSection(lastDeleted);
+                    if (!lastDeletedId) return;
+                    window.restoreRevisionSection(lastDeletedId);
                 });
 
                 q("closeUndoBannerBtn")?.addEventListener("click", hideUndoBanner);
+
+                // Delegate Delete clicks
+                document.addEventListener("click", function (e) {
+                    const btn = e.target.closest("[data-delete-revision-section]");
+                    if (!btn) return;
+                    const id = toInt(btn.getAttribute("data-delete-revision-section") || btn.dataset.deleteRevisionSection);
+                    if (!id) return;
+                    window.deleteRevisionSection(id);
+                });
+
+                // Delegate Restore clicks in trash
+                document.addEventListener("click", function (e) {
+                    const btn = e.target.closest("[data-restore-revision-section]");
+                    if (!btn) return;
+                    const id = toInt(btn.getAttribute("data-restore-revision-section") || btn.dataset.restoreRevisionSection);
+                    if (!id) return;
+                    window.restoreRevisionSection(id);
+                });
 
                 setActiveTab("sections");
             });
@@ -751,19 +861,10 @@
     </script>
 
     <script>
-        // Section autosave helper (authoritative)
+        // -----------------------------
+        // Section autosave helper (authoritative, no double-calls)
+        // -----------------------------
         (function () {
-            function showSectionFeedback(message, type = "info") {
-                const el = document.getElementById("sectionFeedback");
-                if (!el) return;
-
-                el.className = `alert alert-${type} py-2`;
-                el.textContent = message;
-                el.classList.remove("d-none");
-
-                setTimeout(() => el.classList.add("d-none"), 3000);
-            }
-
             function debounce(fn, delay) {
                 let t = null;
                 return function () {
@@ -773,154 +874,133 @@
                 };
             }
 
-        function bindSectionAutoSave(sectionId, getSettingsJson, saveUrl, statusEl, errorsEl) {
+            function bindSectionAutoSave(sectionId, getSettingsJson, saveUrl, statusEl, errorsEl) {
+                const dirtyKey = `section:${sectionId}`;
+                let inFlight = 0;
 
-            const dirtyKey = `section:${sectionId}`;
-            let inFlight = 0;
-
-            function clearErrors() {
-                if (!errorsEl) return;
-                errorsEl.classList.add("d-none");
-                errorsEl.innerHTML = "";
-            }
-
-            function showErrors(errors) {
-                if (!errorsEl) return;
-
-                const list = Array.isArray(errors) ? errors : [];
-                if (!list.length) {
-                    clearErrors();
-                    return;
+                function clearErrors() {
+                    if (!errorsEl) return;
+                    errorsEl.classList.add("d-none");
+                    errorsEl.innerHTML = "";
                 }
 
-                errorsEl.classList.remove("d-none");
-                errorsEl.innerHTML = `
-                    <div class="alert alert-danger py-2 mb-0">
-                        <div class="fw-semibold small mb-1">Please fix the following:</div>
-                        <ul class="small mb-0">
-                            ${list.map(e => `<li>${String(e)}</li>`).join("")}
-                        </ul>
-                    </div>
-                `;
-            }
+                function showErrors(errors) {
+                    if (!errorsEl) return;
 
-            async function runSave() {
+                    const list = Array.isArray(errors) ? errors : [];
+                    if (!list.length) {
+                        clearErrors();
+                        return;
+                    }
 
-                window.AutosaveUx && window.AutosaveUx.onSaving(sectionId);
-
-                const settingsJson = getSettingsJson();
-
-                inFlight++;
-                if (statusEl) {
-                    statusEl.textContent = "Saving...";
-                    statusEl.classList.remove("text-danger", "text-success");
-                    statusEl.classList.add("text-muted");
-                    statusEl.title = "";
+                    errorsEl.classList.remove("d-none");
+                    errorsEl.innerHTML = `
+                        <div class="alert alert-danger py-2 mb-0">
+                            <div class="fw-semibold small mb-1">Please fix the following:</div>
+                            <ul class="small mb-0">
+                                ${list.map(e => `<li>${String(e)}</li>`).join("")}
+                            </ul>
+                        </div>
+                    `;
                 }
 
-                try {
-                    const token = getAntiForgeryToken();
+                async function runSave() {
+                    window.AutosaveUx && window.AutosaveUx.onSaving(sectionId);
 
-                    const res = await fetch(saveUrl, {
-                        method: "POST",
-                        headers: {
-                            "Content-Type": "application/json",
-                            ...(token ? { "RequestVerificationToken": token } : {})
-                        },
-                        body: JSON.stringify({ sectionId, settingsJson })
-                    });
+                    const settingsJson = getSettingsJson();
 
-                    const data = await res.json().catch(() => null);
-
-                    if (!res.ok || !data || data.ok !== true) {
-                        const errors = (data && (data.errors || data.Errors)) || [];
-                        const message = (data && (data.message || data.Message)) || "Save failed.";
-                        throw { message, errors };
-                    }
-
-                    inFlight--;
-                    clearErrors();
-
-                    // ✅ Clear dirty ONLY after a successful save
-                    window.PageDirty && typeof window.PageDirty.clear === "function" && window.PageDirty.clear(dirtyKey);
-
-                    window.AutosaveUx && window.AutosaveUx.onRecovered(sectionId);
-
-                    if (inFlight === 0 && statusEl) {
-                        statusEl.textContent = "Saved";
-                        statusEl.classList.remove("text-muted", "text-danger");
-                        statusEl.classList.add("text-success");
-                    }
-
-                    // if this section had failed before, mark it recovered; otherwise treat as normal saved
-                    if (window.AutosaveUx) {
-                        if (typeof window.AutosaveUx.onRecovered === "function") window.AutosaveUx.onRecovered(sectionId);
-                        else window.AutosaveUx.onSaved(sectionId);
-                    }
-
-                    return data;
-                } catch (e) {
-                    inFlight--;
-
+                    inFlight++;
                     if (statusEl) {
-                        statusEl.textContent = "Save failed";
-                        statusEl.classList.remove("text-muted", "text-success");
-                        statusEl.classList.add("text-danger");
-                        statusEl.title = (e && e.message) ? e.message : "Error";
+                        statusEl.textContent = "Saving...";
+                        statusEl.classList.remove("text-danger", "text-success");
+                        statusEl.classList.add("text-muted");
+                        statusEl.title = "";
                     }
 
-                    window.AutosaveUx && window.AutosaveUx.onFailed(sectionId, () => runSave());
+                    try {
+                        const token = getAntiForgeryToken();
 
-                    const msg = (e && e.message) ? e.message : "Save failed.";
-                    window.AutosaveUx && window.AutosaveUx.onFailed(sectionId, msg, () => runSave());
+                        const res = await fetch(saveUrl, {
+                            method: "POST",
+                            headers: {
+                                "Content-Type": "application/json",
+                                ...(token ? { "RequestVerificationToken": token } : {})
+                            },
+                            body: JSON.stringify({ sectionId, settingsJson })
+                        });
 
-                    showErrors(e && e.errors ? e.errors : []);
-                    return null;
+                        const data = await res.json().catch(() => null);
+
+                        if (!res.ok || !data || data.ok !== true) {
+                            const errors = (data && (data.errors || data.Errors)) || [];
+                            const message = (data && (data.message || data.Message)) || "Save failed.";
+                            throw { message, errors };
+                        }
+
+                        inFlight--;
+                        clearErrors();
+
+                        // Clear dirty only after successful save
+                        window.PageDirty && typeof window.PageDirty.clear === "function" && window.PageDirty.clear(dirtyKey);
+
+                        // success signal
+                        if (window.AutosaveUx && typeof window.AutosaveUx.onSaved === "function") {
+                            window.AutosaveUx.onSaved(sectionId);
+                        }
+
+                        if (inFlight === 0 && statusEl) {
+                            statusEl.textContent = "Saved";
+                            statusEl.classList.remove("text-muted", "text-danger");
+                            statusEl.classList.add("text-success");
+                        }
+
+                        return data;
+                    } catch (e) {
+                        inFlight--;
+
+                        if (statusEl) {
+                            statusEl.textContent = "Save failed";
+                            statusEl.classList.remove("text-muted", "text-success");
+                            statusEl.classList.add("text-danger");
+                            statusEl.title = (e && e.message) ? e.message : "Error";
+                        }
+
+                        // failed signal (provide retry fn)
+                        window.AutosaveUx && window.AutosaveUx.onFailed(sectionId, () => runSave());
+
+                        showErrors(e && e.errors ? e.errors : []);
+                        return null;
+                    }
                 }
+
+                const debounced = debounce(runSave, 1000);
+
+                return {
+                    notifyChanged: () => {
+                        window.PageDirty && typeof window.PageDirty.set === "function" && window.PageDirty.set(dirtyKey);
+                        debounced();
+                    },
+                    saveNow: () => runSave()
+                };
             }
 
-            const debounced = debounce(runSave, 1000);
-
-            return {
-                notifyChanged: () => {
-                    // ✅ Mark section dirty when user changes
-                    window.PageDirty && typeof window.PageDirty.set === "function" && window.PageDirty.set(dirtyKey);
-                    debounced();
-                },
-                saveNow: () => runSave()
-            };
-        }
-
-
-            window.SectionAutoSave = {
-                bindSectionAutoSave
-            };
-
+            window.SectionAutoSave = { bindSectionAutoSave };
         })();
     </script>
 
     <script>
+        // -----------------------------
+        // Global dirty state (page + sections)
+        // -----------------------------
         (function () {
-            // -----------------------------
-            // Global dirty state
-            // -----------------------------
             const Dirty = {
                 _keys: new Set(),
                 get isDirty() { return this._keys.size > 0; },
 
-                // Mark dirty. If no key is provided, default to "page".
-                set(key) {
-                    this._keys.add(key || "page");
-                },
+                set(key) { this._keys.add(key || "page"); },
 
-                // Clear dirty state.
-                // - clear() clears ALL dirty flags (used on full page save / navigation actions)
-                // - clear(key) clears only that scope (used by autosaved sections)
                 clear(key) {
-                    if (!key) {
-                        this._keys.clear();
-                        return;
-                    }
+                    if (!key) { this._keys.clear(); return; }
                     this._keys.delete(key);
                 },
 
@@ -930,16 +1010,16 @@
                 }
             };
 
-
-            // Expose globally so section editors can call it
             window.PageDirty = Dirty;
 
             document.addEventListener("DOMContentLoaded", function () {
-            const form = document.getElementById("pageForm") || document.querySelector("form:not(#antiForgeryForm)");
+                const form =
+                    document.getElementById("pageEditForm") ||
+                    document.querySelector("form:not(#antiForgeryForm)");
 
                 if (!form) return;
 
-                // Mark page-level dirty ONLY for page-scoped inputs
+                // Page-level dirty only for page-scoped inputs
                 form.addEventListener("input", function (e) {
                     const t = e.target;
                     if (!t) return;
@@ -962,13 +1042,12 @@
                     }
                 }, true);
 
-
-                // Clear dirty on normal Save submit
+                // Clear dirty on Save submit
                 form.addEventListener("submit", function () {
                     Dirty.clear();
                 });
 
-                // Intercept internal navigation (Cancel / Back / sidebar links)
+                // Intercept internal navigation
                 document.body.addEventListener("click", function (e) {
                     const a = e.target?.closest?.("a");
                     if (!a) return;
@@ -988,7 +1067,6 @@
                 }, true);
             });
 
-            // Browser-level protection (refresh, tab close, URL change)
             window.addEventListener("beforeunload", function (e) {
                 if (!Dirty.isDirty) return;
                 e.preventDefault();
@@ -996,6 +1074,4 @@
             });
         })();
     </script>
-
-
 }
