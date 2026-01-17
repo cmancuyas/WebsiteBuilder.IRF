@@ -1,27 +1,40 @@
 ﻿@model WebsiteBuilder.IRF.Pages.Admin.Pages.EditModel.SectionRowRenderVm
 
 @{
-    var s = Model.Section;
-    var collapseId = $"sec-editor-{s.Id}";
+    var isEditable = (ViewData["IsEditable"] as bool?) ?? false;
+
+    var sectionId = Model.Section.Id;
+    var collapseId = $"sec-editor-{sectionId}";
+    var editorPath = Model.EditorPartialPath;
 }
 
 <div class="card section-item"
-     id="section-@s.Id"
-     data-section-id="@s.Id"
-     data-revision-section-id="@s.Id">
+     id="section-@sectionId"
+     data-section-id="@sectionId"
+     data-revision-section-id="@sectionId">
 
-    <div class="card-body py-2 d-flex align-items-center">
-        <span class="me-2 cursor-grab" title="Drag to reorder" aria-label="Drag to reorder">⋮⋮</span>
+    <div class="card-body py-2 d-flex align-items-center justify-content-between">
+        <div class="d-flex align-items-center gap-2">
+            @if (isEditable)
+            {
+                <span class="me-2 cursor-grab" title="Drag to reorder" aria-label="Drag to reorder">⠿</span>
+            }
+            else
+            {
+                <span class="text-muted me-2" title="Reordering disabled">⠿</span>
+            }
 
-        <div class="flex-grow-1">
-            <div class="fw-semibold section-title">@Model.Title</div>
-            <div class="text-muted small">Section ID: @s.Id</div>
+            <div>
+                <div class="fw-semibold section-title">@Model.Title</div>
+                <div class="text-muted small">Section ID: @sectionId</div>
+            </div>
         </div>
 
         <div class="d-flex align-items-center gap-2">
             <button type="button"
                     class="btn btn-sm btn-outline-danger"
-                    data-delete-revision-section="@s.Id">
+                    data-delete-revision-section="@sectionId"
+                    @(isEditable ? null : "disabled")>
                 Delete
             </button>
 
@@ -30,7 +43,8 @@
                     data-bs-toggle="collapse"
                     data-bs-target="#@collapseId"
                     aria-expanded="false"
-                    aria-controls="@collapseId">
+                    aria-controls="@collapseId"
+                    @(isEditable ? null : "disabled")>
                 Edit
             </button>
         </div>
@@ -38,7 +52,7 @@
 
     <div id="@collapseId" class="collapse border-top">
         <div class="p-3">
-            <partial name="@Model.EditorPartialPath" model="s" />
+            <partial name="@editorPath" model="Model.Section" />
         </div>
     </div>
 </div>

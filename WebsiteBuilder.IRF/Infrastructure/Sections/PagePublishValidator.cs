@@ -75,18 +75,18 @@ namespace WebsiteBuilder.IRF.Infrastructure.Sections
             }
 
             // ✅ Read from PageRevisionSections (your model: SettingsJson + SectionTypeId/SectionType)
+            // ONLY validate active draft sections (Trash must not block Publish)
             var sections = await _db.PageRevisionSections
                 .AsNoTracking()
-                .Where(s => s.TenantId == _tenant.TenantId && s.PageRevisionId == draftRevisionId.Value)
                 .Include(s => s.SectionType)
+                .Where(s =>
+                    s.TenantId == _tenant.TenantId &&
+                    s.PageRevisionId == draftRevisionId &&
+                    !s.IsDeleted &&               // ✅ important
+                    s.IsActive)                   // optional, keep if you use inactive sections
                 .OrderBy(s => s.SortOrder)
-                .Select(s => new DraftSectionPayload
-                {
-                    SectionId = s.Id,
-                    TypeKey = s.SectionType != null ? s.SectionType.Name : null, // SectionType.Name exists per your config
-                    ContentJson = s.SettingsJson
-                })
                 .ToListAsync(ct);
+
 
             if (sections.Count == 0)
             {
@@ -96,21 +96,35 @@ namespace WebsiteBuilder.IRF.Infrastructure.Sections
 
             foreach (var s in sections)
             {
-                if (string.IsNullOrWhiteSpace(s.TypeKey))
+                var typeKey = s.SectionType?.Key;
+
+                if (string.IsNullOrWhiteSpace(typeKey))
                 {
-                    AddSectionError(result, s.SectionId, "Unknown", "Section type is missing.");
+                    AddSectionError(
+                        result,
+                        sectionId: s.Id,
+                        typeKey: "Unknown",
+                        message: "Section type is missing."
+                    );
                     continue;
                 }
 
-                // Uses your existing async validator contract: ValidateAsync(typeKey, contentJson)
-                var vr = await _sectionValidation.ValidateAsync(s.TypeKey!, s.ContentJson);
+                var contentJson = s.SettingsJson;
+
+                var vr = await _sectionValidation.ValidateAsync(typeKey, contentJson);
 
                 if (!vr.IsValid)
                 {
-                    // group all messages per section
-                    AddSectionErrors(result, s.SectionId, s.TypeKey!, vr.Errors);
+                    AddSectionErrors(
+                        result,
+                        sectionId: s.Id,
+                        typeKey: typeKey,
+                        messages: vr.Errors
+                    );
                 }
             }
+
+
 
             return result;
         }

@@ -229,8 +229,8 @@ namespace WebsiteBuilder.IRF.DataAccess
 
                 // UNIQUE SortOrder within a draft revision, ignoring deleted rows (Trash should not block inserts)
                 b.HasIndex(x => new { x.TenantId, x.PageRevisionId, x.SortOrder })
-                    .IsUnique()
-                    .HasFilter("[IsDeleted] = 0 AND [IsActive] = 1");
+                 .IsUnique()
+                 .HasFilter("[IsDeleted] = 0");
 
                 // Optional query helper index (not unique)
                 b.HasIndex(x => new { x.TenantId, x.PageRevisionId, x.IsDeleted, x.IsActive });

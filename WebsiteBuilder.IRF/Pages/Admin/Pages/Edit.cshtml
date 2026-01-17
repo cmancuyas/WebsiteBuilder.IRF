@@ -4,7 +4,14 @@
 
 @{
     ViewData["Title"] = "Edit Page";
+
+    // SAFE: Input is always initialized
+    var isEditable = Model.Input.PageStatusId == PageStatusIds.Draft;
+
+    // Pass to partials
+    ViewData["IsEditable"] = isEditable;
 }
+
 
 <!-- Anti-forgery token carrier for JS fetch calls -->
 <form id="antiForgeryForm" method="post" class="d-none">
@@ -95,6 +102,15 @@
         </div>
     </div>
 
+    @* Read-only banner *@
+    @if (!isEditable)
+    {
+        <div class="alert alert-warning mb-3" role="alert">
+            <strong>Read-only:</strong> This page is <strong>@Model.PageEntity.PageStatusId</strong>.
+            Unpublish the page to edit sections and page fields.
+        </div>
+    }
+
     @* Why Publish is disabled *@
     @if (!Model.CanPublish && Model.Input.PageStatusId != PageStatusIds.Published)
     {
@@ -142,25 +158,48 @@
 
                     <input type="hidden" asp-for="Input.Id" />
 
-                    @* Shared fields *@
-                    <partial name="_Form" for="Input" />
+                    @* Disable the entire page edit form when not Draft *@
+                    @if (!isEditable)
+                    {
+                        <fieldset disabled>
+                            <partial name="_Form" for="Input" />
 
-                    @* Navigation fields *@
-                    <div class="form-check mt-3">
-                        <input asp-for="Input.ShowInNavigation" class="form-check-input" />
-                        <label asp-for="Input.ShowInNavigation" class="form-check-label"></label>
-                    </div>
+                            <div class="form-check mt-3">
+                                <input asp-for="Input.ShowInNavigation" class="form-check-input" />
+                                <label asp-for="Input.ShowInNavigation" class="form-check-label"></label>
+                            </div>
 
-                    <div class="mb-3">
-                        <label asp-for="Input.NavigationOrder" class="form-label"></label>
-                        <input asp-for="Input.NavigationOrder" class="form-control" />
-                        <span class="text-danger" asp-validation-for="Input.NavigationOrder"></span>
-                    </div>
+                            <div class="mb-3">
+                                <label asp-for="Input.NavigationOrder" class="form-label"></label>
+                                <input asp-for="Input.NavigationOrder" class="form-control" />
+                                <span class="text-danger" asp-validation-for="Input.NavigationOrder"></span>
+                            </div>
+                        </fieldset>
+                    }
+                    else
+                    {
+                        <partial name="_Form" for="Input" />
+
+                        <div class="form-check mt-3">
+                            <input asp-for="Input.ShowInNavigation" class="form-check-input" />
+                            <label asp-for="Input.ShowInNavigation" class="form-check-label"></label>
+                        </div>
+
+                        <div class="mb-3">
+                            <label asp-for="Input.NavigationOrder" class="form-label"></label>
+                            <input asp-for="Input.NavigationOrder" class="form-control" />
+                            <span class="text-danger" asp-validation-for="Input.NavigationOrder"></span>
+                        </div>
+                    }
 
                 </div>
 
                 <div class="card-footer d-flex justify-content-end gap-2">
-                    <button type="submit" class="btn btn-primary" id="saveBtn" data-save-button>
+                    <button type="submit"
+                            class="btn btn-primary"
+                            id="saveBtn"
+                            data-save-button
+                            @(isEditable ? null : "disabled")>
                         Save
                     </button>
                 </div>
@@ -172,7 +211,9 @@
                 <div class="card-header d-flex align-items-center justify-content-between">
                     <div>
                         <strong>Sections</strong>
-                        <div class="text-muted small">Drag and drop to reorder.</div>
+                        <div class="text-muted small">
+                            @(isEditable ? "Drag and drop to reorder." : "Sections are read-only while not Draft.")
+                        </div>
                     </div>
 
                     <div class="d-flex align-items-center gap-2">
@@ -189,7 +230,8 @@
                                 class="btn btn-sm btn-primary page-action-btn"
                                 data-bs-toggle="modal"
                                 data-bs-target="#addSectionModal"
-                                id="addSectionBtn">
+                                id="addSectionBtn"
+                                @(isEditable ? null : "disabled")>
                             Add Section
                         </button>
                     </div>
@@ -198,14 +240,26 @@
                 <div class="card-body">
 
                     <!-- Undo banner (single source of truth) -->
-                    <div id="sectionUndoBanner" class="alert alert-warning d-none py-2" role="alert">
+                    <div id="sectionUndoBanner"
+                         class="alert alert-warning d-none py-2"
+                         role="alert"
+                         data-readonly="@(!isEditable)">
                         <div class="d-flex align-items-center justify-content-between gap-2">
                             <div class="small">
                                 <strong>Section deleted.</strong> You can undo this action.
                             </div>
                             <div class="d-flex align-items-center gap-2">
-                                <button type="button" class="btn btn-sm btn-outline-dark" id="undoDeleteBtn">Undo</button>
-                                <button type="button" class="btn-close" aria-label="Close" id="closeUndoBannerBtn"></button>
+                                <button type="button"
+                                        class="btn btn-sm btn-outline-dark"
+                                        id="undoDeleteBtn"
+                                        @(isEditable ? null : "disabled")>
+                                    Undo
+                                </button>
+                                <button type="button"
+                                        class="btn-close"
+                                        aria-label="Close"
+                                        id="closeUndoBannerBtn">
+                                </button>
                             </div>
                         </div>
                     </div>
@@ -252,7 +306,8 @@
 
                                             <button type="button"
                                                     class="btn btn-sm btn-outline-primary"
-                                                    onclick="restoreRevisionSection(@s.Id)">
+                                                    onclick="restoreRevisionSection(@s.Id)"
+                                                    @(isEditable ? null : "disabled")>
                                                 Restore
                                             </button>
                                         </div>
@@ -265,13 +320,14 @@
                 </div>
 
                 <div class="card-footer small text-muted">
-                    Reordering saves automatically.
+                    @(isEditable ? "Reordering saves automatically." : "Reordering is disabled while not Draft.")
                 </div>
             </div>
         </div>
     </div>
 
 </div>
+
 
 @* Add Section Modal *@
 <div class="modal fade" id="addSectionModal" tabindex="-1" aria-hidden="true">
@@ -324,6 +380,10 @@
     </style>
 
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+    <script>
+        // Single source of truth for draft/editability in JS
+        window.PAGE_IS_EDITABLE = @(isEditable.ToString().ToLowerInvariant());
+    </script>
 
     <script>
         // -----------------------------
@@ -500,6 +560,10 @@
         // Targets: #sectionsContainer (matches your markup)
         // -----------------------------
         document.addEventListener("DOMContentLoaded", function () {
+
+            // Only enable drag/drop in Draft
+            if (window.PAGE_IS_EDITABLE !== true) return;
+
             const el = document.getElementById("sectionsContainer");
             if (!el) return;
 
@@ -552,7 +616,8 @@
 
                     const ids = getIds();
                     const prev = (() => {
-                        try { return JSON.parse(el.dataset.prevOrder || "[]"); } catch { return []; }
+                        try { return JSON.parse(el.dataset.prevOrder || "[]"); }
+                        catch { return []; }
                     })();
 
                     const token = getAntiForgeryToken();
@@ -573,13 +638,21 @@
 
                         const json = await res.json().catch(() => null);
 
-                        if (!json || json.ok !== true) {
-                            if (prev && prev.length) applyOrder(prev);
-                            alert((json && (json.message || json.Message)) ? (json.message || json.Message) : "Failed to save order.");
+                        if (!res.ok || !json || json.ok !== true) {
+                            if (prev.length) applyOrder(prev);
+
+                            const msg =
+                                (json && (json.message || json.Message)) ||
+                                "Failed to save order.";
+
+                            alert(msg);
                             return;
                         }
+
+                        hasPendingChanges = false; // saved successfully
                     } catch {
-                        if (prev && prev.length) applyOrder(prev);
+                        if (prev.length) applyOrder(prev);
+                        hasPendingChanges = false;
                         alert("Failed to save order.");
                     } finally {
                         setSaving(false);
@@ -589,6 +662,7 @@
         });
     </script>
 
+
     <script>
         // -----------------------------
         // Soft delete / Undo / Trash UI for draft sections
@@ -596,6 +670,10 @@
         // Delete button hook: [data-delete-revision-section]
         // -----------------------------
         (function () {
+
+        if (window.PAGE_IS_EDITABLE !== true) return;
+
+
             let lastDeletedId = null;
             let undoTimer = null;
 
