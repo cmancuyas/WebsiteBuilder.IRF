@@ -12,33 +12,30 @@ namespace WebsiteBuilder.IRF.Infrastructure.Sections
             _db = db;
         }
 
-        public async Task CompactSortOrderAsync(Guid tenantId, int pageRevisionId)
+        public async Task CompactSortOrderAsync(Guid tenantId, int pageRevisionId, CancellationToken ct = default)
         {
             var sections = await _db.PageRevisionSections
+                .AsTracking()
                 .Where(s =>
                     s.TenantId == tenantId &&
                     s.PageRevisionId == pageRevisionId &&
                     !s.IsDeleted)
                 .OrderBy(s => s.SortOrder)
                 .ThenBy(s => s.Id)
-                .ToListAsync();
+                .ToListAsync(ct);
 
-            var expected = 1;
-            var dirty = false;
-
+            var next = 1;
             foreach (var s in sections)
             {
-                if (s.SortOrder != expected)
-                {
-                    s.SortOrder = expected;
-                    dirty = true;
-                }
-                expected++;
+                if (s.SortOrder != next)
+                    s.SortOrder = next;
+
+                next++;
             }
 
-            if (dirty)
-                await _db.SaveChangesAsync();
+            await _db.SaveChangesAsync(ct);
         }
+
     }
 
 }

@@ -42,6 +42,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             _sectionValidation = sectionValidation;
             _pageRevisionSectionService = pageRevisionSectionService;
         }
+        public Page PageEntity { get; set; } = default!;
 
         [BindProperty]
         public PageEditVm Input { get; set; } = new();
@@ -128,10 +129,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             if (page == null)
                 return NotFound();
 
-            // Ensure we have a draft revision (required for revision sections CRUD)
-
-            var draftRevisionId = await EnsureDraftRevisionExistsAsync(page, ct);
-
+            PageEntity = page;
 
             // Map to VM (keep this minimal and safe)
             Input = new PageEditVm
@@ -448,7 +446,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                             .Where(s =>
                                 s.TenantId == _tenant.TenantId &&
                                 s.PageRevisionId == draftRevisionId &&
-                                s.IsActive &&
+                                // s.IsActive &&
                                 !s.IsDeleted)
                             .Select(s => (int?)s.SortOrder)
                             .MaxAsync(ct) ?? 0;
@@ -505,9 +503,16 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             return false;
         }
 
+        public sealed class ReorderSectionsRequest
+        {
+            public int PageId { get; set; }
+            public int[] OrderedSectionIds { get; set; } = Array.Empty<int>();
+        }
+
+
         public async Task<IActionResult> OnPostReorderSectionsAsync(
-                [FromBody] ReorderSectionsRequest request,
-                CancellationToken ct = default)
+            [FromBody] ReorderSectionsRequest request,
+            CancellationToken ct = default)
         {
             if (!_tenant.IsResolved)
                 return new JsonResult(new { ok = false, message = "Tenant not resolved." });
@@ -515,91 +520,118 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             if (request == null || request.PageId <= 0)
                 return new JsonResult(new { ok = false, message = "Invalid page id." });
 
-            if (request.OrderedSectionIds == null || request.OrderedSectionIds.Count == 0)
+            var orderedIds = request.OrderedSectionIds?
+                .Where(x => x > 0)
+                .Distinct()
+                .ToArray() ?? Array.Empty<int>();
+
+            if (orderedIds.Length == 0)
                 return new JsonResult(new { ok = false, message = "No sections provided." });
 
-            var draftRevisionId = await _db.Pages
+            var page = await _db.Pages
                 .AsNoTracking()
-                .Where(p => p.TenantId == _tenant.TenantId && p.Id == request.PageId && !p.IsDeleted)
-                .Select(p => p.DraftRevisionId)
-                .FirstOrDefaultAsync(ct);
+                .FirstOrDefaultAsync(p =>
+                    p.Id == request.PageId &&
+                    p.TenantId == _tenant.TenantId &&
+                    !p.IsDeleted, ct);
 
-            if (draftRevisionId == null)
-                return new JsonResult(new { ok = false, message = "Draft revision not found." });
+            if (page == null)
+                return new JsonResult(new { ok = false, message = "Page not found." }) { StatusCode = 404 };
 
-            var sections = await _db.PageRevisionSections
-                .Where(s =>
-                    s.TenantId == _tenant.TenantId &&
-                    s.PageRevisionId == draftRevisionId &&
-                    !s.IsDeleted &&
-                    s.IsActive &&
-                    request.OrderedSectionIds.Contains(s.Id))
-                .ToListAsync(ct);
+            if (page.PageStatusId != PageStatusIds.Draft)
+                return new JsonResult(new { ok = false, message = "Page is not editable. Unpublish it to reorder sections." })
+                { StatusCode = 409 };
 
-            if (sections.Count != request.OrderedSectionIds.Count)
-                return new JsonResult(new { ok = false, message = "Invalid section list." });
+            if (!page.DraftRevisionId.HasValue || page.DraftRevisionId.Value <= 0)
+                return new JsonResult(new { ok = false, message = "Draft revision not found." }) { StatusCode = 409 };
 
-            var byId = sections.ToDictionary(s => s.Id);
-
-            var userGuid = GetUserIdOrEmpty();
-            var now = DateTime.UtcNow;
+            var draftRevisionId = page.DraftRevisionId.Value;
 
             var strategy = _db.Database.CreateExecutionStrategy();
-
-            try
+            return await strategy.ExecuteAsync(async () =>
             {
-                await strategy.ExecuteAsync(async () =>
-                {
-                    await using var tx = await _db.Database.BeginTransactionAsync(ct);
+                await using var tx = await _db.Database.BeginTransactionAsync(
+                    System.Data.IsolationLevel.Serializable, ct);
 
-                    // TEMP RANGE (positive) to avoid collisions + any "SortOrder > 0" constraints
-                    var currentMax = await _db.PageRevisionSections
-                        .AsNoTracking()
+                try
+                {
+                    // IMPORTANT: load ALL reorderable sections (so we can validate the request is complete)
+                    var all = await _db.PageRevisionSections
+                        .AsTracking()
                         .Where(s =>
                             s.TenantId == _tenant.TenantId &&
                             s.PageRevisionId == draftRevisionId &&
                             !s.IsDeleted &&
-                            s.IsActive)
-                        .Select(s => (int?)s.SortOrder)
-                        .MaxAsync(ct) ?? 0;
+                            s.IsActive) // keep this if your unique index is filtered by IsActive=1
+                        .OrderBy(s => s.SortOrder)
+                        .ThenBy(s => s.Id)
+                        .ToListAsync(ct);
 
-                    var tempStart = currentMax + 1000;
-
-                    // Phase 1: move to unique temporary values
-                    var idx = 0;
-                    foreach (var id in request.OrderedSectionIds)
+                    if (all.Count == 0)
                     {
-                        var s = byId[id];
-                        s.SortOrder = tempStart + idx;
+                        await tx.RollbackAsync(ct);
+                        return new JsonResult(new { ok = false, message = "No sections to reorder." }) { StatusCode = 409 };
+                    }
+
+                    // Require the client to send the FULL set of IDs
+                    if (orderedIds.Length != all.Count)
+                    {
+                        await tx.RollbackAsync(ct);
+                        return new JsonResult(new { ok = false, message = "Reorder list is incomplete. Refresh the page and try again." })
+                        { StatusCode = 409 };
+                    }
+
+                    var allIds = all.Select(x => x.Id).OrderBy(x => x).ToArray();
+                    var reqIds = orderedIds.OrderBy(x => x).ToArray();
+
+                    if (!allIds.SequenceEqual(reqIds))
+                    {
+                        await tx.RollbackAsync(ct);
+                        return new JsonResult(new { ok = false, message = "One or more sections do not belong to the current draft. Refresh and try again." })
+                        { StatusCode = 409 };
+                    }
+
+                    var orderMap = orderedIds
+                        .Select((id, idx) => new { id, sort = idx + 1 })
+                        .ToDictionary(x => x.id, x => x.sort);
+
+                    var userGuid = GetUserIdOrEmpty();
+                    var now = DateTime.UtcNow;
+
+                    // Two-phase update to avoid unique-index collisions during swaps
+                    // Phase A: assign temporary unique sort orders far away from normal range
+                    var tempBase = 1000000;
+                    foreach (var s in all)
+                    {
+                        s.SortOrder = tempBase + orderMap[s.Id];
                         s.UpdatedAt = now;
                         s.UpdatedBy = userGuid;
-                        idx++;
                     }
 
                     await _db.SaveChangesAsync(ct);
 
-                    // Phase 2: apply final 1..N
-                    var order = 1;
-                    foreach (var id in request.OrderedSectionIds)
+                    // Phase B: assign final 1..N
+                    foreach (var s in all)
                     {
-                        var s = byId[id];
-                        s.SortOrder = order;
+                        s.SortOrder = orderMap[s.Id];
                         s.UpdatedAt = now;
                         s.UpdatedBy = userGuid;
-                        order++;
                     }
 
                     await _db.SaveChangesAsync(ct);
+
+                    // Optional normalization (now safe)
+                    await _pageRevisionSectionService.CompactSortOrderAsync(_tenant.TenantId, draftRevisionId, ct);
 
                     await tx.CommitAsync(ct);
-                });
-
-                return new JsonResult(new { ok = true });
-            }
-            catch
-            {
-                return new JsonResult(new { ok = false, message = "Reorder failed. Please retry." });
-            }
+                    return new JsonResult(new { ok = true });
+                }
+                catch
+                {
+                    await tx.RollbackAsync(ct);
+                    throw;
+                }
+            });
         }
 
 
@@ -808,54 +840,51 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             if (page.DraftRevisionId.HasValue && page.DraftRevisionId.Value > 0)
                 return page.DraftRevisionId.Value;
 
-            // Make draft creation concurrency-safe
-            await using var tx = await _db.Database.BeginTransactionAsync(
-                System.Data.IsolationLevel.Serializable, ct);
-
-            // Re-read inside the transaction to avoid races
-            var fresh = await _db.Pages
-                .FirstOrDefaultAsync(p => p.Id == page.Id && p.TenantId == _tenant.TenantId && !p.IsDeleted, ct);
-
-            if (fresh == null)
-                throw new InvalidOperationException("Page not found.");
-
-            if (fresh.DraftRevisionId.HasValue && fresh.DraftRevisionId.Value > 0)
+            var strategy = _db.Database.CreateExecutionStrategy();
+            return await strategy.ExecuteAsync(async () =>
             {
+                await using var tx = await _db.Database.BeginTransactionAsync(
+                    System.Data.IsolationLevel.Serializable, ct);
+
+                var fresh = await _db.Pages
+                    .FirstOrDefaultAsync(p => p.Id == page.Id && p.TenantId == _tenant.TenantId && !p.IsDeleted, ct);
+
+                if (fresh == null)
+                    throw new InvalidOperationException("Page not found.");
+
+                if (fresh.DraftRevisionId.HasValue && fresh.DraftRevisionId.Value > 0)
+                {
+                    await tx.CommitAsync(ct);
+                    return fresh.DraftRevisionId.Value;
+                }
+
+                var rev = new PageRevision
+                {
+                    TenantId = _tenant.TenantId,
+                    PageId = page.Id,
+                    CreatedAt = now,
+                    CreatedBy = userGuid,
+                    UpdatedAt = now,
+                    UpdatedBy = userGuid,
+                    IsActive = true,
+                    IsDeleted = false
+                };
+
+                _db.PageRevisions.Add(rev);
+                await _db.SaveChangesAsync(ct);
+
+                fresh.DraftRevisionId = rev.Id;
+                fresh.UpdatedAt = now;
+                fresh.UpdatedBy = userGuid;
+
+                await _db.SaveChangesAsync(ct);
                 await tx.CommitAsync(ct);
-                return fresh.DraftRevisionId.Value;
-            }
 
-            var rev = new PageRevision
-            {
-                TenantId = _tenant.TenantId,
-                PageId = page.Id,
-                CreatedAt = now,
-                CreatedBy = userGuid,
-                UpdatedAt = now,
-                UpdatedBy = userGuid,
-                IsActive = true,
-                IsDeleted = false
-            };
-
-            _db.PageRevisions.Add(rev);
-            await _db.SaveChangesAsync(ct);
-
-            fresh.DraftRevisionId = rev.Id;
-            fresh.UpdatedAt = now;
-            fresh.UpdatedBy = userGuid;
-
-            await _db.SaveChangesAsync(ct);
-            await tx.CommitAsync(ct);
-
-            return rev.Id;
+                return rev.Id;
+            });
         }
 
 
-        public sealed class ReorderSectionsRequest
-        {
-            public int PageId { get; set; }
-            public List<int> OrderedSectionIds { get; set; } = new();
-        }
 
         public sealed class SaveSectionRequest
         {
@@ -918,7 +947,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             await _db.SaveChangesAsync(ct);
 
             // ✅ Compact SortOrder after delete (keeps 1..N, removes gaps)
-            await _pageRevisionSectionService.CompactSortOrderAsync(_tenant.TenantId, section.PageRevisionId);
+            await _pageRevisionSectionService.CompactSortOrderAsync(_tenant.TenantId, section.PageRevisionId, ct);
 
             return new JsonResult(new { ok = true });
         }
@@ -994,7 +1023,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
 
             await _db.SaveChangesAsync(ct);
 
-            await _pageRevisionSectionService.CompactSortOrderAsync(_tenant.TenantId, draftRevisionId);
+            await _pageRevisionSectionService.CompactSortOrderAsync(_tenant.TenantId, draftRevisionId, ct);
 
             return new JsonResult(new { ok = true, restored = restoredCount });
         }
@@ -1127,7 +1156,6 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             // Draft only. Published/Archived should be changed via Unpublish/Publish actions.
             return page.PageStatusId == PageStatusIds.Draft;
         }
-
 
     }
     public sealed class SectionIdsRequest
