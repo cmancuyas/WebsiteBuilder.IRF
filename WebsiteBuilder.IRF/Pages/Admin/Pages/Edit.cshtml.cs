@@ -48,9 +48,14 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
         // Sections (for drag-drop reorder UI)
         public List<SectionRowVm> Sections { get; set; } = new();
 
+        // Trash (soft-deleted draft sections)
+        public List<SectionRowVm> TrashedSections { get; set; } = new();
+
         // ===== Publish/Archive UI state =====
         public int SectionCount { get; private set; }
+        public int TrashCount { get; private set; }
         public bool HasSections => SectionCount > 0;
+
         public bool HasSlug => !string.IsNullOrWhiteSpace(Input?.Slug);
 
         public bool IsPublished => Input.PageStatusId == PageStatusIds.Published;
@@ -138,7 +143,9 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             await LoadSectionTypeLookupAsync(ct);
             await LoadSectionTypeOptionsAsync(ct);
             await LoadSectionCountAsync(page.Id, ct);
+            await LoadTrashCountAsync(page.Id, ct);
             await LoadSectionsAsync(page.Id, ct);
+            await LoadTrashedSectionsAsync(page.Id, ct);
 
             return Page();
         }
@@ -157,7 +164,9 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                 await LoadSectionTypeLookupAsync(ct);
                 await LoadSectionTypeOptionsAsync(ct);
                 await LoadSectionCountAsync(Input.Id, ct);
+                await LoadTrashCountAsync(Input.Id, ct);
                 await LoadSectionsAsync(Input.Id, ct);
+                await LoadTrashedSectionsAsync(Input.Id, ct);
                 return Page();
             }
 
@@ -539,8 +548,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                 .AsTracking()
                 .FirstOrDefaultAsync(s =>
                     s.Id == request.SectionId &&
-                    s.TenantId == _tenant.TenantId &&
-                    !s.IsDeleted, ct);
+                    s.TenantId == _tenant.TenantId, ct);
 
             if (section == null)
                 return new JsonResult(new { ok = false, message = "Section not found." });
@@ -762,5 +770,158 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             public int SectionId { get; set; }
             public string? SettingsJson { get; set; }
         }
+
+        public sealed class SectionIdRequest
+        {
+            public int SectionId { get; set; }
+        }
+
+        public async Task<IActionResult> OnPostDeleteRevisionSectionAsync(
+            [FromBody] SectionIdRequest request,
+            CancellationToken ct = default)
+        {
+            if (!_tenant.IsResolved)
+                return new JsonResult(new { ok = false, message = "Tenant not resolved." });
+
+            if (request == null || request.SectionId <= 0)
+                return new JsonResult(new { ok = false, message = "Invalid section id." });
+
+            var section = await _db.PageRevisionSections
+                .AsTracking()
+                .FirstOrDefaultAsync(s =>
+                    s.Id == request.SectionId &&
+                    s.TenantId == _tenant.TenantId, ct);
+
+            if (section == null)
+                return new JsonResult(new { ok = false, message = "Section not found." });
+
+            // Draft-only guard
+            var isCurrentDraft = await _db.Pages
+                .AsNoTracking()
+                .AnyAsync(p =>
+                    p.TenantId == _tenant.TenantId &&
+                    p.DraftRevisionId == section.PageRevisionId, ct);
+
+            if (!isCurrentDraft)
+                return new JsonResult(new { ok = false, message = "Section is not part of the current draft." });
+
+            if (section.IsDeleted)
+                return new JsonResult(new { ok = true }); // idempotent
+
+            var userGuid = GetUserIdOrEmpty();
+            var now = DateTime.UtcNow;
+
+            section.IsDeleted = true;
+            section.DeletedAt = now;
+            section.DeletedBy = userGuid;
+            section.UpdatedAt = now;
+            section.UpdatedBy = userGuid;
+
+            await _db.SaveChangesAsync(ct);
+
+            return new JsonResult(new { ok = true });
+        }
+
+        public async Task<IActionResult> OnPostRestoreRevisionSectionAsync(
+            [FromBody] SectionIdRequest request,
+            CancellationToken ct = default)
+        {
+            if (!_tenant.IsResolved)
+                return new JsonResult(new { ok = false, message = "Tenant not resolved." });
+
+            if (request == null || request.SectionId <= 0)
+                return new JsonResult(new { ok = false, message = "Invalid section id." });
+
+            var section = await _db.PageRevisionSections
+                .AsTracking()
+                .FirstOrDefaultAsync(s =>
+                    s.Id == request.SectionId &&
+                    s.TenantId == _tenant.TenantId, ct);
+
+
+            if (section == null)
+                return new JsonResult(new { ok = false, message = "Section not found." });
+
+            // Draft-only guard
+            var isCurrentDraft = await _db.Pages
+                .AsNoTracking()
+                .AnyAsync(p =>
+                    p.TenantId == _tenant.TenantId &&
+                    p.DraftRevisionId == section.PageRevisionId, ct);
+
+            if (!isCurrentDraft)
+                return new JsonResult(new { ok = false, message = "Section is not part of the current draft." });
+
+            if (!section.IsDeleted)
+                return new JsonResult(new { ok = true }); // idempotent
+
+            var userGuid = GetUserIdOrEmpty();
+            var now = DateTime.UtcNow;
+
+            section.IsDeleted = false;
+            section.DeletedAt = null;
+            section.DeletedBy = null;
+            section.UpdatedAt = now;
+            section.UpdatedBy = userGuid;
+
+            await _db.SaveChangesAsync(ct);
+
+            return new JsonResult(new { ok = true });
+        }
+
+        private async Task LoadTrashCountAsync(int pageId, CancellationToken ct)
+        {
+            var draftRevisionId = await _db.Pages
+                .AsNoTracking()
+                .Where(p => p.TenantId == _tenant.TenantId && p.Id == pageId && !p.IsDeleted)
+                .Select(p => p.DraftRevisionId)
+                .SingleOrDefaultAsync(ct);
+
+            if (draftRevisionId == null)
+            {
+                TrashCount = 0;
+                return;
+            }
+
+            TrashCount = await _db.PageRevisionSections
+                .AsNoTracking()
+                .CountAsync(s =>
+                    s.TenantId == _tenant.TenantId &&
+                    s.PageRevisionId == draftRevisionId &&
+                    s.IsDeleted, ct);
+        }
+
+        private async Task LoadTrashedSectionsAsync(int pageId, CancellationToken ct)
+        {
+            var draftRevisionId = await _db.Pages
+                .AsNoTracking()
+                .Where(p => p.TenantId == _tenant.TenantId && p.Id == pageId && !p.IsDeleted)
+                .Select(p => p.DraftRevisionId)
+                .SingleOrDefaultAsync(ct);
+
+            if (draftRevisionId == null)
+            {
+                TrashedSections = new List<SectionRowVm>();
+                return;
+            }
+
+            TrashedSections = await _db.PageRevisionSections
+                .AsNoTracking()
+                .Where(s =>
+                    s.TenantId == _tenant.TenantId &&
+                    s.PageRevisionId == draftRevisionId &&
+                    s.IsDeleted)
+                .OrderByDescending(s => s.DeletedAt)
+                .ThenByDescending(s => s.Id)
+                .Select(s => new SectionRowVm
+                {
+                    Id = s.Id,
+                    SectionTypeId = s.SectionTypeId,
+                    SortOrder = s.SortOrder,
+                    SettingsJson = s.SettingsJson
+                })
+                .ToListAsync(ct);
+        }
+
     }
 }
