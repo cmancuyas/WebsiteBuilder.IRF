@@ -4,24 +4,26 @@
 <div class="row">
     <div class="col-lg-8">
 
+        @* Title *@
         <div class="mb-3">
             <label asp-for="Title" class="form-label"></label>
             <input asp-for="Title" class="form-control" />
             <span class="text-danger" asp-validation-for="Title"></span>
         </div>
 
+        @* Slug *@
         <div class="mb-3">
             <label asp-for="Slug" class="form-label"></label>
             <input asp-for="Slug" class="form-control" />
-            <div class="form-text">
-                Example: <code>home</code>, <code>about</code>, <code>contact</code>
-            </div>
             <span class="text-danger" asp-validation-for="Slug"></span>
+            <div class="form-text">
+                Used in the page URL. Example: <code>/about-us</code>
+            </div>
         </div>
 
         <div class="mb-3">
             <label asp-for="LayoutKey" class="form-label"></label>
-            <input asp-for="LayoutKey" class="form-control" />
+            <input asp-for="LayoutKey" class="form-control" data-dirty-scope="page" />
             <span class="text-danger" asp-validation-for="LayoutKey"></span>
         </div>
 
@@ -29,21 +31,25 @@
 
         <h6 class="mb-3">SEO</h6>
 
+        @* Meta Title *@
         <div class="mb-3">
             <label asp-for="MetaTitle" class="form-label"></label>
             <input asp-for="MetaTitle" class="form-control" />
             <span class="text-danger" asp-validation-for="MetaTitle"></span>
         </div>
 
+        @* Meta Description *@
         <div class="mb-3">
             <label asp-for="MetaDescription" class="form-label"></label>
-            <textarea asp-for="MetaDescription" class="form-control" rows="3"></textarea>
+            <textarea asp-for="MetaDescription"
+                      class="form-control"
+                      rows="3"></textarea>
             <span class="text-danger" asp-validation-for="MetaDescription"></span>
         </div>
 
         <div class="mb-3">
             <label asp-for="OgImageAssetId" class="form-label"></label>
-            <input asp-for="OgImageAssetId" class="form-control" />
+            <input asp-for="OgImageAssetId" class="form-control" data-dirty-scope="page" />
             <span class="text-danger" asp-validation-for="OgImageAssetId"></span>
         </div>
 
@@ -86,12 +92,12 @@
         </div>
 
         <div class="form-check mb-3">
-            <input asp-for="IsActive" class="form-check-input" />
+            <input asp-for="IsActive" class="form-check-input" data-dirty-scope="page" />
             <label asp-for="IsActive" class="form-check-label"></label>
         </div>
 
         <div class="form-check mb-3">
-            <input asp-for="IsDeleted" class="form-check-input" />
+            <input asp-for="IsDeleted" class="form-check-input" data-dirty-scope="page" />
             <label asp-for="IsDeleted" class="form-check-label"></label>
         </div>
 

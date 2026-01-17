@@ -4,10 +4,17 @@
 
 @{
     ViewData["Title"] = "Edit Page";
+
+    // SAFE: Input is always initialized
+    var isEditable = Model.Input.PageStatusId == PageStatusIds.Draft;
+
+    // Pass to partials
+    ViewData["IsEditable"] = isEditable;
 }
 
-<!-- Global anti-forgery token available for JS fetch calls -->
-<form id="antiForgeryForm" method="post">
+
+<!-- Anti-forgery token carrier for JS fetch calls -->
+<form id="antiForgeryForm" method="post" class="d-none">
     @Html.AntiForgeryToken()
 </form>
 
@@ -29,11 +36,27 @@
                 Open Preview
             </a>
 
+            <div class="d-flex align-items-center gap-2">
+                <span id="globalSaveIndicator" class="small text-muted">
+                    All changes saved
+                </span>
+
+                <button type="button" class="btn btn-sm btn-outline-secondary d-none" id="retryFailedAutosavesBtn">
+                    Retry
+                </button>
+
+                <span id="offlineBadge" class="badge bg-warning text-dark d-none">
+                    Offline
+                </span>
+            </div>
+
             @* Publish *@
             @if (Model.CanPublish)
             {
                 <form method="post" class="d-inline" asp-page-handler="Publish" asp-route-id="@Model.Input.Id">
-                    <button type="submit" class="btn btn-success">Publish</button>
+                    <button id="btnPublish" class="btn btn-success page-action-btn" type="submit">
+                        Publish
+                    </button>
                 </form>
             }
             else
@@ -45,7 +68,9 @@
             @if (Model.CanUnpublish)
             {
                 <form method="post" class="d-inline" asp-page-handler="Unpublish" asp-route-id="@Model.Input.Id">
-                    <button type="submit" class="btn btn-outline-warning">Unpublish</button>
+                    <button class="btn btn-warning page-action-btn" type="submit">
+                        Unpublish
+                    </button>
                 </form>
             }
             else
@@ -57,7 +82,9 @@
             @if (Model.CanArchive)
             {
                 <form method="post" class="d-inline" asp-page-handler="Archive" asp-route-id="@Model.Input.Id">
-                    <button type="submit" class="btn btn-outline-danger">Archive</button>
+                    <button class="btn btn-danger page-action-btn" type="submit">
+                        Archive
+                    </button>
                 </form>
             }
             else
@@ -74,6 +101,15 @@
             }
         </div>
     </div>
+
+    @* Read-only banner *@
+    @if (!isEditable)
+    {
+        <div class="alert alert-warning mb-3" role="alert">
+            <strong>Read-only:</strong> This page is <strong>@Model.PageEntity.PageStatusId</strong>.
+            Unpublish the page to edit sections and page fields.
+        </div>
+    }
 
     @* Why Publish is disabled *@
     @if (!Model.CanPublish && Model.Input.PageStatusId != PageStatusIds.Published)
@@ -113,32 +149,57 @@
         <div class="alert alert-danger">@err</div>
     }
 
+    <div id="sectionFeedback" class="alert alert-info py-2 d-none" role="alert"></div>
+
     <div class="row g-3">
         <div class="col-12 col-lg-7">
-            <form id="pageForm" method="post" class="card shadow-sm">
+            <form id="pageEditForm" method="post" class="card shadow-sm">
                 <div class="card-body">
 
                     <input type="hidden" asp-for="Input.Id" />
 
-                    @* Shared fields *@
-                    <partial name="_Form" for="Input" />
+                    @* Disable the entire page edit form when not Draft *@
+                    @if (!isEditable)
+                    {
+                        <fieldset disabled>
+                            <partial name="_Form" for="Input" />
 
-                    @* Navigation fields *@
-                    <div class="form-check mt-3">
-                        <input asp-for="Input.ShowInNavigation" class="form-check-input" />
-                        <label asp-for="Input.ShowInNavigation" class="form-check-label"></label>
-                    </div>
+                            <div class="form-check mt-3">
+                                <input asp-for="Input.ShowInNavigation" class="form-check-input" />
+                                <label asp-for="Input.ShowInNavigation" class="form-check-label"></label>
+                            </div>
 
-                    <div class="mb-3">
-                        <label asp-for="Input.NavigationOrder" class="form-label"></label>
-                        <input asp-for="Input.NavigationOrder" class="form-control" />
-                        <span class="text-danger" asp-validation-for="Input.NavigationOrder"></span>
-                    </div>
+                            <div class="mb-3">
+                                <label asp-for="Input.NavigationOrder" class="form-label"></label>
+                                <input asp-for="Input.NavigationOrder" class="form-control" />
+                                <span class="text-danger" asp-validation-for="Input.NavigationOrder"></span>
+                            </div>
+                        </fieldset>
+                    }
+                    else
+                    {
+                        <partial name="_Form" for="Input" />
+
+                        <div class="form-check mt-3">
+                            <input asp-for="Input.ShowInNavigation" class="form-check-input" />
+                            <label asp-for="Input.ShowInNavigation" class="form-check-label"></label>
+                        </div>
+
+                        <div class="mb-3">
+                            <label asp-for="Input.NavigationOrder" class="form-label"></label>
+                            <input asp-for="Input.NavigationOrder" class="form-control" />
+                            <span class="text-danger" asp-validation-for="Input.NavigationOrder"></span>
+                        </div>
+                    }
 
                 </div>
 
                 <div class="card-footer d-flex justify-content-end gap-2">
-                    <button type="submit" class="btn btn-primary" id="saveBtn" data-save-button>
+                    <button type="submit"
+                            class="btn btn-primary"
+                            id="saveBtn"
+                            data-save-button
+                            @(isEditable ? null : "disabled")>
                         Save
                     </button>
                 </div>
@@ -150,72 +211,123 @@
                 <div class="card-header d-flex align-items-center justify-content-between">
                     <div>
                         <strong>Sections</strong>
-                        <div class="text-muted small">Drag and drop to reorder.</div>
+                        <div class="text-muted small">
+                            @(isEditable ? "Drag and drop to reorder." : "Sections are read-only while not Draft.")
+                        </div>
                     </div>
 
                     <div class="d-flex align-items-center gap-2">
-                        <span class="badge bg-secondary">@Model.SectionCount</span>
+                        <div class="btn-group" role="group" aria-label="Sections tabs">
+                            <button type="button" class="btn btn-sm btn-outline-secondary active" id="tabSectionsBtn">
+                                Sections <span class="badge bg-secondary ms-1" id="activeCountBadge">@Model.SectionCount</span>
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary" id="tabTrashBtn">
+                                Trash <span class="badge bg-secondary ms-1" id="trashCountBadge">@Model.TrashCount</span>
+                            </button>
+                        </div>
 
                         <button type="button"
-                                class="btn btn-sm btn-primary"
+                                class="btn btn-sm btn-primary page-action-btn"
                                 data-bs-toggle="modal"
-                                data-bs-target="#addSectionModal">
+                                data-bs-target="#addSectionModal"
+                                id="addSectionBtn"
+                                @(isEditable ? null : "disabled")>
                             Add Section
                         </button>
                     </div>
                 </div>
 
                 <div class="card-body">
-                    @if (!Model.HasSections)
-                    {
-                        <div class="text-muted">No sections yet. Click <strong>Add Section</strong> to begin.</div>
-                    }
-                    else
-                    {
-                        <div id="sectionsList" class="vstack gap-2">
-                            @foreach (var s in Model.Sections)
-                            {
-                                var collapseId = $"sec-editor-{s.Id}";
-                                var editorPath = Model.GetEditorPartialPath(s);
-                                <text><!-- editorPath: @editorPath --></text>
-                                <div class="card section-item" data-section-id="@s.Id">
-                                    <div class="card-body py-2 d-flex align-items-center">
-                                        <span class="me-2 cursor-grab" title="Drag to reorder" aria-label="Drag to reorder">⋮⋮</span>
 
-                                        <div class="flex-grow-1">
-                                            <div class="fw-semibold">@Model.GetSectionTitle(s)</div>
-                                            <div class="text-muted small">Section ID: @s.Id</div>
-                                        </div>
-
-                                        <button type="button"
-                                                class="btn btn-sm btn-outline-secondary"
-                                                data-bs-toggle="collapse"
-                                                data-bs-target="#@collapseId"
-                                                aria-expanded="false"
-                                                aria-controls="@collapseId">
-                                            Edit
-                                        </button>
-                                    </div>
-
-                                    <div id="@collapseId" class="collapse border-top">
-                                        <div class="p-3">
-                                            <partial name="@editorPath" model="s" />
-                                        </div>
-                                    </div>
-                                </div>
-                            }
+                    <!-- Undo banner (single source of truth) -->
+                    <div id="sectionUndoBanner"
+                         class="alert alert-warning d-none py-2"
+                         role="alert"
+                         data-readonly="@(!isEditable)">
+                        <div class="d-flex align-items-center justify-content-between gap-2">
+                            <div class="small">
+                                <strong>Section deleted.</strong> You can undo this action.
+                            </div>
+                            <div class="d-flex align-items-center gap-2">
+                                <button type="button"
+                                        class="btn btn-sm btn-outline-dark"
+                                        id="undoDeleteBtn"
+                                        @(isEditable ? null : "disabled")>
+                                    Undo
+                                </button>
+                                <button type="button"
+                                        class="btn-close"
+                                        aria-label="Close"
+                                        id="closeUndoBannerBtn">
+                                </button>
+                            </div>
                         </div>
-                    }
+                    </div>
+
+                    <!-- Active sections -->
+                    <div id="sectionsPanel">
+                        @if (!Model.HasSections)
+                        {
+                            <div class="text-muted">No sections yet. Click <strong>Add Section</strong> to begin.</div>
+                        }
+                        else
+                        {
+                            <div id="sectionsContainer" class="vstack gap-2">
+                                @foreach (var s in Model.Sections)
+                                {
+                                    var vm = Model.BuildSectionRowRenderVm(s);
+                                    <partial name="~/Pages/Admin/Pages/Partials/_PageRevisionSectionRow.cshtml" model="vm" />
+                                }
+                            </div>
+                        }
+                    </div>
+
+                    <!-- Trash sections -->
+                    <div id="trashPanel" class="d-none">
+                        @if (Model.TrashCount <= 0)
+                        {
+                            <div class="text-muted">Trash is empty.</div>
+                        }
+                        else
+                        {
+                            <div id="trashList" class="vstack gap-2">
+                                @foreach (var s in Model.TrashedSections)
+                                {
+                                    <div class="card"
+                                         id="trash-section-@s.Id"
+                                         data-section-id="@s.Id"
+                                         data-revision-section-id="@s.Id">
+
+                                        <div class="card-body py-2 d-flex align-items-center justify-content-between">
+                                            <div>
+                                                <div class="fw-semibold">@Model.GetSectionTitle(s)</div>
+                                                <div class="text-muted small">Section ID: @s.Id</div>
+                                            </div>
+
+                                            <button type="button"
+                                                    class="btn btn-sm btn-outline-primary"
+                                                    onclick="restoreRevisionSection(@s.Id)"
+                                                    @(isEditable ? null : "disabled")>
+                                                Restore
+                                            </button>
+                                        </div>
+                                    </div>
+                                }
+                            </div>
+                        }
+                    </div>
+
                 </div>
 
                 <div class="card-footer small text-muted">
-                    Reordering saves automatically.
+                    @(isEditable ? "Reordering saves automatically." : "Reordering is disabled while not Draft.")
                 </div>
             </div>
         </div>
     </div>
 
 </div>
+
 
 @* Add Section Modal *@
 <div class="modal fade" id="addSectionModal" tabindex="-1" aria-hidden="true">
@@ -268,22 +380,192 @@
     </style>
 
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+    <script>
+        // Single source of truth for draft/editability in JS
+        window.PAGE_IS_EDITABLE = @(isEditable.ToString().ToLowerInvariant());
+    </script>
 
     <script>
+        // -----------------------------
         // Shared anti-forgery token getter (robust)
+        // Requires: <form id="antiForgeryForm">@Html.AntiForgeryToken()</form>
+        // -----------------------------
         function getAntiForgeryToken() {
+            const scoped = document.querySelector('#antiForgeryForm input[name="__RequestVerificationToken"]');
+            if (scoped?.value) return scoped.value;
+
             const el = document.querySelector('input[name="__RequestVerificationToken"]');
             return el ? el.value : null;
         }
     </script>
 
     <script>
-        // Section reorder (auto-save order)
-        document.addEventListener("DOMContentLoaded", function () {
-            const el = document.getElementById("sectionsList");
-            if (!el) return;
+        // -----------------------------
+        // Autosave UX indicator (single authoritative state)
+        // -----------------------------
+        (function () {
+            const indicator = document.getElementById("globalSaveIndicator");
+            const retryBtn = document.getElementById("retryFailedAutosavesBtn");
+            const offlineBadge = document.getElementById("offlineBadge");
 
-            const publishBtn = document.getElementById("btnPublish");
+            // authoritative counters live here
+            const state = {
+                saving: 0,
+                failed: 0,
+                lastSavedAt: null,
+                retryQueue: new Map()
+            };
+
+            // expose state so other blocks can read it safely
+            window.AutosaveUxState = state;
+
+            function fmt(d) {
+                return d
+                    ? `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`
+                    : "";
+            }
+
+            function render() {
+                if (!indicator) return;
+
+                const offline = navigator.onLine === false;
+                offlineBadge?.classList.toggle("d-none", !offline);
+
+                retryBtn?.classList.toggle("d-none", state.failed === 0);
+
+                if (offline) {
+                    indicator.textContent = "Offline — changes not saved";
+                    indicator.className = "small text-warning";
+                    return;
+                }
+
+                if (state.saving > 0) {
+                    indicator.textContent = "Saving…";
+                    indicator.className = "small text-muted";
+                    return;
+                }
+
+                if (state.failed > 0) {
+                    indicator.textContent = "Save failed";
+                    indicator.className = "small text-danger";
+                    return;
+                }
+
+                if (window.PageDirty?._keys?.has("page")) {
+                    indicator.textContent = "Unsaved page changes (click Save)";
+                    indicator.className = "small text-warning";
+                    return;
+                }
+
+                indicator.textContent = state.lastSavedAt
+                    ? `All changes saved (Saved ${fmt(state.lastSavedAt)})`
+                    : "All changes saved";
+                indicator.className = "small text-success";
+            }
+
+            window.AutosaveUx = {
+                onSaving(sectionId) {
+                    state.saving++;
+                    render();
+                },
+                onSaved(sectionId) {
+                    state.saving = Math.max(0, state.saving - 1);
+                    state.lastSavedAt = new Date();
+                    render();
+                },
+                onFailed(sectionId, retryFn) {
+                    state.saving = Math.max(0, state.saving - 1);
+                    state.failed++;
+                    if (retryFn) state.retryQueue.set(sectionId, retryFn);
+                    render();
+                },
+                onRecovered(sectionId) {
+                    // recovery counts as a successful completion of a previously failing item
+                    state.saving = Math.max(0, state.saving - 1);
+
+                    if (state.failed > 0) state.failed--;
+                    state.retryQueue.delete(sectionId);
+                    state.lastSavedAt = new Date();
+                    render();
+                }
+            };
+
+            retryBtn?.addEventListener("click", async () => {
+                for (const fn of state.retryQueue.values()) {
+                    try { await fn(); } catch { }
+                }
+                render();
+            });
+
+            window.addEventListener("online", render);
+            window.addEventListener("offline", render);
+            document.addEventListener("DOMContentLoaded", render);
+        })();
+    </script>
+
+    <script>
+        // -----------------------------
+        // Disable page action buttons while autosave is in-flight
+        // -----------------------------
+        (function () {
+            function updatePageActionButtons(disabled) {
+                document.querySelectorAll(".page-action-btn").forEach(btn => {
+                    btn.disabled = disabled;
+                    btn.classList.toggle("disabled", disabled);
+
+                    if (disabled) btn.setAttribute("title", "Saving changes…");
+                    else btn.removeAttribute("title");
+                });
+            }
+
+            const ux = window.AutosaveUx;
+            if (!ux) return;
+
+            const originalOnSaving = ux.onSaving;
+            const originalOnSaved = ux.onSaved;
+            const originalOnFailed = ux.onFailed;
+            const originalOnRecovered = ux.onRecovered;
+
+            ux.onSaving = function (...args) {
+                originalOnSaving?.apply(this, args);
+                updatePageActionButtons(true);
+            };
+
+            ux.onSaved = function (...args) {
+                originalOnSaved?.apply(this, args);
+                // only enable if nothing is saving anymore
+                if ((window.AutosaveUxState?.saving ?? 0) === 0) {
+                    updatePageActionButtons(false);
+                }
+            };
+
+            ux.onFailed = function (...args) {
+                originalOnFailed?.apply(this, args);
+                // allow publish actions if user wants, despite failed autosave
+                updatePageActionButtons(false);
+            };
+
+            ux.onRecovered = function (...args) {
+                originalOnRecovered?.apply(this, args);
+                if ((window.AutosaveUxState?.saving ?? 0) === 0) {
+                    updatePageActionButtons(false);
+                }
+            };
+        })();
+    </script>
+
+    <script>
+        // -----------------------------
+        // Section reorder (auto-save order)
+        // Targets: #sectionsContainer (matches your markup)
+        // -----------------------------
+        document.addEventListener("DOMContentLoaded", function () {
+
+            // Only enable drag/drop in Draft
+            if (window.PAGE_IS_EDITABLE !== true) return;
+
+            const el = document.getElementById("sectionsContainer");
+            if (!el) return;
 
             function getIds() {
                 return Array.from(el.querySelectorAll(".section-item"))
@@ -298,7 +580,6 @@
                     if (Number.isFinite(id)) map.set(id, node);
                 });
 
-                // Re-append in the desired order (moves existing nodes)
                 for (const id of ids) {
                     const node = map.get(id);
                     if (node) el.appendChild(node);
@@ -306,17 +587,28 @@
             }
 
             let isSaving = false;
+            let hasPendingChanges = false;
+
             function setSaving(state) {
                 isSaving = state;
-                if (publishBtn) publishBtn.disabled = state || publishBtn.disabled; // keep disabled if already disabled by rules
+                hasPendingChanges = state;
+
+                document.querySelectorAll(".page-action-btn").forEach(btn => {
+                    btn.disabled = state || btn.disabled;
+                });
             }
+
+            window.addEventListener("beforeunload", function (e) {
+                if (!hasPendingChanges) return;
+                e.preventDefault();
+                e.returnValue = "";
+            });
 
             Sortable.create(el, {
                 handle: ".cursor-grab",
                 animation: 150,
                 ghostClass: "sortable-ghost",
                 onStart: function () {
-                    // Capture order BEFORE drag, so we can rollback if save fails
                     el.dataset.prevOrder = JSON.stringify(getIds());
                 },
                 onEnd: async function () {
@@ -324,11 +616,11 @@
 
                     const ids = getIds();
                     const prev = (() => {
-                        try { return JSON.parse(el.dataset.prevOrder || "[]"); } catch { return []; }
+                        try { return JSON.parse(el.dataset.prevOrder || "[]"); }
+                        catch { return []; }
                     })();
 
                     const token = getAntiForgeryToken();
-
                     setSaving(true);
 
                     try {
@@ -346,17 +638,21 @@
 
                         const json = await res.json().catch(() => null);
 
-                        if (!json || !json.ok) {
-                            // rollback DOM
-                            if (prev && prev.length) applyOrder(prev);
-                            alert((json && json.message) ? json.message : "Failed to save order.");
+                        if (!res.ok || !json || json.ok !== true) {
+                            if (prev.length) applyOrder(prev);
+
+                            const msg =
+                                (json && (json.message || json.Message)) ||
+                                "Failed to save order.";
+
+                            alert(msg);
                             return;
                         }
 
-                        // Success (replace with your toast later)
-                        // console.log("Section order saved");
+                        hasPendingChanges = false; // saved successfully
                     } catch {
-                        if (prev && prev.length) applyOrder(prev);
+                        if (prev.length) applyOrder(prev);
+                        hasPendingChanges = false;
                         alert("Failed to save order.");
                     } finally {
                         setSaving(false);
@@ -368,9 +664,244 @@
 
 
     <script>
-        // Section autosave helper (authoritative)
+        // -----------------------------
+        // Soft delete / Undo / Trash UI for draft sections
+        // Single implementation. Uses in-card banner (#sectionUndoBanner).
+        // Delete button hook: [data-delete-revision-section]
+        // -----------------------------
         (function () {
 
+        if (window.PAGE_IS_EDITABLE !== true) return;
+
+
+            let lastDeletedId = null;
+            let undoTimer = null;
+
+            function q(id) { return document.getElementById(id); }
+
+            function toInt(val) {
+                const n = parseInt(String(val), 10);
+                return Number.isFinite(n) ? n : 0;
+            }
+
+            function incBadge(badgeId, delta) {
+                const el = q(badgeId);
+                if (!el) return;
+                const next = toInt(el.textContent) + toInt(delta);
+                el.textContent = String(Math.max(0, next));
+            }
+
+            function showUndoBanner(sectionId) {
+                const banner = q("sectionUndoBanner");
+                if (!banner) return;
+
+                banner.classList.remove("d-none");
+                lastDeletedId = sectionId;
+
+                if (undoTimer) clearTimeout(undoTimer);
+                undoTimer = setTimeout(() => {
+                    banner.classList.add("d-none");
+                    lastDeletedId = null;
+                }, 12000);
+            }
+
+            function hideUndoBanner() {
+                const banner = q("sectionUndoBanner");
+                if (!banner) return;
+                banner.classList.add("d-none");
+                lastDeletedId = null;
+                if (undoTimer) clearTimeout(undoTimer);
+                undoTimer = null;
+            }
+
+            function setActiveTab(tab) {
+                const tabSectionsBtn = q("tabSectionsBtn");
+                const tabTrashBtn = q("tabTrashBtn");
+                const sectionsPanel = q("sectionsPanel");
+                const trashPanel = q("trashPanel");
+                const addBtn = q("addSectionBtn");
+
+                if (!tabSectionsBtn || !tabTrashBtn || !sectionsPanel || !trashPanel) return;
+
+                const isTrash = tab === "trash";
+
+                tabSectionsBtn.classList.toggle("active", !isTrash);
+                tabTrashBtn.classList.toggle("active", isTrash);
+
+                sectionsPanel.classList.toggle("d-none", isTrash);
+                trashPanel.classList.toggle("d-none", !isTrash);
+
+                if (addBtn) addBtn.classList.toggle("d-none", isTrash);
+
+                if (isTrash) hideUndoBanner();
+            }
+
+            async function postJson(handler, payload) {
+                const token = getAntiForgeryToken();
+
+                const res = await fetch(handler, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        ...(token ? { "RequestVerificationToken": token } : {})
+                    },
+                    body: JSON.stringify(payload || {})
+                });
+
+                const data = await res.json().catch(() => null);
+                if (!res.ok || !data || data.ok !== true) {
+                    const msg = (data && (data.message || data.Message)) || "Request failed.";
+                    throw new Error(msg);
+                }
+                return data;
+            }
+
+            function appendToTrash(sectionId, titleText) {
+                const trashPanel = q("trashPanel");
+                let trashList = q("trashList");
+
+                if (!trashList && trashPanel) {
+                    trashPanel.innerHTML = `<div id="trashList" class="vstack gap-2"></div>`;
+                    trashList = q("trashList");
+                }
+                if (!trashList) return;
+
+                const emptyMsg = trashPanel && trashPanel.querySelector('.text-muted');
+                if (emptyMsg) emptyMsg.remove();
+
+                const card = document.createElement("div");
+                card.className = "card";
+                card.id = `trash-section-${sectionId}`;
+                card.setAttribute("data-section-id", String(sectionId));
+                card.innerHTML = `
+                    <div class="card-body py-2 d-flex align-items-center justify-content-between">
+                        <div>
+                            <div class="fw-semibold">${titleText || "Section"}</div>
+                            <div class="text-muted small">Section ID: ${sectionId}</div>
+                        </div>
+                        <button type="button" class="btn btn-sm btn-outline-primary" data-restore-revision-section="${sectionId}">Restore</button>
+                    </div>
+                `;
+
+                trashList.prepend(card);
+            }
+
+            window.deleteRevisionSection = async function (sectionId) {
+                const id = toInt(sectionId);
+                if (!id) return;
+
+                const card = document.getElementById(`section-${id}`);
+                const title = card ? (card.querySelector('.section-title')?.textContent || '').trim() : '';
+
+                try {
+                    await postJson("?handler=DeleteRevisionSection", { sectionId: id });
+
+                    if (card) card.remove();
+
+                    incBadge("activeCountBadge", -1);
+                    incBadge("trashCountBadge", +1);
+
+                    appendToTrash(id, title);
+                    showUndoBanner(id);
+
+                } catch (e) {
+                    alert(e && e.message ? e.message : "Delete failed.");
+                }
+            };
+
+            window.restoreRevisionSection = async function (sectionId) {
+                const id = toInt(sectionId);
+                if (!id) return;
+
+                try {
+                    // 1) flip IsDeleted=false
+                    await postJson("?handler=RestoreRevisionSection", { sectionId: id });
+
+                    // 2) remove from trash UI
+                    const trashCard = document.getElementById(`trash-section-${id}`);
+                    if (trashCard) trashCard.remove();
+
+                    incBadge("trashCountBadge", -1);
+                    incBadge("activeCountBadge", +1);
+
+                    // 3) fetch server-rendered row HTML (no reload)
+                    const htmlRes = await fetch(`?handler=RevisionSectionRow&sectionId=${id}`, {
+                        method: "GET",
+                        headers: { "X-Requested-With": "XMLHttpRequest" }
+                    });
+
+                    const html = await htmlRes.text();
+                    if (!htmlRes.ok || !html || !html.trim()) {
+                        throw new Error("Failed to load restored section markup.");
+                    }
+
+                    // Ensure we are on Sections tab
+                    setActiveTab("sections");
+                    hideUndoBanner();
+
+                    // Remove "No sections" message if present
+                    const sectionsPanel = q("sectionsPanel");
+                    const emptyMsg = sectionsPanel?.querySelector(".text-muted");
+                    if (emptyMsg && emptyMsg.textContent?.toLowerCase().includes("no sections")) {
+                        emptyMsg.remove();
+                    }
+
+                    const container = document.getElementById("sectionsContainer");
+                    if (!container) throw new Error("sectionsContainer not found.");
+
+                    const wrap = document.createElement("div");
+                    wrap.innerHTML = html.trim();
+                    const restoredEl = wrap.firstElementChild;
+                    if (!restoredEl) throw new Error("Invalid restored HTML.");
+
+                    // Insert back into active list (prepend is fine; reorder is the user’s choice)
+                    container.prepend(restoredEl);
+
+                } catch (e) {
+                    alert(e && e.message ? e.message : "Restore failed.");
+                }
+            };
+
+
+            document.addEventListener("DOMContentLoaded", function () {
+                q("tabSectionsBtn")?.addEventListener("click", () => setActiveTab("sections"));
+                q("tabTrashBtn")?.addEventListener("click", () => setActiveTab("trash"));
+
+                q("undoDeleteBtn")?.addEventListener("click", function () {
+                    if (!lastDeletedId) return;
+                    window.restoreRevisionSection(lastDeletedId);
+                });
+
+                q("closeUndoBannerBtn")?.addEventListener("click", hideUndoBanner);
+
+                // Delegate Delete clicks
+                document.addEventListener("click", function (e) {
+                    const btn = e.target.closest("[data-delete-revision-section]");
+                    if (!btn) return;
+                    const id = toInt(btn.getAttribute("data-delete-revision-section") || btn.dataset.deleteRevisionSection);
+                    if (!id) return;
+                    window.deleteRevisionSection(id);
+                });
+
+                // Delegate Restore clicks in trash
+                document.addEventListener("click", function (e) {
+                    const btn = e.target.closest("[data-restore-revision-section]");
+                    if (!btn) return;
+                    const id = toInt(btn.getAttribute("data-restore-revision-section") || btn.dataset.restoreRevisionSection);
+                    if (!id) return;
+                    window.restoreRevisionSection(id);
+                });
+
+                setActiveTab("sections");
+            });
+        })();
+    </script>
+
+    <script>
+        // -----------------------------
+        // Section autosave helper (authoritative, no double-calls)
+        // -----------------------------
+        (function () {
             function debounce(fn, delay) {
                 let t = null;
                 return function () {
@@ -381,6 +912,7 @@
             }
 
             function bindSectionAutoSave(sectionId, getSettingsJson, saveUrl, statusEl, errorsEl) {
+                const dirtyKey = `section:${sectionId}`;
                 let inFlight = 0;
 
                 function clearErrors() {
@@ -410,6 +942,8 @@
                 }
 
                 async function runSave() {
+                    window.AutosaveUx && window.AutosaveUx.onSaving(sectionId);
+
                     const settingsJson = getSettingsJson();
 
                     inFlight++;
@@ -443,6 +977,14 @@
                         inFlight--;
                         clearErrors();
 
+                        // Clear dirty only after successful save
+                        window.PageDirty && typeof window.PageDirty.clear === "function" && window.PageDirty.clear(dirtyKey);
+
+                        // success signal
+                        if (window.AutosaveUx && typeof window.AutosaveUx.onSaved === "function") {
+                            window.AutosaveUx.onSaved(sectionId);
+                        }
+
                         if (inFlight === 0 && statusEl) {
                             statusEl.textContent = "Saved";
                             statusEl.classList.remove("text-muted", "text-danger");
@@ -460,22 +1002,113 @@
                             statusEl.title = (e && e.message) ? e.message : "Error";
                         }
 
+                        // failed signal (provide retry fn)
+                        window.AutosaveUx && window.AutosaveUx.onFailed(sectionId, () => runSave());
+
                         showErrors(e && e.errors ? e.errors : []);
+                        return null;
                     }
                 }
 
-                const debounced = debounce(runSave, 600);
+                const debounced = debounce(runSave, 1000);
 
                 return {
-                    notifyChanged: () => debounced(),
+                    notifyChanged: () => {
+                        window.PageDirty && typeof window.PageDirty.set === "function" && window.PageDirty.set(dirtyKey);
+                        debounced();
+                    },
                     saveNow: () => runSave()
                 };
             }
 
-            window.SectionAutoSave = {
-                bindSectionAutoSave
+            window.SectionAutoSave = { bindSectionAutoSave };
+        })();
+    </script>
+
+    <script>
+        // -----------------------------
+        // Global dirty state (page + sections)
+        // -----------------------------
+        (function () {
+            const Dirty = {
+                _keys: new Set(),
+                get isDirty() { return this._keys.size > 0; },
+
+                set(key) { this._keys.add(key || "page"); },
+
+                clear(key) {
+                    if (!key) { this._keys.clear(); return; }
+                    this._keys.delete(key);
+                },
+
+                confirmIfDirty(msg) {
+                    if (!this.isDirty) return true;
+                    return window.confirm(msg || "You have unsaved changes. Leave this page?");
+                }
             };
 
+            window.PageDirty = Dirty;
+
+            document.addEventListener("DOMContentLoaded", function () {
+                const form =
+                    document.getElementById("pageEditForm") ||
+                    document.querySelector("form:not(#antiForgeryForm)");
+
+                if (!form) return;
+
+                // Page-level dirty only for page-scoped inputs
+                form.addEventListener("input", function (e) {
+                    const t = e.target;
+                    if (!t) return;
+                    if (t.name === "__RequestVerificationToken") return;
+
+                    if (t.matches("input, textarea, select") &&
+                        t.getAttribute("data-dirty-scope") === "page") {
+                        Dirty.set("page");
+                    }
+                }, true);
+
+                form.addEventListener("change", function (e) {
+                    const t = e.target;
+                    if (!t) return;
+                    if (t.name === "__RequestVerificationToken") return;
+
+                    if (t.matches("input, textarea, select") &&
+                        t.getAttribute("data-dirty-scope") === "page") {
+                        Dirty.set("page");
+                    }
+                }, true);
+
+                // Clear dirty on Save submit
+                form.addEventListener("submit", function () {
+                    Dirty.clear();
+                });
+
+                // Intercept internal navigation
+                document.body.addEventListener("click", function (e) {
+                    const a = e.target?.closest?.("a");
+                    if (!a) return;
+
+                    const href = a.getAttribute("href");
+                    if (!href || href === "#" || href.startsWith("javascript:")) return;
+
+                    if (a.getAttribute("data-bypass-dirty") === "true") return;
+
+                    const target = (a.getAttribute("target") || "").toLowerCase();
+                    if (target === "_blank") return;
+
+                    if (!Dirty.confirmIfDirty()) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                    }
+                }, true);
+            });
+
+            window.addEventListener("beforeunload", function (e) {
+                if (!Dirty.isDirty) return;
+                e.preventDefault();
+                e.returnValue = "";
+            });
         })();
     </script>
 }

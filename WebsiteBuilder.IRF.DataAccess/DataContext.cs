@@ -222,36 +222,39 @@ namespace WebsiteBuilder.IRF.DataAccess
         {
             modelBuilder.Entity<PageRevisionSection>(b =>
             {
+                b.ToTable("PageRevisionSections");
+
                 b.HasKey(x => x.Id);
                 b.Property(x => x.Id).ValueGeneratedOnAdd();
 
-                b.Property(x => x.SortOrder)
-                    .HasMaxLength(200)
-                    .IsRequired();
+                // UNIQUE SortOrder within a draft revision, ignoring deleted rows (Trash should not block inserts)
+                b.HasIndex(x => new { x.TenantId, x.PageRevisionId, x.SortOrder })
+                 .IsUnique()
+                 .HasFilter("[IsDeleted] = 0");
+
+                // Optional query helper index (not unique)
+                b.HasIndex(x => new { x.TenantId, x.PageRevisionId, x.IsDeleted, x.IsActive });
+
+                b.Property(x => x.SectionTypeId).IsRequired();
 
                 b.Property(x => x.SettingsJson)
                     .HasColumnType("nvarchar(max)")
                     .IsRequired(false);
 
-                b.Property(x => x.SectionTypeId).IsRequired();
-
-                // Deterministic ordering per revision
-                b.HasIndex(x => new { x.TenantId, x.PageRevisionId, x.SortOrder }).IsUnique();
-
-                // Tenant-safe: PageRevisionSection(TenantId, PageRevisionId) -> PageRevision(TenantId, Id)
                 b.HasOne(x => x.PageRevision)
                     .WithMany(r => r.Sections)
                     .HasForeignKey(x => new { x.TenantId, x.PageRevisionId })
                     .HasPrincipalKey(r => new { r.TenantId, r.Id })
                     .OnDelete(DeleteBehavior.Cascade);
 
-                // SectionType FK
                 b.HasOne(x => x.SectionType)
                     .WithMany()
                     .HasForeignKey(x => x.SectionTypeId)
                     .OnDelete(DeleteBehavior.Restrict);
             });
         }
+
+
         private static void ConfigureMediaAssets(ModelBuilder modelBuilder)
         {
             modelBuilder.Entity<MediaAsset>(b =>
