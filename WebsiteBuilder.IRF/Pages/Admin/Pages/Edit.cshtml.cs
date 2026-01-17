@@ -20,19 +20,22 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
         private readonly IPagePublishingService _pagePublishingService;
         private readonly ITenantNavigationService _nav;
         private readonly PagePublishValidator _pagePublishValidator;
+        private readonly ISectionValidationService _sectionValidation;
 
         public EditModel(
             DataContext db,
             ITenantContext tenant,
             IPagePublishingService pagePublishingService,
             ITenantNavigationService nav,
-            PagePublishValidator pagePublishValidator)
+            PagePublishValidator pagePublishValidator,
+            ISectionValidationService sectionValidation)
         {
             _db = db;
             _tenant = tenant;
             _pagePublishingService = pagePublishingService;
             _nav = nav;
             _pagePublishValidator = pagePublishValidator;
+            _sectionValidation = sectionValidation;
         }
 
         [BindProperty]
@@ -43,7 +46,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
         public string TenantHost => _tenant.Host ?? string.Empty;
 
         // Sections (for drag-drop reorder UI)
-        public IReadOnlyList<SectionRowVm> Sections { get; set; } = Array.Empty<SectionRowVm>();
+        public List<SectionRowVm> Sections { get; set; } = new();
 
         // ===== Publish/Archive UI state =====
         public int SectionCount { get; private set; }
@@ -54,24 +57,18 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
         public bool IsDraft => Input.PageStatusId == PageStatusIds.Draft;
         public bool IsArchived => Input.PageStatusId == PageStatusIds.Archived;
 
-        // CanPublish: enabled only when not Published/Archived, has slug, has sections
         public bool CanPublish => !IsPublished && !IsArchived && HasSlug && HasSections;
-
-        // CanUnpublish: allowed only when Published
         public bool CanUnpublish => IsPublished;
-
-        // CanArchive: allowed when not archived (Draft or Published)
         public bool CanArchive => !IsArchived;
-
-        // CanRestore: allowed only when archived
         public bool CanRestore => IsArchived;
+
         public List<SelectListItem> SectionTypeOptions { get; private set; } = new();
+
         public sealed record SectionTypeLookupVm(int Id, string Name, string Key);
 
         public IReadOnlyList<SectionTypeLookupVm> SectionTypeLookup { get; private set; }
             = Array.Empty<SectionTypeLookupVm>();
 
-        // Simple label for the reorder list
         public string GetSectionTitle(SectionRowVm s)
         {
             var st = SectionTypeLookup.FirstOrDefault(x => x.Id == s.SectionTypeId);
@@ -104,206 +101,102 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             }
         }
 
+        // =======================
+        // PAGE LOAD (GET)
+        // =======================
         public async Task<IActionResult> OnGetAsync(int id, bool saveSuccess = false, CancellationToken ct = default)
         {
-            SaveSuccess = saveSuccess;
-
             if (!_tenant.IsResolved)
                 return NotFound("Tenant not resolved.");
 
             var page = await _db.Pages
                 .AsNoTracking()
-                .FirstOrDefaultAsync(p =>
-                    p.Id == id &&
-                    p.TenantId == _tenant.TenantId &&
-                    !p.IsDeleted, ct);
+                .FirstOrDefaultAsync(p => p.Id == id && p.TenantId == _tenant.TenantId && !p.IsDeleted, ct);
 
             if (page == null)
                 return NotFound();
 
-            // ✅ Ensure DraftRevision exists (create once, on first edit)
-            if (page.DraftRevisionId == null)
-            {
-                // Load a tracked entity for update
-                var trackedPage = await _db.Pages
-                    .FirstOrDefaultAsync(p =>
-                        p.Id == id &&
-                        p.TenantId == _tenant.TenantId &&
-                        !p.IsDeleted, ct);
+            // Ensure we have a draft revision (required for revision sections CRUD)
+            await EnsureDraftRevisionExistsAsync(page.Id, ct);
 
-                if (trackedPage == null)
-                    return NotFound();
-
-                // Double-check in case another request created it between reads
-                if (trackedPage.DraftRevisionId == null)
-                {
-                    var nextVersion = await _db.PageRevisions
-                        .Where(r => r.TenantId == trackedPage.TenantId && r.PageId == trackedPage.Id)
-                        .Select(r => r.VersionNumber)
-                        .DefaultIfEmpty(0)
-                        .MaxAsync(ct) + 1;
-
-                    var draft = new PageRevision
-                    {
-                        TenantId = trackedPage.TenantId,
-                        PageId = trackedPage.Id,
-                        VersionNumber = nextVersion,
-                        IsPublishedSnapshot = false,
-                        Title = trackedPage.Title,
-                        Slug = trackedPage.Slug,
-                        LayoutKey = trackedPage.LayoutKey!,
-                        MetaTitle = trackedPage.MetaTitle!,
-                        MetaDescription = trackedPage.MetaDescription!,
-                        OgImageAssetId = trackedPage.OgImageAssetId
-                    };
-
-                    _db.PageRevisions.Add(draft);
-                    await _db.SaveChangesAsync(ct);
-
-                    trackedPage.DraftRevisionId = draft.Id;
-                    await _db.SaveChangesAsync(ct);
-                }
-
-                // refresh the no-tracking snapshot so later logic sees DraftRevisionId
-                page = await _db.Pages
-                    .AsNoTracking()
-                    .FirstOrDefaultAsync(p =>
-                        p.Id == id &&
-                        p.TenantId == _tenant.TenantId &&
-                        !p.IsDeleted, ct);
-            }
-
+            // Map to VM (keep this minimal and safe)
             Input = new PageEditVm
             {
-                Id = page!.Id,
+                Id = page.Id,
                 Title = page.Title,
                 Slug = page.Slug,
-                LayoutKey = page.LayoutKey,
-                MetaTitle = page.MetaTitle,
-                MetaDescription = page.MetaDescription,
-                OgImageAssetId = page.OgImageAssetId,
                 PageStatusId = page.PageStatusId,
-                PublishedAt = page.PublishedAt,
-                IsActive = page.IsActive,
-                IsDeleted = page.IsDeleted,
                 ShowInNavigation = page.ShowInNavigation,
-                NavigationOrder = page.NavigationOrder,
+                NavigationOrder = page.NavigationOrder
             };
 
-            await BuildSelectListsAsync(Input.PageStatusId, ct);
-            await LoadSectionCountAsync(page.Id, ct);
+            SaveSuccess = saveSuccess;
 
-            // ⬇️ After this point, your section loading can safely use DraftRevisionId
-            await LoadSectionsAsync(page.Id, ct);
+            await BuildSelectListsAsync(Input.PageStatusId, ct);
+            await LoadSectionTypeLookupAsync(ct);
             await LoadSectionTypeOptionsAsync(ct);
+            await LoadSectionCountAsync(page.Id, ct);
+            await LoadSectionsAsync(page.Id, ct);
 
             return Page();
         }
 
-
-        public async Task<IActionResult> OnPostAsync(int id, CancellationToken ct = default)
+        // =======================
+        // PAGE SAVE (POST)
+        // =======================
+        public async Task<IActionResult> OnPostAsync(CancellationToken ct = default)
         {
             if (!_tenant.IsResolved)
                 return NotFound("Tenant not resolved.");
 
-            await BuildSelectListsAsync(Input.PageStatusId, ct);
+            if (!ModelState.IsValid)
+            {
+                await BuildSelectListsAsync(Input.PageStatusId, ct);
+                await LoadSectionTypeLookupAsync(ct);
+                await LoadSectionTypeOptionsAsync(ct);
+                await LoadSectionCountAsync(Input.Id, ct);
+                await LoadSectionsAsync(Input.Id, ct);
+                return Page();
+            }
 
             var page = await _db.Pages
-                .FirstOrDefaultAsync(p =>
-                    p.Id == id &&
-                    p.TenantId == _tenant.TenantId &&
-                    !p.IsDeleted, ct);
+                .FirstOrDefaultAsync(p => p.Id == Input.Id && p.TenantId == _tenant.TenantId && !p.IsDeleted, ct);
 
             if (page == null)
                 return NotFound();
 
-            // Normalize slug (if empty, derive from Title)
-            Input.Slug = SanitizeSlug(Input.Slug, Input.Title);
+            // IMPORTANT: keep Slug sanitized and stable
+            page.Title = (Input.Title ?? "").Trim();
+            page.Slug = SanitizeSlug(Input.Slug, page.Title);
 
-            // Refresh section state for UI (if we return Page() on validation error)
-            await LoadSectionCountAsync(page.Id, ct);
-            await LoadSectionsAsync(page.Id, ct);
-            await LoadSectionTypeOptionsAsync(ct);
-
-            // Slug uniqueness per-tenant (exclude current page)
-            if (!string.IsNullOrWhiteSpace(Input.Slug))
-            {
-                var normalizedSlug = Input.Slug.Trim().Trim('/');
-
-                var slugExists = await _db.Pages
-                    .AsNoTracking()
-                    .AnyAsync(p =>
-                        p.TenantId == _tenant.TenantId &&
-                        p.Id != page.Id &&
-                        !p.IsDeleted &&
-                        p.Slug != null &&
-                        p.Slug.ToLower() == normalizedSlug.ToLower(), ct);
-
-                if (slugExists)
-                    ModelState.AddModelError("Input.Slug", "Slug is already in use for this tenant.");
-            }
-
-            if (!ModelState.IsValid)
-                return Page();
-
-            // Snapshot old nav-affecting values BEFORE mapping
-            var oldTitle = page.Title;
-            var oldSlug = page.Slug;
-            var oldShow = page.ShowInNavigation;
-            var oldOrder = page.NavigationOrder;
-
-            // Map fields
-            page.Title = Input.Title?.Trim() ?? string.Empty;
-            page.Slug = (Input.Slug ?? string.Empty).Trim().Trim('/');
-            page.LayoutKey = string.IsNullOrWhiteSpace(Input.LayoutKey) ? null : Input.LayoutKey.Trim();
-            page.MetaTitle = string.IsNullOrWhiteSpace(Input.MetaTitle) ? null : Input.MetaTitle.Trim();
-            page.MetaDescription = string.IsNullOrWhiteSpace(Input.MetaDescription) ? null : Input.MetaDescription.Trim();
-            page.OgImageAssetId = Input.OgImageAssetId;
+            // Do not allow manual status changes here (Publish/Unpublish/Archive handlers own status)
+            // If you still have a status dropdown in _Form.cshtml, this enforces the server-side rule.
 
             page.ShowInNavigation = Input.ShowInNavigation;
             page.NavigationOrder = Input.NavigationOrder;
 
-            // IMPORTANT: Save does NOT change status (publish/unpublish/archive are explicit actions)
-            // page.PageStatusId = Input.PageStatusId;
-
-            page.IsActive = Input.IsActive;
-            page.IsDeleted = Input.IsDeleted;
-
-            // PublishedAt behavior: set when first published, keep existing otherwise
-            if (page.PageStatusId == PageStatusIds.Published && page.PublishedAt == null)
-                page.PublishedAt = DateTime.UtcNow;
-
-            // Audit
-            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (Guid.TryParse(userId, out var userGuid))
-                page.UpdatedBy = userGuid;
-
+            var userGuid = GetUserIdOrEmpty();
             page.UpdatedAt = DateTime.UtcNow;
-
-            // Determine if navigation needs refresh AFTER mapping
-            var navChanged =
-                !string.Equals(oldTitle, page.Title, StringComparison.Ordinal) ||
-                !string.Equals(oldSlug, page.Slug, StringComparison.Ordinal) ||
-                oldShow != page.ShowInNavigation ||
-                oldOrder != page.NavigationOrder;
+            page.UpdatedBy = userGuid;
 
             await _db.SaveChangesAsync(ct);
-
-            if (navChanged)
-                _nav.Invalidate();
+            _nav.Invalidate();
 
             return RedirectToPage(new { id = page.Id, saveSuccess = true });
         }
 
+        // =======================
+        // PUBLISH / UNPUBLISH / ARCHIVE
+        // =======================
         public async Task<IActionResult> OnPostPublishAsync(int id, CancellationToken ct = default)
         {
             if (!_tenant.IsResolved)
                 return NotFound("Tenant not resolved.");
 
-            // 0) Guard: must have a draft revision with sections
+            // Guard: must have a draft revision with sections
             var draftRevisionId = await _db.Pages
                 .AsNoTracking()
-                .Where(p => p.TenantId == _tenant.TenantId && p.Id == id)
+                .Where(p => p.TenantId == _tenant.TenantId && p.Id == id && !p.IsDeleted)
                 .Select(p => p.DraftRevisionId)
                 .FirstOrDefaultAsync(ct);
 
@@ -317,7 +210,9 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                 .AsNoTracking()
                 .AnyAsync(s =>
                     s.TenantId == _tenant.TenantId &&
-                    s.PageRevisionId == draftRevisionId, ct);
+                    s.PageRevisionId == draftRevisionId &&
+                    !s.IsDeleted &&
+                    s.IsActive, ct);
 
             if (!hasAnySections)
             {
@@ -325,7 +220,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                 return RedirectToPage(new { id });
             }
 
-            // 1) Validate ALL sections before attempting publish
+            // Validate ALL sections before attempting publish
             var validation = await _pagePublishValidator.ValidateDraftSectionsAsync(id, ct);
 
             if (!validation.IsValid)
@@ -340,11 +235,9 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                 return RedirectToPage(new { id });
             }
 
-            // 2) Actor
-            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            Guid.TryParse(userId, out var userGuid);
+            var userGuid = GetUserIdOrEmpty();
 
-            // 3) Delegate publish transaction to the service
+            // Delegate publish transaction to the service
             var result = await _pagePublishingService.PublishAsync(id, userGuid, ct);
 
             if (!result.Success)
@@ -357,7 +250,6 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             TempData["Success"] = "Page published.";
             return RedirectToPage(new { id });
         }
-
 
         public async Task<IActionResult> OnPostUnpublishAsync(int id, CancellationToken ct = default)
         {
@@ -381,19 +273,17 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
 
             page.PageStatusId = PageStatusIds.Draft;
 
-            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (Guid.TryParse(userId, out var userGuid))
-                page.UpdatedBy = userGuid;
-
+            var userGuid = GetUserIdOrEmpty();
+            page.UpdatedBy = userGuid;
             page.UpdatedAt = DateTime.UtcNow;
 
             await _db.SaveChangesAsync(ct);
             _nav.Invalidate();
+
             TempData["Success"] = "Page moved back to Draft.";
             return RedirectToPage(new { id });
         }
 
-        // ===== Archive UX =====
         public async Task<IActionResult> OnPostArchiveAsync(int id, CancellationToken ct = default)
         {
             if (!_tenant.IsResolved)
@@ -415,16 +305,15 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             }
 
             page.PageStatusId = PageStatusIds.Archived;
-            page.ShowInNavigation = false; // archived pages should not appear in navigation
+            page.ShowInNavigation = false;
 
-            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (Guid.TryParse(userId, out var userGuid))
-                page.UpdatedBy = userGuid;
-
+            var userGuid = GetUserIdOrEmpty();
+            page.UpdatedBy = userGuid;
             page.UpdatedAt = DateTime.UtcNow;
 
             await _db.SaveChangesAsync(ct);
             _nav.Invalidate();
+
             TempData["Success"] = "Page archived.";
             return RedirectToPage(new { id });
         }
@@ -449,24 +338,95 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                 return RedirectToPage(new { id });
             }
 
-            // Restore goes back to Draft (safe default)
             page.PageStatusId = PageStatusIds.Draft;
 
-            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (Guid.TryParse(userId, out var userGuid))
-                page.UpdatedBy = userGuid;
-
+            var userGuid = GetUserIdOrEmpty();
+            page.UpdatedBy = userGuid;
             page.UpdatedAt = DateTime.UtcNow;
 
             await _db.SaveChangesAsync(ct);
             _nav.Invalidate();
+
             TempData["Success"] = "Page restored to Draft.";
             return RedirectToPage(new { id });
         }
 
+        // =======================
+        // SECTIONS CRUD (DRAFT REVISION)
+        // =======================
+        public async Task<IActionResult> OnPostAddSectionAsync(int id, int sectionTypeId, CancellationToken ct = default)
+        {
+            if (!_tenant.IsResolved)
+                return NotFound("Tenant not resolved.");
+
+            // Ensure page exists & belongs to tenant (and ensure DraftRevisionId exists)
+            var page = await _db.Pages
+                .FirstOrDefaultAsync(p => p.Id == id && p.TenantId == _tenant.TenantId && !p.IsDeleted, ct);
+
+            if (page == null)
+                return NotFound();
+
+            var draftRevisionId = await EnsureDraftRevisionExistsAsync(page.Id, ct);
+
+            // Ensure section type exists (and is active) + get Key for defaults
+            var sectionType = await _db.SectionTypes
+                .AsNoTracking()
+                .Where(st => st.Id == sectionTypeId && st.IsActive && !st.IsDeleted)
+                .Select(st => new { st.Id, st.Key })
+                .FirstOrDefaultAsync(ct);
+
+            if (sectionType == null)
+            {
+                TempData["Error"] = "Invalid section type.";
+                return RedirectToPage(new { id });
+            }
+
+            var nextSort = await _db.PageRevisionSections
+                .AsNoTracking()
+                .Where(s =>
+                    s.TenantId == _tenant.TenantId &&
+                    s.PageRevisionId == draftRevisionId &&
+                    !s.IsDeleted)
+                .Select(s => (int?)s.SortOrder)
+                .MaxAsync(ct) ?? 0;
+
+            var userGuid = GetUserIdOrEmpty();
+
+            var typeKey = (sectionType.Key ?? "").Trim().ToLowerInvariant();
+            var settingsJson = typeKey switch
+            {
+                "hero" => """{"headline":"Headline","subheadline":"Subheadline","ctaText":"Learn more","ctaUrl":"/"}""",
+                "text" => """{"text":"Your text here..."}""",
+                "gallery" => """{"items":[]}""",
+                _ => "{}"
+            };
+
+            var section = new PageRevisionSection
+            {
+                TenantId = _tenant.TenantId,
+                PageRevisionId = draftRevisionId,
+                SectionTypeId = sectionTypeId,
+                SortOrder = nextSort + 1,
+                IsActive = true,
+                IsDeleted = false,
+
+                SettingsJson = settingsJson,
+
+                CreatedAt = DateTime.UtcNow,
+                CreatedBy = userGuid,
+                UpdatedAt = DateTime.UtcNow,
+                UpdatedBy = userGuid
+            };
+
+            _db.PageRevisionSections.Add(section);
+            await _db.SaveChangesAsync(ct);
+
+            return RedirectToPage(new { id });
+        }
+
         public async Task<IActionResult> OnPostReorderSectionsAsync(
-                [FromBody] ReorderSectionsRequest request,
-                CancellationToken ct = default)
+            [FromBody] ReorderSectionsRequest request,
+            CancellationToken ct = default)
         {
             if (!_tenant.IsResolved)
                 return new JsonResult(new { ok = false, message = "Tenant not resolved." });
@@ -477,7 +437,6 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             if (request.OrderedSectionIds == null || request.OrderedSectionIds.Count == 0)
                 return new JsonResult(new { ok = false, message = "No sections provided." });
 
-            // Resolve DraftRevisionId for this page (tenant-safe)
             var draftRevisionId = await _db.Pages
                 .AsNoTracking()
                 .Where(p => p.TenantId == _tenant.TenantId && p.Id == request.PageId && !p.IsDeleted)
@@ -487,7 +446,6 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             if (draftRevisionId == null)
                 return new JsonResult(new { ok = false, message = "Draft revision not found." });
 
-            // Load only draft sections that match the ordered IDs
             var sections = await _db.PageRevisionSections
                 .Where(s =>
                     s.TenantId == _tenant.TenantId &&
@@ -499,25 +457,103 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             if (sections.Count != request.OrderedSectionIds.Count)
                 return new JsonResult(new { ok = false, message = "Invalid section list." });
 
-            Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var userGuid);
+            var userGuid = GetUserIdOrEmpty();
 
-            // Update sort order in the exact order provided
+            // Update sort order in exact order provided
             for (int i = 0; i < request.OrderedSectionIds.Count; i++)
             {
                 var secId = request.OrderedSectionIds[i];
                 var section = sections.First(s => s.Id == secId);
 
-                section.SortOrder = i + 1; // 1,2,3...
+                section.SortOrder = i + 1;
                 section.UpdatedAt = DateTime.UtcNow;
-                if (userGuid != Guid.Empty)
-                    section.UpdatedBy = userGuid;
+                section.UpdatedBy = userGuid;
             }
 
             await _db.SaveChangesAsync(ct);
             return new JsonResult(new { ok = true });
         }
 
+        public async Task<IActionResult> OnPostSaveSectionAsync(
+            [FromBody] SaveSectionRequest request,
+            CancellationToken ct = default)
+        {
+            if (!_tenant.IsResolved)
+                return new JsonResult(new { ok = false, message = "Tenant not resolved." });
 
+            if (request == null || request.SectionId <= 0)
+                return new JsonResult(new { ok = false, message = "Invalid section id." });
+
+            var section = await _db.PageRevisionSections
+                .AsTracking()
+                .FirstOrDefaultAsync(s =>
+                    s.Id == request.SectionId &&
+                    s.TenantId == _tenant.TenantId &&
+                    !s.IsDeleted, ct);
+
+            if (section == null)
+                return new JsonResult(new { ok = false, message = "Section not found." });
+
+            // Ensure this section belongs to a current draft revision of a page in this tenant
+            var isCurrentDraft = await _db.Pages
+                .AsNoTracking()
+                .AnyAsync(p =>
+                    p.TenantId == _tenant.TenantId &&
+                    p.DraftRevisionId == section.PageRevisionId &&
+                    !p.IsDeleted, ct);
+
+            if (!isCurrentDraft)
+                return new JsonResult(new { ok = false, message = "Section is not part of the current draft." });
+
+            var typeKey = await _db.SectionTypes
+                .AsNoTracking()
+                .Where(st => st.Id == section.SectionTypeId && st.IsActive && !st.IsDeleted)
+                .Select(st => st.Key)
+                .FirstOrDefaultAsync(ct);
+
+            if (string.IsNullOrWhiteSpace(typeKey))
+            {
+                return new JsonResult(new
+                {
+                    ok = false,
+                    message = "Section type key not found. Ensure SectionTypes.Key is populated and the type is active.",
+                    sectionId = section.Id,
+                    sectionTypeId = section.SectionTypeId
+                });
+            }
+
+            typeKey = typeKey.Trim().ToLowerInvariant();
+
+            var json = string.IsNullOrWhiteSpace(request.SettingsJson)
+                ? "{}"
+                : request.SettingsJson.Trim();
+
+            var validation = await _sectionValidation.ValidateAsync(typeKey, json);
+
+            if (!validation.IsValid)
+            {
+                return new JsonResult(new
+                {
+                    ok = false,
+                    message = "Validation failed.",
+                    errors = validation.Errors
+                });
+            }
+
+            section.SettingsJson = json;
+
+            var userGuid = GetUserIdOrEmpty();
+            section.UpdatedBy = userGuid;
+            section.UpdatedAt = DateTime.UtcNow;
+
+            await _db.SaveChangesAsync(ct);
+
+            return new JsonResult(new { ok = true });
+        }
+
+        // =======================
+        // LOAD HELPERS
+        // =======================
         private async Task LoadSectionCountAsync(int pageId, CancellationToken ct)
         {
             var draftRevisionId = await _db.Pages
@@ -541,7 +577,6 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                     s.IsActive, ct);
         }
 
-
         private async Task LoadSectionsAsync(int pageId, CancellationToken ct)
         {
             var draftRevisionId = await _db.Pages
@@ -552,7 +587,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
 
             if (draftRevisionId == null)
             {
-                Sections = Array.Empty<SectionRowVm>();
+                Sections = new List<SectionRowVm>();
                 return;
             }
 
@@ -575,6 +610,31 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                 .ToListAsync(ct);
         }
 
+        private async Task LoadSectionTypeOptionsAsync(CancellationToken ct)
+        {
+            SectionTypeOptions = await _db.SectionTypes
+                .AsNoTracking()
+                .Where(st => st.IsActive && !st.IsDeleted)
+                .OrderBy(st => st.SortOrder)
+                .ThenBy(st => st.Name)
+                .Select(st => new SelectListItem
+                {
+                    Value = st.Id.ToString(),
+                    Text = st.Name
+                })
+                .ToListAsync(ct);
+        }
+
+        private async Task LoadSectionTypeLookupAsync(CancellationToken ct)
+        {
+            SectionTypeLookup = await _db.SectionTypes
+                .AsNoTracking()
+                .Where(st => st.IsActive && !st.IsDeleted)
+                .OrderBy(st => st.SortOrder)
+                .ThenBy(st => st.Name)
+                .Select(st => new SectionTypeLookupVm(st.Id, st.Name, st.Key))
+                .ToListAsync(ct);
+        }
 
         private async Task BuildSelectListsAsync(int selectedPageStatusId, CancellationToken ct)
         {
@@ -586,7 +646,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                 .ToListAsync(ct);
 
             PageStatusSelect = new SelectList(statuses, "Id", "Name", selectedPageStatusId);
-            ViewData["PageStatuses"] = PageStatusSelect; // _Form.cshtml reads this
+            ViewData["PageStatuses"] = PageStatusSelect;
         }
 
         private static string SanitizeSlug(string? slug, string? title)
@@ -604,203 +664,40 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             return value.ToLowerInvariant();
         }
 
-
-
-        private async Task LoadSectionTypeOptionsAsync(CancellationToken ct)
-        {
-            SectionTypeOptions = await _db.SectionTypes
-                .AsNoTracking()
-                .Where(st => st.IsActive && !st.IsDeleted)
-                .OrderBy(st => st.SortOrder)
-                .ThenBy(st => st.Name)
-                .Select(st => new SelectListItem
-                {
-                    Value = st.Id.ToString(),
-                    Text = st.Name
-                })
-                .ToListAsync(ct);
-        }
-        public async Task<IActionResult> OnPostAddSectionAsync(int id, int sectionTypeId, CancellationToken ct = default)
-        {
-            if (!_tenant.IsResolved)
-                return NotFound("Tenant not resolved.");
-
-            // Ensure page exists & belongs to tenant (and fetch DraftRevisionId)
-            var pageInfo = await _db.Pages
-                .AsNoTracking()
-                .Where(p => p.Id == id && p.TenantId == _tenant.TenantId && !p.IsDeleted)
-                .Select(p => new { p.Id, p.DraftRevisionId })
-                .FirstOrDefaultAsync(ct);
-
-            if (pageInfo == null)
-                return NotFound();
-
-            if (pageInfo.DraftRevisionId == null)
-            {
-                TempData["Error"] = "Draft revision not found. Please reload the page and try again.";
-                return RedirectToPage(new { id });
-            }
-
-            // Ensure section type exists (and is active) + get Key for defaults
-            var sectionType = await _db.SectionTypes
-                .AsNoTracking()
-                .Where(st => st.Id == sectionTypeId && st.IsActive && !st.IsDeleted)
-                .Select(st => new { st.Id, st.Key })
-                .FirstOrDefaultAsync(ct);
-
-            if (sectionType == null)
-            {
-                TempData["Error"] = "Invalid section type.";
-                return RedirectToPage(new { id });
-            }
-
-            // Next sort order (draft)
-            var nextSort = await _db.PageRevisionSections
-                .AsNoTracking()
-                .Where(s =>
-                    s.TenantId == _tenant.TenantId &&
-                    s.PageRevisionId == pageInfo.DraftRevisionId.Value &&
-                    !s.IsDeleted)
-                .Select(s => (int?)s.SortOrder)
-                .MaxAsync(ct) ?? 0;
-
-            var userGuid = GetUserIdOrEmpty();
-
-            // Default settings JSON based on SectionType.Key (stable across environments)
-            var typeKey = (sectionType.Key ?? "").Trim().ToLowerInvariant();
-
-            var settingsJson = typeKey switch
-            {
-                "hero" => """{"headline":"Headline","subheadline":"Subheadline","ctaText":"Learn more","ctaUrl":"/"}""",
-                "text" => """{"text":"Your text here..."}""",
-                "gallery" => """{"items":[]}""",
-                _ => "{}"
-            };
-
-            var section = new PageRevisionSection
-            {
-                TenantId = _tenant.TenantId,
-                PageRevisionId = pageInfo.DraftRevisionId.Value,
-                SectionTypeId = sectionTypeId,
-                SortOrder = nextSort + 1,
-                IsActive = true,
-                IsDeleted = false,
-
-                SettingsJson = settingsJson,
-
-                CreatedAt = DateTime.UtcNow,
-                CreatedBy = userGuid,
-                UpdatedAt = DateTime.UtcNow,
-                UpdatedBy = userGuid
-            };
-
-            _db.PageRevisionSections.Add(section);
-            await _db.SaveChangesAsync(ct);
-
-            return RedirectToPage(new { id });
-        }
-
-
         private Guid GetUserIdOrEmpty()
         {
             var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
             return Guid.TryParse(userId, out var g) ? g : Guid.Empty;
         }
-        public async Task<IActionResult> OnPostSaveSectionAsync(
-             [FromBody] SaveSectionRequest request,
-             CancellationToken ct = default)
+
+        private async Task<int> EnsureDraftRevisionExistsAsync(int pageId, CancellationToken ct)
         {
-            if (!_tenant.IsResolved)
-                return new JsonResult(new { ok = false, message = "Tenant not resolved." });
+            var page = await _db.Pages
+                .FirstOrDefaultAsync(p => p.Id == pageId && p.TenantId == _tenant.TenantId && !p.IsDeleted, ct);
 
-            if (request == null || request.SectionId <= 0)
-                return new JsonResult(new { ok = false, message = "Invalid section id." });
+            if (page == null)
+                throw new InvalidOperationException("Page not found.");
 
-            // Load the draft section (revision-based)
-            var section = await _db.PageRevisionSections
-                .AsTracking()
-                .FirstOrDefaultAsync(s =>
-                    s.Id == request.SectionId &&
-                    s.TenantId == _tenant.TenantId &&
-                    !s.IsDeleted, ct);
+            if (page.DraftRevisionId.HasValue && page.DraftRevisionId.Value > 0)
+                return page.DraftRevisionId.Value;
 
-            if (section == null)
-                return new JsonResult(new { ok = false, message = "Section not found." });
-
-            var currentDraftRevisionId = await _db.Pages
-                .AsNoTracking()
-                .Where(p => p.TenantId == _tenant.TenantId && p.DraftRevisionId == section.PageRevisionId && !p.IsDeleted)
-                .Select(p => p.DraftRevisionId)
-                .FirstOrDefaultAsync(ct);
-
-            if (currentDraftRevisionId == null)
-                return new JsonResult(new { ok = false, message = "Section is not part of the current draft." });
-
-
-            // Resolve SectionType.Key without relying on navigation properties
-            var typeKey = await _db.SectionTypes
-                .AsNoTracking()
-                .Where(st => st.Id == section.SectionTypeId && st.IsActive && !st.IsDeleted)
-                .Select(st => st.Key)
-                .FirstOrDefaultAsync(ct);
-
-            if (string.IsNullOrWhiteSpace(typeKey))
+            // Create a minimal draft revision row
+            var rev = new PageRevision
             {
-                return new JsonResult(new
-                {
-                    ok = false,
-                    message = "Section type key not found. Ensure SectionTypes.Key is populated and the type is active.",
-                    sectionId = section.Id,
-                    sectionTypeId = section.SectionTypeId
-                });
-            }
+                TenantId = _tenant.TenantId,
+                PageId = pageId
+            };
 
-            typeKey = typeKey.Trim().ToLowerInvariant();
+            _db.PageRevisions.Add(rev);
+            await _db.SaveChangesAsync(ct);
 
-            // Normalize JSON
-            var json = string.IsNullOrWhiteSpace(request.SettingsJson)
-                ? "{}"
-                : request.SettingsJson.Trim();
-
-            // Validate JSON shape for this section type
-            var validation = await HttpContext.RequestServices
-                .GetRequiredService<ISectionValidationService>()
-                .ValidateAsync(typeKey, json);
-
-            if (!validation.IsValid)
-            {
-                return new JsonResult(new
-                {
-                    ok = false,
-                    message = "Validation failed.",
-                    errors = validation.Errors
-                });
-            }
-
-            // Apply
-            section.SettingsJson = json;
-
-            Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var userGuid);
-            if (userGuid != Guid.Empty)
-                section.UpdatedBy = userGuid;
-
-            section.UpdatedAt = DateTime.UtcNow;
+            page.DraftRevisionId = rev.Id;
+            page.UpdatedAt = DateTime.UtcNow;
+            page.UpdatedBy = GetUserIdOrEmpty();
 
             await _db.SaveChangesAsync(ct);
 
-            return new JsonResult(new { ok = true });
-        }
-
-
-        private Task<bool> PageHasAnySectionsAsync(int pageId, CancellationToken ct)
-        {
-            return _db.PageSections
-                .AsNoTracking()
-                .AnyAsync(s =>
-                    s.TenantId == _tenant.TenantId &&
-                    s.PageId == pageId &&
-                    s.IsActive &&
-                    !s.IsDeleted, ct);
+            return rev.Id;
         }
 
         public sealed class ReorderSectionsRequest
@@ -808,6 +705,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             public int PageId { get; set; }
             public List<int> OrderedSectionIds { get; set; } = new();
         }
+
         public sealed class SaveSectionRequest
         {
             public int SectionId { get; set; }
