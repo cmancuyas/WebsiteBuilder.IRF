@@ -25,76 +25,6 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
             Guid actorUserId,
             CancellationToken ct = default)
         {
-            // Load page + draft pointer (tracked)
-            var page = await _db.Pages
-                .FirstOrDefaultAsync(p =>
-                    p.Id == pageId &&
-                    p.TenantId == _tenant.TenantId &&
-                    !p.IsDeleted, ct);
-
-            if (page == null)
-                return PublishResult.Fail("Page not found.");
-
-            if (page.DraftRevisionId == null)
-                return PublishResult.Fail("Cannot publish: no draft revision found.");
-
-            // Load draft revision (AsNoTracking OK)
-            var draft = await _db.PageRevisions
-                .AsNoTracking()
-                .FirstOrDefaultAsync(r =>
-                    r.Id == page.DraftRevisionId &&
-                    r.TenantId == _tenant.TenantId &&
-                    r.PageId == pageId &&
-                    !r.IsDeleted, ct);
-
-            if (draft == null)
-                return PublishResult.Fail("Cannot publish: draft revision not found.");
-
-            // Load draft sections
-            var draftSections = await _db.PageRevisionSections
-                .AsNoTracking()
-                .Where(s =>
-                    s.TenantId == _tenant.TenantId &&
-                    s.PageRevisionId == draft.Id &&
-                    !s.IsDeleted &&
-                    s.IsActive)
-                .OrderBy(s => s.SortOrder)
-                .ThenBy(s => s.Id)
-                .ToListAsync(ct);
-
-            if (draftSections.Count == 0)
-                return PublishResult.Fail("Cannot publish: this page has no sections.");
-
-            // Resolve SectionTypeId -> Key once
-            var sectionTypeIds = draftSections.Select(s => s.SectionTypeId).Distinct().ToList();
-
-            var sectionTypeKeys = await _db.SectionTypes
-                .AsNoTracking()
-                .Where(st => sectionTypeIds.Contains(st.Id) && st.IsActive && !st.IsDeleted)
-                .ToDictionaryAsync(st => st.Id, st => st.Key, ct);
-
-            // Validate all sections
-            var errors = new List<string>();
-
-            foreach (var s in draftSections)
-            {
-                if (!sectionTypeKeys.TryGetValue(s.SectionTypeId, out var key) || string.IsNullOrWhiteSpace(key))
-                {
-                    errors.Add($"SectionTypeId '{s.SectionTypeId}': missing SectionTypes.Key.");
-                    continue;
-                }
-
-                var typeKey = key.Trim().ToLowerInvariant();
-                var json = string.IsNullOrWhiteSpace(s.SettingsJson) ? "{}" : s.SettingsJson.Trim();
-
-                var validation = await _sectionValidation.ValidateAsync(typeKey, json);
-                if (!validation.IsValid)
-                    errors.AddRange(validation.Errors.Select(e => $"Section '{typeKey}': {e}"));
-            }
-
-            if (errors.Count > 0)
-                return new PublishResult { Success = false, Errors = errors };
-
             // IMPORTANT: SQL retry strategy + transactions require ExecuteAsync wrapper
             var strategy = _db.Database.CreateExecutionStrategy();
 
@@ -102,7 +32,104 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
             {
                 return await strategy.ExecuteAsync(async () =>
                 {
+                    // Load page + draft pointer (tracked)
+                    var page = await _db.Pages
+                        .FirstOrDefaultAsync(p =>
+                            p.Id == pageId &&
+                            p.TenantId == _tenant.TenantId &&
+                            !p.IsDeleted, ct);
+
+                    if (page == null)
+                        return PublishResult.Fail("Page not found.");
+
+                    if (page.DraftRevisionId == null)
+                        return PublishResult.Fail("Cannot publish: no draft revision found.");
+
+                    // Load draft revision (AsNoTracking OK)
+                    var draft = await _db.PageRevisions
+                        .AsNoTracking()
+                        .FirstOrDefaultAsync(r =>
+                            r.Id == page.DraftRevisionId &&
+                            r.TenantId == _tenant.TenantId &&
+                            r.PageId == pageId &&
+                            !r.IsDeleted, ct);
+
+                    if (draft == null)
+                        return PublishResult.Fail("Cannot publish: draft revision not found.");
+
                     await using var tx = await _db.Database.BeginTransactionAsync(ct);
+
+                    // Load draft sections (TRACKED: we may persist gallery migrations)
+                    var draftSections = await _db.PageRevisionSections
+                        .Where(s =>
+                            s.TenantId == _tenant.TenantId &&
+                            s.PageRevisionId == draft.Id &&
+                            !s.IsDeleted &&
+                            s.IsActive)
+                        .OrderBy(s => s.SortOrder)
+                        .ThenBy(s => s.Id)
+                        .ToListAsync(ct);
+
+                    if (draftSections.Count == 0)
+                        return PublishResult.Fail("Cannot publish: this page has no sections.");
+
+                    // Resolve SectionTypeId -> Key once
+                    var sectionTypeIds = draftSections.Select(s => s.SectionTypeId).Distinct().ToList();
+
+                    var sectionTypeKeys = await _db.SectionTypes
+                        .AsNoTracking()
+                        .Where(st => sectionTypeIds.Contains(st.Id) && st.IsActive && !st.IsDeleted)
+                        .ToDictionaryAsync(st => st.Id, st => st.Key, ct);
+
+                    var now = DateTime.UtcNow;
+
+                    // 1) Auto-migrate legacy gallery JSON (items -> images) on draft sections
+                    var anyMigrated = false;
+
+                    foreach (var s in draftSections)
+                    {
+                        if (!sectionTypeKeys.TryGetValue(s.SectionTypeId, out var key) || string.IsNullOrWhiteSpace(key))
+                            continue;
+
+                        var typeKey = key.Trim().ToLowerInvariant();
+                        if (typeKey != "gallery")
+                            continue;
+
+                        var json = string.IsNullOrWhiteSpace(s.SettingsJson) ? "{}" : s.SettingsJson.Trim();
+
+                        if (GalleryJsonMigrator.TryMigrateLegacyItemsToImages(json, out var migrated, out _))
+                        {
+                            s.SettingsJson = migrated;
+                            s.UpdatedAt = now;
+                            s.UpdatedBy = actorUserId;
+                            anyMigrated = true;
+                        }
+                    }
+
+                    if (anyMigrated)
+                        await _db.SaveChangesAsync(ct);
+
+                    // 2) Validate all sections (validating migrated JSON if applicable)
+                    var errors = new List<string>();
+
+                    foreach (var s in draftSections)
+                    {
+                        if (!sectionTypeKeys.TryGetValue(s.SectionTypeId, out var key) || string.IsNullOrWhiteSpace(key))
+                        {
+                            errors.Add($"SectionTypeId '{s.SectionTypeId}': missing SectionTypes.Key.");
+                            continue;
+                        }
+
+                        var typeKey = key.Trim().ToLowerInvariant();
+                        var json = string.IsNullOrWhiteSpace(s.SettingsJson) ? "{}" : s.SettingsJson.Trim();
+
+                        var validation = await _sectionValidation.ValidateAsync(typeKey, json);
+                        if (!validation.IsValid)
+                            errors.AddRange(validation.Errors.Select(e => $"Section '{typeKey}': {e}"));
+                    }
+
+                    if (errors.Count > 0)
+                        return new PublishResult { Success = false, Errors = errors };
 
                     var nextVersion =
                         (await _db.PageRevisions
@@ -112,9 +139,7 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
                             .MaxAsync(r => (int?)r.VersionNumber, ct)
                         ?? 0) + 1;
 
-                    var now = DateTime.UtcNow;
-
-                    // 1) Create published snapshot revision from draft content
+                    // 3) Create published snapshot revision from draft content
                     var publishedRevision = new PageRevision
                     {
                         TenantId = _tenant.TenantId,
@@ -157,7 +182,7 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
                     _db.PageRevisions.Add(publishedRevision);
                     await _db.SaveChangesAsync(ct);
 
-                    // 2) Update canonical publish pointer on Page
+                    // 4) Update canonical publish pointer on Page
                     page.PublishedRevisionId = publishedRevision.Id;
                     page.PublishedAt = now;
                     page.PageStatusId = PageStatusIds.Published;
@@ -166,7 +191,7 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
 
                     await _db.SaveChangesAsync(ct);
 
-                    // 3) Create a fresh draft revision cloned from the published snapshot
+                    // 5) Create a fresh draft revision cloned from the published snapshot
                     // FIX: avoid duplicate key by using a NEW version number
                     var newDraft = new PageRevision
                     {
