@@ -45,38 +45,58 @@
 </div>
 
 <script>
-(function () {
-  const sectionId = @sectionId;
-  const saveUrl = "@saveUrl";
-  const textarea = document.getElementById("text-editor-" + sectionId);
-  const statusEl = document.getElementById("save-status-" + sectionId);
-  const errorsEl = document.getElementById("errors-" + sectionId);
+    (function () {
+          const sectionId = @sectionId;
+          const saveUrl = "@saveUrl";
+          const textarea = document.getElementById("text-editor-" + sectionId);
+          const statusEl = document.getElementById("save-status-" + sectionId);
+          const errorsEl = document.getElementById("errors-" + sectionId);
 
-  function init() {
-    if (!textarea) return true;
+        function onImageAdded(asset) {
+            addToGallery(asset);
+            window.PageDirty && window.PageDirty.set();
+        }
 
-    // Wait until the helper exists (it loads later via section Scripts)
-    if (!window.SectionAutoSave || !window.SectionAutoSave.bindSectionAutoSave) return false;
+        function removeImage(id) {
+            gallery.splice(index, 1);
+            window.PageDirty && window.PageDirty.set();
+        }
 
-    const autosave = window.SectionAutoSave.bindSectionAutoSave(
-      sectionId,
-      () => JSON.stringify({ text: textarea.value ?? "" }),
-      saveUrl,
-      statusEl,
-      errorsEl
-    );
+        onEnd: function () {
+            updateGalleryOrder();
+            window.PageDirty && window.PageDirty.set();
+        }
 
-    textarea.addEventListener("input", () => autosave.notifyChanged());
-    return true;
-  }
+        altInput.addEventListener("input", function () {
+            updateAltText();
+            window.PageDirty && window.PageDirty.set();
+        });
 
-  if (init()) return;
+      function init() {
+        if (!textarea) return true;
 
-  // Retry for ~2 seconds to handle script-order timing
-  let tries = 0;
-  const t = setInterval(() => {
-    tries++;
-    if (init() || tries > 20) clearInterval(t);
-  }, 100);
-})();
+        // Wait until the helper exists (it loads later via section Scripts)
+        if (!window.SectionAutoSave || !window.SectionAutoSave.bindSectionAutoSave) return false;
+
+        const autosave = window.SectionAutoSave.bindSectionAutoSave(
+          sectionId,
+          () => JSON.stringify({ text: textarea.value ?? "" }),
+          saveUrl,
+          statusEl,
+          errorsEl
+        );
+
+        textarea.addEventListener("input", () => autosave.notifyChanged());
+        return true;
+      }
+
+      if (init()) return;
+
+      // Retry for ~2 seconds to handle script-order timing
+      let tries = 0;
+      const t = setInterval(() => {
+        tries++;
+        if (init() || tries > 20) clearInterval(t);
+      }, 100);
+    })();
 </script>

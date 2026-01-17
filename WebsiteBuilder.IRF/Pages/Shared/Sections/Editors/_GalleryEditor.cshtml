@@ -119,6 +119,26 @@
         // Undo
         let lastRemoved = null; // { item, index }
 
+        function onImageAdded(asset) {
+            addToGallery(asset);
+            window.PageDirty && window.PageDirty.set();
+        }
+
+        function removeImage(id) {
+            gallery.splice(index, 1);
+            window.PageDirty && window.PageDirty.set();
+        }
+
+        onEnd: function () {
+            updateGalleryOrder();
+            window.PageDirty && window.PageDirty.set();
+        }
+
+        altInput.addEventListener("input", function () {
+            updateAltText();
+            window.PageDirty && window.PageDirty.set();
+        });
+
         async function saveSectionContent() {
             const token = document.querySelector('input[name="__RequestVerificationToken"]')?.value;
 

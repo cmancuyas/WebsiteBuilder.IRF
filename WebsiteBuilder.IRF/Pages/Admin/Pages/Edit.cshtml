@@ -514,4 +514,81 @@
 
         })();
     </script>
+
+    <script>
+        (function () {
+            // -----------------------------
+            // Global dirty state
+            // -----------------------------
+            const Dirty = {
+                isDirty: false,
+                set() { this.isDirty = true; },
+                clear() { this.isDirty = false; },
+                confirmIfDirty(msg) {
+                    if (!this.isDirty) return true;
+                    return window.confirm(msg || "You have unsaved changes. Leave this page?");
+                }
+            };
+
+            // Expose globally so section editors can call it
+            window.PageDirty = Dirty;
+
+            document.addEventListener("DOMContentLoaded", function () {
+                const form = document.querySelector("form");
+                if (!form) return;
+
+                // Mark dirty on any form field edits
+                form.addEventListener("input", function (e) {
+                    const t = e.target;
+                    if (!t) return;
+                    if (t.name === "__RequestVerificationToken") return;
+                    if (t.matches("input, textarea, select")) {
+                        Dirty.set();
+                    }
+                }, true);
+
+                form.addEventListener("change", function (e) {
+                    const t = e.target;
+                    if (!t) return;
+                    if (t.name === "__RequestVerificationToken") return;
+                    if (t.matches("input, textarea, select")) {
+                        Dirty.set();
+                    }
+                }, true);
+
+                // Clear dirty on normal Save submit
+                form.addEventListener("submit", function () {
+                    Dirty.clear();
+                });
+
+                // Intercept internal navigation (Cancel / Back / sidebar links)
+                document.body.addEventListener("click", function (e) {
+                    const a = e.target?.closest?.("a");
+                    if (!a) return;
+
+                    const href = a.getAttribute("href");
+                    if (!href || href === "#" || href.startsWith("javascript:")) return;
+
+                    if (a.getAttribute("data-bypass-dirty") === "true") return;
+
+                    const target = (a.getAttribute("target") || "").toLowerCase();
+                    if (target === "_blank") return;
+
+                    if (!Dirty.confirmIfDirty()) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                    }
+                }, true);
+            });
+
+            // Browser-level protection (refresh, tab close, URL change)
+            window.addEventListener("beforeunload", function (e) {
+                if (!Dirty.isDirty) return;
+                e.preventDefault();
+                e.returnValue = "";
+            });
+        })();
+    </script>
+
+
 }
