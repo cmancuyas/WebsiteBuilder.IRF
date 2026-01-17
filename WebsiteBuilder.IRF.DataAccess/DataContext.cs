@@ -222,25 +222,24 @@ namespace WebsiteBuilder.IRF.DataAccess
         {
             modelBuilder.Entity<PageRevisionSection>(b =>
             {
+                b.ToTable("PageRevisionSections");
+
                 b.HasKey(x => x.Id);
                 b.Property(x => x.Id).ValueGeneratedOnAdd();
 
-                // SortOrder should be numeric; do NOT use HasMaxLength here
+                // UNIQUE SortOrder within a draft revision, ignoring deleted rows (Trash should not block inserts)
                 b.HasIndex(x => new { x.TenantId, x.PageRevisionId, x.SortOrder })
-                 .IsUnique()
-                 .HasFilter("[IsDeleted] = 0");
+                    .IsUnique()
+                    .HasFilter("[IsDeleted] = 0 AND [IsActive] = 1");
+
+                // Optional query helper index (not unique)
+                b.HasIndex(x => new { x.TenantId, x.PageRevisionId, x.IsDeleted, x.IsActive });
+
+                b.Property(x => x.SectionTypeId).IsRequired();
 
                 b.Property(x => x.SettingsJson)
                     .HasColumnType("nvarchar(max)")
                     .IsRequired(false);
-
-                b.Property(x => x.SectionTypeId).IsRequired();
-
-                // Deterministic ordering per revision
-                b.HasIndex(x => new { x.TenantId, x.PageRevisionId, x.SortOrder })
-                    .IsUnique();
-                // Optional: ignore deleted rows in uniqueness
-                // .HasFilter("[IsDeleted] = 0");
 
                 b.HasOne(x => x.PageRevision)
                     .WithMany(r => r.Sections)
@@ -254,6 +253,7 @@ namespace WebsiteBuilder.IRF.DataAccess
                     .OnDelete(DeleteBehavior.Restrict);
             });
         }
+
 
         private static void ConfigureMediaAssets(ModelBuilder modelBuilder)
         {
