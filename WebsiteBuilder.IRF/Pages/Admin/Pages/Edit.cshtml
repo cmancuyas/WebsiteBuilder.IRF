@@ -183,58 +183,122 @@
                     </div>
 
                     <div class="d-flex align-items-center gap-2">
-                        <span class="badge bg-secondary">@Model.SectionCount</span>
+                        <div class="btn-group" role="group" aria-label="Sections tabs">
+                            <button type="button" class="btn btn-sm btn-outline-secondary active" id="tabSectionsBtn">
+                                Sections <span class="badge bg-secondary ms-1" id="activeCountBadge">@Model.SectionCount</span>
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary" id="tabTrashBtn">
+                                Trash <span class="badge bg-secondary ms-1" id="trashCountBadge">@Model.TrashCount</span>
+                            </button>
+                        </div>
 
                         <button type="button"
                                 class="btn btn-sm btn-primary page-action-btn"
                                 data-bs-toggle="modal"
-                                data-bs-target="#addSectionModal">
+                                data-bs-target="#addSectionModal"
+                                id="addSectionBtn">
                             Add Section
                         </button>
                     </div>
                 </div>
 
+
                 <div class="card-body">
-                    @if (!Model.HasSections)
-                    {
-                        <div class="text-muted">No sections yet. Click <strong>Add Section</strong> to begin.</div>
-                    }
-                    else
-                    {
-                        <div id="sectionsList" class="vstack gap-2">
-                            @foreach (var s in Model.Sections)
-                            {
-                                var collapseId = $"sec-editor-{s.Id}";
-                                var editorPath = Model.GetEditorPartialPath(s);
-                                <text><!-- editorPath: @editorPath --></text>
-                                <div class="card section-item" data-section-id="@s.Id">
-                                    <div class="card-body py-2 d-flex align-items-center">
-                                        <span class="me-2 cursor-grab" title="Drag to reorder" aria-label="Drag to reorder">⋮⋮</span>
-
-                                        <div class="flex-grow-1">
-                                            <div class="fw-semibold">@Model.GetSectionTitle(s)</div>
-                                            <div class="text-muted small">Section ID: @s.Id</div>
-                                        </div>
-
-                                        <button type="button"
-                                                class="btn btn-sm btn-outline-secondary"
-                                                data-bs-toggle="collapse"
-                                                data-bs-target="#@collapseId"
-                                                aria-expanded="false"
-                                                aria-controls="@collapseId">
-                                            Edit
-                                        </button>
-                                    </div>
-
-                                    <div id="@collapseId" class="collapse border-top">
-                                        <div class="p-3">
-                                            <partial name="@editorPath" model="s" />
-                                        </div>
-                                    </div>
-                                </div>
-                            }
+                    <!-- Undo banner -->
+                    <div id="sectionUndoBanner" class="alert alert-warning d-none py-2" role="alert">
+                        <div class="d-flex align-items-center justify-content-between gap-2">
+                            <div class="small">
+                                <strong>Section deleted.</strong> You can undo this action.
+                            </div>
+                            <div class="d-flex align-items-center gap-2">
+                                <button type="button" class="btn btn-sm btn-outline-dark" id="undoDeleteBtn">Undo</button>
+                                <button type="button" class="btn-close" aria-label="Close" id="closeUndoBannerBtn"></button>
+                            </div>
                         </div>
-                    }
+                    </div>
+
+                    <!-- Active sections -->
+                    <div id="sectionsPanel">
+                        @if (!Model.HasSections)
+                        {
+                            <div class="text-muted">No sections yet. Click <strong>Add Section</strong> to begin.</div>
+                        }
+                        else
+                        {
+                            <div id="sectionsList" class="vstack gap-2">
+                                @foreach (var s in Model.Sections)
+                                {
+                                    var collapseId = $"sec-editor-{s.Id}";
+                                    var editorPath = Model.GetEditorPartialPath(s);
+
+                                    <div class="card section-item" id="section-@s.Id" data-section-id="@s.Id">
+                                        <div class="card-body py-2 d-flex align-items-center">
+                                            <span class="me-2 cursor-grab" title="Drag to reorder" aria-label="Drag to reorder">⋮⋮</span>
+
+                                            <div class="flex-grow-1">
+                                                <div class="fw-semibold section-title">@Model.GetSectionTitle(s)</div>
+                                                <div class="text-muted small">Section ID: @s.Id</div>
+                                            </div>
+
+                                            <div class="d-flex align-items-center gap-2">
+                                                <button type="button"
+                                                        class="btn btn-sm btn-outline-danger"
+                                                        onclick="deleteRevisionSection(@s.Id)">
+                                                    Delete
+                                                </button>
+
+                                                <button type="button"
+                                                        class="btn btn-sm btn-outline-secondary"
+                                                        data-bs-toggle="collapse"
+                                                        data-bs-target="#@collapseId"
+                                                        aria-expanded="false"
+                                                        aria-controls="@collapseId">
+                                                    Edit
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        <div id="@collapseId" class="collapse border-top">
+                                            <div class="p-3">
+                                                <partial name="@editorPath" model="s" />
+                                            </div>
+                                        </div>
+                                    </div>
+                                }
+                            </div>
+                        }
+                    </div>
+
+                    <!-- Trash sections -->
+                    <div id="trashPanel" class="d-none">
+                        @if (Model.TrashCount <= 0)
+                        {
+                            <div class="text-muted">Trash is empty.</div>
+                        }
+                        else
+                        {
+                            <div id="trashList" class="vstack gap-2">
+                                @foreach (var s in Model.TrashedSections)
+                                {
+                                    <div class="card" id="trash-section-@s.Id" data-section-id="@s.Id">
+                                        <div class="card-body py-2 d-flex align-items-center justify-content-between">
+                                            <div>
+                                                <div class="fw-semibold">@Model.GetSectionTitle(s)</div>
+                                                <div class="text-muted small">Section ID: @s.Id</div>
+                                            </div>
+
+                                            <button type="button"
+                                                    class="btn btn-sm btn-outline-primary"
+                                                    onclick="restoreRevisionSection(@s.Id)">
+                                                Restore
+                                            </button>
+                                        </div>
+                                    </div>
+                                }
+                            </div>
+                        }
+                    </div>
+
                 </div>
 
                 <div class="card-footer small text-muted">
@@ -510,6 +574,180 @@
         });
     </script>
 
+    <script>
+        // Soft delete / Undo / Trash UI for draft sections
+        (function () {
+            let lastDeleted = null;
+            let undoTimer = null;
+
+            function q(id) { return document.getElementById(id); }
+
+            function toInt(val) {
+                const n = parseInt(String(val), 10);
+                return Number.isFinite(n) ? n : 0;
+            }
+
+            function incBadge(badgeId, delta) {
+                const el = q(badgeId);
+                if (!el) return;
+                const next = toInt(el.textContent) + toInt(delta);
+                el.textContent = String(Math.max(0, next));
+            }
+
+            function showUndoBanner(sectionId) {
+                const banner = q("sectionUndoBanner");
+                if (!banner) return;
+
+                banner.classList.remove("d-none");
+                lastDeleted = sectionId;
+
+                if (undoTimer) clearTimeout(undoTimer);
+                undoTimer = setTimeout(() => {
+                    banner.classList.add("d-none");
+                    lastDeleted = null;
+                }, 12000);
+            }
+
+            function hideUndoBanner() {
+                const banner = q("sectionUndoBanner");
+                if (!banner) return;
+                banner.classList.add("d-none");
+                lastDeleted = null;
+                if (undoTimer) clearTimeout(undoTimer);
+                undoTimer = null;
+            }
+
+            function setActiveTab(tab) {
+                const tabSectionsBtn = q("tabSectionsBtn");
+                const tabTrashBtn = q("tabTrashBtn");
+                const sectionsPanel = q("sectionsPanel");
+                const trashPanel = q("trashPanel");
+                const addBtn = q("addSectionBtn");
+
+                if (!tabSectionsBtn || !tabTrashBtn || !sectionsPanel || !trashPanel) return;
+
+                const isTrash = tab === "trash";
+
+                tabSectionsBtn.classList.toggle("active", !isTrash);
+                tabTrashBtn.classList.toggle("active", isTrash);
+
+                sectionsPanel.classList.toggle("d-none", isTrash);
+                trashPanel.classList.toggle("d-none", !isTrash);
+
+                if (addBtn) addBtn.classList.toggle("d-none", isTrash);
+
+                if (isTrash) hideUndoBanner();
+            }
+
+            async function postJson(handler, payload) {
+                const token = getAntiForgeryToken();
+
+                const res = await fetch(handler, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        ...(token ? { "RequestVerificationToken": token } : {})
+                    },
+                    body: JSON.stringify(payload || {})
+                });
+
+                const data = await res.json().catch(() => null);
+                if (!res.ok || !data || data.ok !== true) {
+                    const msg = (data && (data.message || data.Message)) || "Request failed.";
+                    throw new Error(msg);
+                }
+                return data;
+            }
+
+            function appendToTrash(sectionId, titleText) {
+                const trashPanel = q("trashPanel");
+                const trashList = q("trashList");
+
+                if (!trashList && trashPanel) {
+                    trashPanel.innerHTML = `<div id="trashList" class="vstack gap-2"></div>`;
+                }
+
+                const list = q("trashList");
+                if (!list) return;
+
+                const emptyMsg = trashPanel && trashPanel.querySelector('.text-muted');
+                if (emptyMsg) emptyMsg.remove();
+
+                const card = document.createElement("div");
+                card.className = "card";
+                card.id = `trash-section-${sectionId}`;
+                card.setAttribute("data-section-id", String(sectionId));
+                card.innerHTML = `
+                    <div class="card-body py-2 d-flex align-items-center justify-content-between">
+                        <div>
+                            <div class="fw-semibold">${titleText || "Section"}</div>
+                            <div class="text-muted small">Section ID: ${sectionId}</div>
+                        </div>
+                        <button type="button" class="btn btn-sm btn-outline-primary" onclick="restoreRevisionSection(${sectionId})">Restore</button>
+                    </div>
+                `;
+
+                list.prepend(card);
+            }
+
+            window.deleteRevisionSection = async function (sectionId) {
+                const id = toInt(sectionId);
+                if (!id) return;
+
+                const card = document.getElementById(`section-${id}`);
+                const title = card ? (card.querySelector('.section-title')?.textContent || '').trim() : '';
+
+                try {
+                    await postJson("?handler=DeleteRevisionSection", { sectionId: id });
+
+                    if (card) card.remove();
+
+                    incBadge("activeCountBadge", -1);
+                    incBadge("trashCountBadge", +1);
+
+                    appendToTrash(id, title);
+                    showUndoBanner(id);
+
+                } catch (e) {
+                    alert(e && e.message ? e.message : "Delete failed.");
+                }
+            };
+
+            window.restoreRevisionSection = async function (sectionId) {
+                const id = toInt(sectionId);
+                if (!id) return;
+
+                try {
+                    await postJson("?handler=RestoreRevisionSection", { sectionId: id });
+
+                    const trashCard = document.getElementById(`trash-section-${id}`);
+                    if (trashCard) trashCard.remove();
+
+                    incBadge("trashCountBadge", -1);
+
+                    // Reload to reconstruct full editor card (partial views)
+                    window.location.reload();
+
+                } catch (e) {
+                    alert(e && e.message ? e.message : "Restore failed.");
+                }
+            };
+
+            document.addEventListener("DOMContentLoaded", function () {
+                q("tabSectionsBtn")?.addEventListener("click", () => setActiveTab("sections"));
+                q("tabTrashBtn")?.addEventListener("click", () => setActiveTab("trash"));
+
+                q("undoDeleteBtn")?.addEventListener("click", function () {
+                    if (!lastDeleted) return;
+                    window.restoreRevisionSection(lastDeleted);
+                });
+
+                q("closeUndoBannerBtn")?.addEventListener("click", hideUndoBanner);
+
+                setActiveTab("sections");
+            });
+        })();
+    </script>
 
     <script>
         // Section autosave helper (authoritative)
