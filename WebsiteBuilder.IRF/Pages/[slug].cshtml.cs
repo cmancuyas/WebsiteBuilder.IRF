@@ -44,10 +44,16 @@ namespace WebsiteBuilder.IRF.Pages
             var previewRequested = IsPreviewRequested();
             IsPreview = previewRequested && UserCanPreview();
 
-            // Hard stop: never allow anonymous preview
+            // Hard stop: never allow anonymous preview (unless Dev is allowed by UserCanPreview)
             if (previewRequested && !IsPreview)
-             //   return Forbid();
-                return NotFound(); // or Unauthorized()
+                return NotFound(); // or Forbid/Unauthorized if you prefer
+
+            // SEO protection ONLY when preview is actually enabled
+            if (IsPreview)
+            {
+                Response.Headers["X-Robots-Tag"] = "noindex, nofollow, noarchive, nosnippet";
+                ApplyNoCacheHeaders();
+            }
 
             var normalizedSlug = NormalizeSlug(slug);
             if (string.IsNullOrWhiteSpace(normalizedSlug))
@@ -62,14 +68,9 @@ namespace WebsiteBuilder.IRF.Pages
                     p.Slug == normalizedSlug);
 
             if (!IsPreview)
-            {
                 pageQuery = pageQuery.Where(p => p.PageStatusId == PageStatusIds.Published);
-            }
             else
-            {
                 pageQuery = pageQuery.Where(p => p.PageStatusId != PageStatusIds.Archived);
-                ApplyNoCacheHeaders();
-            }
 
             PageEntity = await pageQuery.FirstOrDefaultAsync(HttpContext.RequestAborted);
 
