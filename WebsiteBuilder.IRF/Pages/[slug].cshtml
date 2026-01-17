@@ -3,18 +3,40 @@
 
 @{
     Layout = "_Layout"; // adjust if needed
+    var isPreview = Model.IsPreview;
 }
 
-@if (Model.IsPreview)
+@section Head {
+    @if (isPreview)
+    {
+        <meta name="robots" content="noindex,nofollow,noarchive,nosnippet" />
+        <meta name="googlebot" content="noindex,nofollow,noarchive,nosnippet" />
+    }
+}
+
+@if (isPreview)
 {
-    <div class="alert alert-warning text-center rounded-0 mb-0">
-        <strong>Preview Mode</strong> — You are viewing draft content.
-        <a class="ms-3"
-           href="/Admin/Pages/Edit/@Model.PageEntity!.Id">
-            Back to Edit
-        </a>
+    var exitUrl = Request.Path; // same page, without querystring
+
+    <div style="position:sticky;top:0;z-index:1050;background:#111827;color:#fff;padding:10px 16px;border-bottom:1px solid rgba(255,255,255,.15);">
+        <div class="container d-flex align-items-center justify-content-between">
+            <div>
+                <strong>Draft Preview Mode</strong>
+                <span class="ms-2" style="opacity:.85;">You are viewing draft content.</span>
+            </div>
+
+            <div class="d-flex align-items-center gap-2">
+                <a class="btn btn-sm btn-light" href="@exitUrl">Exit preview</a>
+
+                <a class="btn btn-sm btn-outline-light"
+                   href="/Admin/Pages/Edit/@Model.PageEntity!.Id">
+                    Back to Edit
+                </a>
+            </div>
+        </div>
     </div>
 }
+
 
 @foreach (var section in Model.RenderSections)
 {
