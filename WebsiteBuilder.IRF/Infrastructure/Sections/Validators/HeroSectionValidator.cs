@@ -1,6 +1,4 @@
 ﻿using System.Text.Json;
-using WebsiteBuilder.Models;
-using WebsiteBuilder.IRF.Infrastructure.Sections;
 
 namespace WebsiteBuilder.IRF.Infrastructure.Sections.Validators
 {
@@ -8,21 +6,21 @@ namespace WebsiteBuilder.IRF.Infrastructure.Sections.Validators
     {
         public string TypeKey => "Hero";
 
-        public SectionValidationResult Validate(PageSection section)
+        public SectionValidationResult Validate(string settingsJson)
         {
-            if (!JsonValidationHelpers.TryParse(section.SettingsJson, out JsonDocument? doc, out var parseError))
+            var json = string.IsNullOrWhiteSpace(settingsJson) ? "{}" : settingsJson;
+
+            if (!JsonValidationHelpers.TryParse(json, out JsonDocument? doc, out var parseError))
                 return SectionValidationResult.Fail(parseError!);
 
             using (doc!)
             {
-                var root = doc!.RootElement;
+                var root = doc.RootElement;
                 var result = SectionValidationResult.Success();
 
-                // Required: headline (string, non-empty)
                 if (!JsonValidationHelpers.TryGetNonEmptyString(root, "headline", out _))
                     result.Add("Hero requires 'headline' (non-empty string).");
 
-                // Optional: subheadline (string if present)
                 if (root.TryGetProperty("subheadline", out var sub) &&
                     sub.ValueKind != JsonValueKind.String)
                 {

@@ -82,12 +82,14 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
 
             return key switch
             {
-                "hero" => "Shared/Sections/Editors/_HeroEditor",
-                "text" => "Shared/Sections/Editors/_TextEditor",
-                "gallery" => "Shared/Sections/Editors/_GalleryEditor",
-                _ => "Shared/Sections/Editors/_UnknownEditor"
+                "hero" => "~/Pages/Shared/Sections/Editors/_HeroEditor.cshtml",
+                "text" => "~/Pages/Shared/Sections/Editors/_TextEditor.cshtml",
+                "gallery" => "~/Pages/Shared/Sections/Editors/_GalleryEditor.cshtml",
+                _ => "~/Pages/Shared/Sections/Editors/_UnknownEditor.cshtml"
             };
         }
+
+
 
         public string PreviewUrl
         {

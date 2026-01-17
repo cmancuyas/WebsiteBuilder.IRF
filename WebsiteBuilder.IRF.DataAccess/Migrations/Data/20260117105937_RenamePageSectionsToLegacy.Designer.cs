@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using WebsiteBuilder.IRF.DataAccess;
 
@@ -11,9 +12,11 @@ using WebsiteBuilder.IRF.DataAccess;
 namespace WebsiteBuilder.IRF.DataAccess.Migrations.Data
 {
     [DbContext(typeof(DataContext))]
-    partial class DataContextModelSnapshot : ModelSnapshot
+    [Migration("20260117105937_RenamePageSectionsToLegacy")]
+    partial class RenamePageSectionsToLegacy
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -489,8 +492,6 @@ namespace WebsiteBuilder.IRF.DataAccess.Migrations.Data
 
                     b.HasKey("Id");
 
-                    b.HasAlternateKey("TenantId", "Id");
-
                     b.HasIndex("DraftRevisionId");
 
                     b.HasIndex("PublishedRevisionId");
@@ -738,11 +739,12 @@ namespace WebsiteBuilder.IRF.DataAccess.Migrations.Data
 
                     b.HasKey("Id");
 
-                    b.HasIndex("PageId");
-
                     b.HasIndex("SectionTypeId");
 
-                    b.ToTable("PageSection");
+                    b.HasIndex("TenantId", "PageId", "SortOrder")
+                        .IsUnique();
+
+                    b.ToTable("PageSections");
                 });
 
             modelBuilder.Entity("WebsiteBuilder.Models.PageStatus", b =>
@@ -1128,15 +1130,16 @@ namespace WebsiteBuilder.IRF.DataAccess.Migrations.Data
 
             modelBuilder.Entity("WebsiteBuilder.Models.PageSection", b =>
                 {
-                    b.HasOne("WebsiteBuilder.Models.Page", "Page")
-                        .WithMany("Sections")
-                        .HasForeignKey("PageId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
                     b.HasOne("WebsiteBuilder.Models.SectionType", "SectionType")
                         .WithMany()
                         .HasForeignKey("SectionTypeId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("WebsiteBuilder.Models.Page", "Page")
+                        .WithMany("Sections")
+                        .HasForeignKey("TenantId", "PageId")
+                        .HasPrincipalKey("TenantId", "Id")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 

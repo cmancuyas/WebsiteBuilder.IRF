@@ -1,5 +1,4 @@
 ﻿using System.Text.Json;
-using WebsiteBuilder.Models;
 using WebsiteBuilder.IRF.Infrastructure.Sections;
 
 namespace WebsiteBuilder.IRF.Infrastructure.Sections.Validators
@@ -8,14 +7,16 @@ namespace WebsiteBuilder.IRF.Infrastructure.Sections.Validators
     {
         public string TypeKey => "Text";
 
-        public SectionValidationResult Validate(PageSection section)
+        public SectionValidationResult Validate(string settingsJson)
         {
-            if (!JsonValidationHelpers.TryParse(section.SettingsJson, out JsonDocument? doc, out var parseError))
+            var json = string.IsNullOrWhiteSpace(settingsJson) ? "{}" : settingsJson;
+
+            if (!JsonValidationHelpers.TryParse(json, out JsonDocument? doc, out var parseError))
                 return SectionValidationResult.Fail(parseError!);
 
             using (doc!)
             {
-                var root = doc!.RootElement;
+                var root = doc.RootElement;
                 var result = SectionValidationResult.Success();
 
                 // Required: text (string, non-empty)

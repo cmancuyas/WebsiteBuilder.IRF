@@ -1,14 +1,14 @@
-﻿@model WebsiteBuilder.Models.PageSection
+﻿@model string?
 @using System.Text.Json
 
 @{
     string? text = null;
 
-    if (!string.IsNullOrWhiteSpace(Model.SettingsJson))
+    if (!string.IsNullOrWhiteSpace(Model))
     {
         try
         {
-            using var doc = JsonDocument.Parse(Model.SettingsJson);
+            using var doc = JsonDocument.Parse(Model);
 
             if (doc.RootElement.TryGetProperty("text", out var t))
                 text = t.GetString();

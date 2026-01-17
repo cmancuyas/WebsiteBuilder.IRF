@@ -1,5 +1,4 @@
 ﻿using System.Text.Json;
-using WebsiteBuilder.Models;
 using WebsiteBuilder.IRF.Infrastructure.Sections;
 
 namespace WebsiteBuilder.IRF.Infrastructure.Sections.Validators
@@ -8,22 +7,22 @@ namespace WebsiteBuilder.IRF.Infrastructure.Sections.Validators
     {
         public string TypeKey => "Gallery";
 
-        // Reasonable limits to protect your DB and UI
         private const int MaxImages = 30;
         private const int MaxAltLength = 200;
         private const int MaxCaptionLength = 500;
 
-        public SectionValidationResult Validate(PageSection section)
+        public SectionValidationResult Validate(string settingsJson)
         {
-            if (!JsonValidationHelpers.TryParse(section.SettingsJson, out JsonDocument? doc, out var parseError))
+            var json = string.IsNullOrWhiteSpace(settingsJson) ? "{}" : settingsJson;
+
+            if (!JsonValidationHelpers.TryParse(json, out JsonDocument? doc, out var parseError))
                 return SectionValidationResult.Fail(parseError!);
 
             using (doc!)
             {
-                var root = doc!.RootElement;
+                var root = doc.RootElement;
                 var result = SectionValidationResult.Success();
 
-                // Required: images (array, at least 1)
                 if (!JsonValidationHelpers.HasArray(root, "images", out var arr))
                 {
                     result.Add("Gallery requires 'images' (array).");
@@ -38,17 +37,14 @@ namespace WebsiteBuilder.IRF.Infrastructure.Sections.Validators
                 }
 
                 if (count > MaxImages)
-                {
                     result.Add($"Gallery cannot exceed {MaxImages} images.");
-                }
 
-                // Optional: layout (string)
-                if (root.TryGetProperty("layout", out var layout) && layout.ValueKind != JsonValueKind.String)
+                if (root.TryGetProperty("layout", out var layout) &&
+                    layout.ValueKind != JsonValueKind.String)
                 {
-                    result.Add("Gallery optional 'layout' must be a string if provided (e.g., 'grid').");
+                    result.Add("Gallery optional 'layout' must be a string if provided.");
                 }
 
-                // Optional: columns (number 1..6)
                 if (root.TryGetProperty("columns", out var cols))
                 {
                     if (cols.ValueKind != JsonValueKind.Number)
@@ -63,10 +59,6 @@ namespace WebsiteBuilder.IRF.Infrastructure.Sections.Validators
                     }
                 }
 
-                // Each item must be object with:
-                // - url (required, non-empty string, valid absolute http/https OR app-relative '/...')
-                // - alt (optional string)
-                // - caption (optional string)
                 var i = 0;
                 foreach (var item in arr.EnumerateArray())
                 {
@@ -81,34 +73,25 @@ namespace WebsiteBuilder.IRF.Infrastructure.Sections.Validators
                     {
                         result.Add($"Gallery images[{i}] requires 'url' (non-empty string).");
                     }
-                    else
+                    else if (!IsValidUrl(url))
                     {
-                        if (!IsValidUrl(url))
-                            result.Add($"Gallery images[{i}] 'url' must be a valid http/https URL or an app-relative path starting with '/'.");
+                        result.Add($"Gallery images[{i}] 'url' must be a valid http/https URL or app-relative '/'.");
                     }
 
                     if (item.TryGetProperty("alt", out var alt))
                     {
                         if (alt.ValueKind != JsonValueKind.String)
-                        {
-                            result.Add($"Gallery images[{i}] optional 'alt' must be a string if provided.");
-                        }
+                            result.Add($"Gallery images[{i}] optional 'alt' must be a string.");
                         else if ((alt.GetString() ?? string.Empty).Length > MaxAltLength)
-                        {
                             result.Add($"Gallery images[{i}] optional 'alt' cannot exceed {MaxAltLength} characters.");
-                        }
                     }
 
                     if (item.TryGetProperty("caption", out var caption))
                     {
                         if (caption.ValueKind != JsonValueKind.String)
-                        {
-                            result.Add($"Gallery images[{i}] optional 'caption' must be a string if provided.");
-                        }
+                            result.Add($"Gallery images[{i}] optional 'caption' must be a string.");
                         else if ((caption.GetString() ?? string.Empty).Length > MaxCaptionLength)
-                        {
                             result.Add($"Gallery images[{i}] optional 'caption' cannot exceed {MaxCaptionLength} characters.");
-                        }
                     }
 
                     i++;
@@ -122,15 +105,11 @@ namespace WebsiteBuilder.IRF.Infrastructure.Sections.Validators
         {
             url = url.Trim();
 
-            // Allow app-relative URLs (recommended for your MediaAsset routes)
             if (url.StartsWith("/", StringComparison.Ordinal))
                 return true;
 
-            // Allow absolute http/https
             if (Uri.TryCreate(url, UriKind.Absolute, out var uri))
-            {
                 return uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps;
-            }
 
             return false;
         }

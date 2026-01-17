@@ -29,6 +29,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Folder Include="Pages\Admin\Pages\Sections\Partials\" />
     <Folder Include="wwwroot\uploads\" />
   </ItemGroup>
 

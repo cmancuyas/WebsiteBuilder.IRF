@@ -12,7 +12,6 @@ namespace WebsiteBuilder.IRF.DataAccess
         public DbSet<DomainMapping> DomainMappings => Set<DomainMapping>();
         public DbSet<Theme> Themes => Set<Theme>();
         public DbSet<Page> Pages => Set<Page>();
-        public DbSet<PageSection> PageSections => Set<PageSection>();
         public DbSet<PageStatus> PageStatuses => Set<PageStatus>();
         public DbSet<PageRevision> PageRevisions => Set<PageRevision>();
         public DbSet<PageRevisionSection> PageRevisionSections => Set<PageRevisionSection>();
@@ -29,7 +28,6 @@ namespace WebsiteBuilder.IRF.DataAccess
             ConfigureDomainMappings(modelBuilder);
             ConfigureThemes(modelBuilder);
             ConfigurePages(modelBuilder);
-            ConfigurePageSections(modelBuilder);
             ConfigurePageStatuses(modelBuilder);
 
             ConfigurePageRevisions(modelBuilder);
@@ -175,62 +173,11 @@ namespace WebsiteBuilder.IRF.DataAccess
                     .WithMany()
                     .HasForeignKey(x => x.PublishedRevisionId)
                     .OnDelete(DeleteBehavior.Restrict);
-
-                // Composite principal key used by PageSection composite FK (tenant-safe)
-                b.HasAlternateKey(x => new { x.TenantId, x.Id });
             });
         }
 
 
-        private static void ConfigurePageSections(ModelBuilder modelBuilder)
-        {
-            modelBuilder.Entity<PageSection>(b =>
-            {
-                b.HasKey(x => x.Id);
-                b.Property(x => x.Id).ValueGeneratedOnAdd();
-
-                // ----------------------------
-                // Canonical fields (final)
-                // ----------------------------
-
-                // Canonical discriminator
-                b.Property(x => x.SectionTypeId)
-                    .IsRequired();
-
-                // Canonical payload
-                b.Property(x => x.SettingsJson)
-                    .HasColumnType("nvarchar(max)")
-                    .IsRequired(false);
-
-                // Optional label
-                b.Property(x => x.DisplayName)
-                    .HasMaxLength(200)
-                    .IsRequired(false);
-
-                // Deterministic ordering per page
-                b.HasIndex(x => new { x.TenantId, x.PageId, x.SortOrder }).IsUnique();
-
-                // ----------------------------
-                // Relationships
-                // ----------------------------
-
-                // Tenant-safe: PageSection(TenantId, PageId) -> Page(TenantId, Id)
-                b.HasOne(x => x.Page)
-                    .WithMany(p => p.Sections)
-                    .HasForeignKey(x => new { x.TenantId, x.PageId })
-                    .HasPrincipalKey(p => new { p.TenantId, p.Id })
-                    .OnDelete(DeleteBehavior.Cascade);
-
-                // SectionType FK
-                b.HasOne(x => x.SectionType)
-                    .WithMany()
-                    .HasForeignKey(x => x.SectionTypeId)
-                    .OnDelete(DeleteBehavior.Restrict);
-            });
-        }
-
-
-
+    
         private static void ConfigurePageStatuses(ModelBuilder modelBuilder)
         {
             modelBuilder.Entity<PageStatus>(b =>

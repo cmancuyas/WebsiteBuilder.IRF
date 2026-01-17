@@ -1,5 +1,4 @@
 ﻿using Microsoft.AspNetCore.Mvc;
-using WebsiteBuilder.Models;
 
 namespace WebsiteBuilder.IRF.ViewComponents
 {
@@ -7,24 +6,16 @@ namespace WebsiteBuilder.IRF.ViewComponents
     {
         public IViewComponentResult Invoke(int sectionTypeId, string? settingsJson)
         {
-            // Build a lightweight PageSection model for rendering
-            var model = new PageSection
-            {
-                SectionTypeId = sectionTypeId,
-                SettingsJson = settingsJson
-            };
-
-            // SectionTypes table:
-            // 1 = Hero
-            // 2 = Text
+            // Shared section partials now accept JSON only: @model string?
             var viewPath = sectionTypeId switch
             {
                 1 => "~/Pages/Shared/Sections/_Hero.cshtml",
                 2 => "~/Pages/Shared/Sections/_Text.cshtml",
+                3 => "~/Pages/Shared/Sections/_Gallery.cshtml",
                 _ => "~/Pages/Shared/Sections/_Text.cshtml" // safe fallback
             };
 
-            return View(viewPath, model);
+            return View(viewPath, settingsJson);
         }
     }
 }
