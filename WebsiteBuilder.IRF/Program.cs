@@ -81,6 +81,7 @@ builder.Services.AddScoped<ISectionContentValidator, TextSectionValidator>();
 builder.Services.AddScoped<ISectionContentValidator, GallerySectionValidator>();
 builder.Services.AddScoped<IPagePublishingService, PagePublishingService>();
 builder.Services.AddScoped<PagePublishValidator>();
+builder.Services.AddScoped<IPageRevisionSectionService, PageRevisionSectionService>();
 
 // =====================
 // Media (Cleanup/Quota/Alerts)
