@@ -1,7 +1,118 @@
 ﻿@model WebsiteBuilder.IRF.ViewModels.Admin.Pages.SectionRowVm
-@using System.Text.Json
 
-<div class="alert alert-info mb-0">
-    <strong>Hero Editor</strong> is now rendering correctly.
-    <div class="small text-muted">Section ID: @Model.Id</div>
+@{
+    // Hero uses SettingsJson (same as Gallery/Text)
+    var initialJson = Model?.SettingsJson ?? "";
+    var sectionId = Model?.Id ?? 0;
+}
+
+<div class="hero-editor">
+    <div class="mb-3">
+        <label class="form-label">Headline</label>
+        <input type="text"
+               class="form-control"
+               id="hero-headline"
+               placeholder="Enter headline" />
+    </div>
+
+    <div class="mb-3">
+        <label class="form-label">Subheadline</label>
+        <textarea class="form-control"
+                  id="hero-subheadline"
+                  rows="2"
+                  placeholder="Optional subheadline"></textarea>
+    </div>
+
+    <div class="text-muted small" id="hero-save-status"></div>
 </div>
+
+<script>
+    (function () {
+        const sectionId = @sectionId;
+
+        const headlineInput = document.getElementById("hero-headline");
+        const subheadlineInput = document.getElementById("hero-subheadline");
+        const statusEl = document.getElementById("hero-save-status");
+
+        // --- Helpers ------------------------------------------------------------
+
+        function getAntiForgeryToken() {
+            return document.querySelector('input[name="__RequestVerificationToken"]')?.value;
+        }
+
+        function buildJson() {
+            return JSON.stringify({
+                headline: (headlineInput.value || "").trim(),
+                subheadline: (subheadlineInput.value || "").trim()
+            });
+        }
+
+        async function saveSection() {
+            const token = getAntiForgeryToken();
+
+            const payload = {
+                sectionId: sectionId,
+                typeKey: "Hero",
+                settingsJson: buildJson()
+            };
+
+            try {
+                const res = await fetch(`?handler=SaveSection`, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "RequestVerificationToken": token
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!res.ok) {
+                    statusEl.textContent = "Error saving";
+                    statusEl.classList.add("text-danger");
+                    return;
+                }
+
+                statusEl.textContent = "Saved";
+                statusEl.classList.remove("text-danger");
+            }
+            catch {
+                statusEl.textContent = "Error saving";
+                statusEl.classList.add("text-danger");
+            }
+        }
+
+        // --- Init ---------------------------------------------------------------
+
+        function initFromJson() {
+            if (!@Html.Raw(string.IsNullOrWhiteSpace(initialJson) ? "false" : "true"))
+                return;
+
+            try {
+                const parsed = JSON.parse(@Html.Raw(System.Text.Json.JsonSerializer.Serialize(initialJson)));
+
+                if (typeof parsed.headline === "string")
+                    headlineInput.value = parsed.headline;
+
+                if (typeof parsed.subheadline === "string")
+                    subheadlineInput.value = parsed.subheadline;
+            }
+            catch {
+                console.warn("Invalid Hero JSON");
+            }
+        }
+
+        // --- Events -------------------------------------------------------------
+
+        let debounceTimer;
+
+        function scheduleSave() {
+            clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(saveSection, 300);
+        }
+
+        headlineInput.addEventListener("input", scheduleSave);
+        subheadlineInput.addEventListener("input", scheduleSave);
+
+        initFromJson();
+    })();
+</script>

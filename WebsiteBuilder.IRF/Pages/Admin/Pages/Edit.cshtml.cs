@@ -453,28 +453,77 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                     s.TenantId == _tenant.TenantId &&
                     s.PageRevisionId == draftRevisionId &&
                     !s.IsDeleted &&
+                    s.IsActive &&
                     request.OrderedSectionIds.Contains(s.Id))
                 .ToListAsync(ct);
 
             if (sections.Count != request.OrderedSectionIds.Count)
                 return new JsonResult(new { ok = false, message = "Invalid section list." });
 
+            var byId = sections.ToDictionary(s => s.Id);
+
             var userGuid = GetUserIdOrEmpty();
+            var now = DateTime.UtcNow;
 
-            // Update sort order in exact order provided
-            for (int i = 0; i < request.OrderedSectionIds.Count; i++)
+            var strategy = _db.Database.CreateExecutionStrategy();
+
+            try
             {
-                var secId = request.OrderedSectionIds[i];
-                var section = sections.First(s => s.Id == secId);
+                await strategy.ExecuteAsync(async () =>
+                {
+                    await using var tx = await _db.Database.BeginTransactionAsync(ct);
 
-                section.SortOrder = i + 1;
-                section.UpdatedAt = DateTime.UtcNow;
-                section.UpdatedBy = userGuid;
+                    // TEMP RANGE (positive) to avoid collisions + any "SortOrder > 0" constraints
+                    var currentMax = await _db.PageRevisionSections
+                        .AsNoTracking()
+                        .Where(s =>
+                            s.TenantId == _tenant.TenantId &&
+                            s.PageRevisionId == draftRevisionId &&
+                            !s.IsDeleted &&
+                            s.IsActive)
+                        .Select(s => (int?)s.SortOrder)
+                        .MaxAsync(ct) ?? 0;
+
+                    var tempStart = currentMax + 1000;
+
+                    // Phase 1: move to unique temporary values
+                    var idx = 0;
+                    foreach (var id in request.OrderedSectionIds)
+                    {
+                        var s = byId[id];
+                        s.SortOrder = tempStart + idx;
+                        s.UpdatedAt = now;
+                        s.UpdatedBy = userGuid;
+                        idx++;
+                    }
+
+                    await _db.SaveChangesAsync(ct);
+
+                    // Phase 2: apply final 1..N
+                    var order = 1;
+                    foreach (var id in request.OrderedSectionIds)
+                    {
+                        var s = byId[id];
+                        s.SortOrder = order;
+                        s.UpdatedAt = now;
+                        s.UpdatedBy = userGuid;
+                        order++;
+                    }
+
+                    await _db.SaveChangesAsync(ct);
+
+                    await tx.CommitAsync(ct);
+                });
+
+                return new JsonResult(new { ok = true });
             }
-
-            await _db.SaveChangesAsync(ct);
-            return new JsonResult(new { ok = true });
+            catch
+            {
+                return new JsonResult(new { ok = false, message = "Reorder failed. Please retry." });
+            }
         }
+
+
 
         public async Task<IActionResult> OnPostSaveSectionAsync(
             [FromBody] SaveSectionRequest request,

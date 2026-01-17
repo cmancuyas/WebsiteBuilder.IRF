@@ -283,16 +283,53 @@
             const el = document.getElementById("sectionsList");
             if (!el) return;
 
+            const publishBtn = document.getElementById("btnPublish");
+
+            function getIds() {
+                return Array.from(el.querySelectorAll(".section-item"))
+                    .map(x => parseInt(x.getAttribute("data-section-id"), 10))
+                    .filter(n => Number.isFinite(n));
+            }
+
+            function applyOrder(ids) {
+                const map = new Map();
+                el.querySelectorAll(".section-item").forEach(node => {
+                    const id = parseInt(node.getAttribute("data-section-id"), 10);
+                    if (Number.isFinite(id)) map.set(id, node);
+                });
+
+                // Re-append in the desired order (moves existing nodes)
+                for (const id of ids) {
+                    const node = map.get(id);
+                    if (node) el.appendChild(node);
+                }
+            }
+
+            let isSaving = false;
+            function setSaving(state) {
+                isSaving = state;
+                if (publishBtn) publishBtn.disabled = state || publishBtn.disabled; // keep disabled if already disabled by rules
+            }
+
             Sortable.create(el, {
                 handle: ".cursor-grab",
                 animation: 150,
                 ghostClass: "sortable-ghost",
+                onStart: function () {
+                    // Capture order BEFORE drag, so we can rollback if save fails
+                    el.dataset.prevOrder = JSON.stringify(getIds());
+                },
                 onEnd: async function () {
-                    const ids = Array.from(el.querySelectorAll(".section-item"))
-                        .map(x => parseInt(x.getAttribute("data-section-id"), 10))
-                        .filter(n => Number.isFinite(n));
+                    if (isSaving) return;
+
+                    const ids = getIds();
+                    const prev = (() => {
+                        try { return JSON.parse(el.dataset.prevOrder || "[]"); } catch { return []; }
+                    })();
 
                     const token = getAntiForgeryToken();
+
+                    setSaving(true);
 
                     try {
                         const res = await fetch("?handler=ReorderSections", {
@@ -308,16 +345,27 @@
                         });
 
                         const json = await res.json().catch(() => null);
+
                         if (!json || !json.ok) {
+                            // rollback DOM
+                            if (prev && prev.length) applyOrder(prev);
                             alert((json && json.message) ? json.message : "Failed to save order.");
+                            return;
                         }
+
+                        // Success (replace with your toast later)
+                        // console.log("Section order saved");
                     } catch {
+                        if (prev && prev.length) applyOrder(prev);
                         alert("Failed to save order.");
+                    } finally {
+                        setSaving(false);
                     }
                 }
             });
         });
     </script>
+
 
     <script>
         // Section autosave helper (authoritative)
