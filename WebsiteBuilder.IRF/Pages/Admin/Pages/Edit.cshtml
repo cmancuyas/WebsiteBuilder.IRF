@@ -469,6 +469,54 @@
             window.addEventListener("offline", render);
             document.addEventListener("DOMContentLoaded", render);
         })();
+        (function () {
+            function updatePageActionButtons(disabled) {
+                document
+                    .querySelectorAll(".page-action-btn")
+                    .forEach(btn => {
+                        btn.disabled = disabled;
+                        btn.classList.toggle("disabled", disabled);
+
+                        if (disabled) {
+                            btn.setAttribute("title", "Saving changes…");
+                        } else {
+                            btn.removeAttribute("title");
+                        }
+                    });
+            }
+
+            // Patch AutosaveUx to control publish buttons
+            const ux = window.AutosaveUx;
+            if (!ux) return;
+
+            const originalOnSaving = ux.onSaving;
+            const originalOnSaved = ux.onSaved;
+            const originalOnFailed = ux.onFailed;
+            const originalOnRecovered = ux.onRecovered;
+
+            ux.onSaving = function (...args) {
+                originalOnSaving?.apply(this, args);
+                updatePageActionButtons(true);
+            };
+
+            ux.onSaved = function (...args) {
+                originalOnSaved?.apply(this, args);
+                if (window.AutosaveUxState?.saving === 0 || true) {
+                    updatePageActionButtons(false);
+                }
+            };
+
+            ux.onFailed = function (...args) {
+                originalOnFailed?.apply(this, args);
+                updatePageActionButtons(false);
+            };
+
+            ux.onRecovered = function (...args) {
+                originalOnRecovered?.apply(this, args);
+                updatePageActionButtons(false);
+            };
+        })();
+
     </script>
 
 

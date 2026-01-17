@@ -548,7 +548,8 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                 .AsTracking()
                 .FirstOrDefaultAsync(s =>
                     s.Id == request.SectionId &&
-                    s.TenantId == _tenant.TenantId, ct);
+                    s.TenantId == _tenant.TenantId &&
+                    !s.IsDeleted, ct);
 
             if (section == null)
                 return new JsonResult(new { ok = false, message = "Section not found." });
