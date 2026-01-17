@@ -1,4 +1,6 @@
 ﻿using Microsoft.EntityFrameworkCore;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using WebsiteBuilder.IRF.DataAccess;
 using WebsiteBuilder.IRF.Infrastructure.Sections;
 using WebsiteBuilder.IRF.Infrastructure.Tenancy;
@@ -109,7 +111,95 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
                     if (anyMigrated)
                         await _db.SaveChangesAsync(ct);
 
-                    // 2) Validate all sections (validating migrated JSON if applicable)
+                    // 1.5) Resolve Gallery assetId -> url (validator requires url)
+                    var galleryAssetIds = new HashSet<int>();
+
+                    foreach (var s in draftSections)
+                    {
+                        if (!sectionTypeKeys.TryGetValue(s.SectionTypeId, out var key) || string.IsNullOrWhiteSpace(key))
+                            continue;
+
+                        if (!string.Equals(key.Trim(), "gallery", StringComparison.OrdinalIgnoreCase))
+                            continue;
+
+                        if (string.IsNullOrWhiteSpace(s.SettingsJson))
+                            continue;
+
+                        using var doc = JsonDocument.Parse(s.SettingsJson);
+                        if (!doc.RootElement.TryGetProperty("images", out var arr) || arr.ValueKind != JsonValueKind.Array)
+                            continue;
+
+                        foreach (var img in arr.EnumerateArray())
+                        {
+                            if (img.ValueKind != JsonValueKind.Object)
+                                continue;
+
+                            if (img.TryGetProperty("assetId", out var idProp) && idProp.ValueKind == JsonValueKind.Number)
+                            {
+                                var id = idProp.GetInt32();
+                                if (id > 0) galleryAssetIds.Add(id);
+                            }
+                        }
+                    }
+
+                    if (galleryAssetIds.Count > 0)
+                    {
+                        // Pull assets (tenant scoped) and build url map
+                        var assets = await _db.MediaAssets
+                            .AsNoTracking()
+                            .Where(a =>
+                                a.TenantId == _tenant.TenantId &&
+                                !a.IsDeleted &&
+                                a.IsActive &&
+                                galleryAssetIds.Contains(a.Id))
+                            .ToListAsync(ct);
+
+                        var assetUrlMap = assets.ToDictionary(a => a.Id, a => BuildMediaUrl(a));
+
+                        // Rewrite draft section JSON: assetId -> url (remove assetId)
+                        foreach (var s in draftSections)
+                        {
+                            if (string.IsNullOrWhiteSpace(s.SettingsJson))
+                                continue;
+
+                            var rootNode = JsonNode.Parse(s.SettingsJson) as JsonObject;
+                            if (rootNode == null || rootNode["images"] is not JsonArray images)
+                                continue;
+
+                            var changed = false;
+
+                            foreach (var imgNode in images)
+                            {
+                                if (imgNode is not JsonObject imgObj)
+                                    continue;
+
+                                if (!imgObj.TryGetPropertyValue("assetId", out var idNode) || idNode is null)
+                                    continue;
+
+                                int id;
+                                try { id = idNode.GetValue<int>(); }
+                                catch { continue; }
+
+                                if (!assetUrlMap.TryGetValue(id, out var url))
+                                    continue; // leave as-is; validation will fail (correctly) if url missing
+
+                                imgObj["url"] = url;
+                                imgObj.Remove("assetId");
+                                changed = true;
+                            }
+
+                            if (changed)
+                            {
+                                s.SettingsJson = rootNode.ToJsonString();
+                                s.UpdatedAt = now;
+                                s.UpdatedBy = actorUserId;
+                            }
+                        }
+
+                        await _db.SaveChangesAsync(ct);
+                    }
+
+                    // 2) Validate all sections (after migration + url resolution)
                     var errors = new List<string>();
 
                     foreach (var s in draftSections)
@@ -250,6 +340,12 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
                 // Return a friendly error to the UI (instead of throwing)
                 return PublishResult.Fail("Publish failed: " + ex.Message);
             }
+        }
+
+        private static string BuildMediaUrl(MediaAsset asset)
+        {
+            // Update this route if your actual serving endpoint is different.
+            return $"/media/{asset.Id}";
         }
     }
 }
