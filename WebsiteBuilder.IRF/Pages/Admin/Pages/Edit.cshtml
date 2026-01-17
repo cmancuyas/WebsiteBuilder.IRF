@@ -33,6 +33,21 @@
                 Open Preview
             </a>
 
+            <div class="d-flex align-items-center gap-2">
+                <span id="globalSaveIndicator" class="small text-muted">
+                    All changes saved
+                </span>
+
+                <button type="button" class="btn btn-sm btn-outline-secondary d-none" id="retryFailedAutosavesBtn">
+                    Retry
+                </button>
+
+                <span id="offlineBadge" class="badge bg-warning text-dark d-none">
+                    Offline
+                </span>
+            </div>
+
+
             @* Publish *@
             @if (Model.CanPublish)
             {
@@ -286,10 +301,113 @@
     <script>
         // Shared anti-forgery token getter (robust)
         function getAntiForgeryToken() {
+            const scoped = document.querySelector('#antiForgeryForm input[name="__RequestVerificationToken"]');
+            if (scoped?.value) return scoped.value;
+
             const el = document.querySelector('input[name="__RequestVerificationToken"]');
             return el ? el.value : null;
         }
+
     </script>
+    <script>
+        (function () {
+            const indicator = document.getElementById("globalSaveIndicator");
+            const retryBtn = document.getElementById("retryFailedAutosavesBtn");
+            const offlineBadge = document.getElementById("offlineBadge");
+
+            const state = {
+                saving: 0,
+                failed: 0,
+                lastSavedAt: null,
+                retryQueue: new Map()
+            };
+
+            function fmt(d) {
+                return d
+                    ? `${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`
+                    : "";
+            }
+
+            function render() {
+                if (!indicator) return;
+
+                const offline = navigator.onLine === false;
+                offlineBadge?.classList.toggle("d-none", !offline);
+
+                retryBtn?.classList.toggle("d-none", state.failed === 0);
+
+                if (offline) {
+                    indicator.textContent = "Offline — changes not saved";
+                    indicator.className = "small text-warning";
+                    return;
+                }
+
+                if (state.saving > 0) {
+                    indicator.textContent = "Saving…";
+                    indicator.className = "small text-muted";
+                    return;
+                }
+
+                if (state.failed > 0) {
+                    indicator.textContent = "Save failed";
+                    indicator.className = "small text-danger";
+                    return;
+                }
+
+                if (window.PageDirty?._keys?.has("page")) {
+                    indicator.textContent = "Unsaved page changes (click Save)";
+                    indicator.className = "small text-warning";
+                    return;
+                }
+
+                indicator.textContent = state.lastSavedAt
+                    ? `All changes saved (Saved ${fmt(state.lastSavedAt)})`
+                    : "All changes saved";
+                indicator.className = "small text-success";
+            }
+
+            window.AutosaveUx = {
+                onSaving() {
+                    state.saving++;
+                    render();
+                },
+                onSaved() {
+                    state.saving = Math.max(0, state.saving - 1);
+                    state.lastSavedAt = new Date();
+                    render();
+                },
+                onFailed(sectionId, retryFn) {
+                    state.saving = Math.max(0, state.saving - 1);
+                    state.failed++;
+                    if (retryFn) state.retryQueue.set(sectionId, retryFn);
+                    render();
+                },
+                onRecovered(sectionId) {
+                    // decrement saving just like a normal save completion
+                    state.saving = Math.max(0, state.saving - 1);
+
+                    if (state.failed > 0) state.failed--;
+                    state.retryQueue.delete(sectionId);
+                    state.lastSavedAt = new Date();
+                    render();
+                }
+
+            };
+
+            retryBtn?.addEventListener("click", async () => {
+                for (const fn of state.retryQueue.values()) {
+                    try { await fn(); } catch {}
+                }
+                render();
+            });
+
+            window.addEventListener("online", render);
+            window.addEventListener("offline", render);
+            document.addEventListener("DOMContentLoaded", render);
+        })();
+    </script>
+
+
 
     <script>
         // Section reorder (auto-save order)
@@ -416,97 +534,124 @@
                 };
             }
 
-            function bindSectionAutoSave(sectionId, getSettingsJson, saveUrl, statusEl, errorsEl) {
-                let inFlight = 0;
+        function bindSectionAutoSave(sectionId, getSettingsJson, saveUrl, statusEl, errorsEl) {
 
-                function clearErrors() {
-                    if (!errorsEl) return;
-                    errorsEl.classList.add("d-none");
-                    errorsEl.innerHTML = "";
-                }
+            const dirtyKey = `section:${sectionId}`;
+            let inFlight = 0;
 
-                function showErrors(errors) {
-                    if (!errorsEl) return;
-
-                    const list = Array.isArray(errors) ? errors : [];
-                    if (!list.length) {
-                        clearErrors();
-                        return;
-                    }
-
-                    errorsEl.classList.remove("d-none");
-                    errorsEl.innerHTML = `
-                        <div class="alert alert-danger py-2 mb-0">
-                            <div class="fw-semibold small mb-1">Please fix the following:</div>
-                            <ul class="small mb-0">
-                                ${list.map(e => `<li>${String(e)}</li>`).join("")}
-                            </ul>
-                        </div>
-                    `;
-                }
-
-                async function runSave() {
-                    const settingsJson = getSettingsJson();
-
-                    inFlight++;
-                    if (statusEl) {
-                        statusEl.textContent = "Saving...";
-                        statusEl.classList.remove("text-danger", "text-success");
-                        statusEl.classList.add("text-muted");
-                        statusEl.title = "";
-                    }
-
-                    try {
-                        const token = getAntiForgeryToken();
-
-                        const res = await fetch(saveUrl, {
-                            method: "POST",
-                            headers: {
-                                "Content-Type": "application/json",
-                                ...(token ? { "RequestVerificationToken": token } : {})
-                            },
-                            body: JSON.stringify({ sectionId, settingsJson })
-                        });
-
-                        const data = await res.json().catch(() => null);
-
-                        if (!res.ok || !data || data.ok !== true) {
-                            const errors = (data && (data.errors || data.Errors)) || [];
-                            const message = (data && (data.message || data.Message)) || "Save failed.";
-                            throw { message, errors };
-                        }
-
-                        inFlight--;
-                        clearErrors();
-
-                        if (inFlight === 0 && statusEl) {
-                            statusEl.textContent = "Saved";
-                            statusEl.classList.remove("text-muted", "text-danger");
-                            statusEl.classList.add("text-success");
-                        }
-
-                        return data;
-                    } catch (e) {
-                        inFlight--;
-
-                        if (statusEl) {
-                            statusEl.textContent = "Save failed";
-                            statusEl.classList.remove("text-muted", "text-success");
-                            statusEl.classList.add("text-danger");
-                            statusEl.title = (e && e.message) ? e.message : "Error";
-                        }
-
-                        showErrors(e && e.errors ? e.errors : []);
-                    }
-                }
-
-                const debounced = debounce(runSave, 600);
-
-                return {
-                    notifyChanged: () => debounced(),
-                    saveNow: () => runSave()
-                };
+            function clearErrors() {
+                if (!errorsEl) return;
+                errorsEl.classList.add("d-none");
+                errorsEl.innerHTML = "";
             }
+
+            function showErrors(errors) {
+                if (!errorsEl) return;
+
+                const list = Array.isArray(errors) ? errors : [];
+                if (!list.length) {
+                    clearErrors();
+                    return;
+                }
+
+                errorsEl.classList.remove("d-none");
+                errorsEl.innerHTML = `
+                    <div class="alert alert-danger py-2 mb-0">
+                        <div class="fw-semibold small mb-1">Please fix the following:</div>
+                        <ul class="small mb-0">
+                            ${list.map(e => `<li>${String(e)}</li>`).join("")}
+                        </ul>
+                    </div>
+                `;
+            }
+
+            async function runSave() {
+
+                window.AutosaveUx && window.AutosaveUx.onSaving(sectionId);
+
+                const settingsJson = getSettingsJson();
+
+                inFlight++;
+                if (statusEl) {
+                    statusEl.textContent = "Saving...";
+                    statusEl.classList.remove("text-danger", "text-success");
+                    statusEl.classList.add("text-muted");
+                    statusEl.title = "";
+                }
+
+                try {
+                    const token = getAntiForgeryToken();
+
+                    const res = await fetch(saveUrl, {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                            ...(token ? { "RequestVerificationToken": token } : {})
+                        },
+                        body: JSON.stringify({ sectionId, settingsJson })
+                    });
+
+                    const data = await res.json().catch(() => null);
+
+                    if (!res.ok || !data || data.ok !== true) {
+                        const errors = (data && (data.errors || data.Errors)) || [];
+                        const message = (data && (data.message || data.Message)) || "Save failed.";
+                        throw { message, errors };
+                    }
+
+                    inFlight--;
+                    clearErrors();
+
+                    // ✅ Clear dirty ONLY after a successful save
+                    window.PageDirty && typeof window.PageDirty.clear === "function" && window.PageDirty.clear(dirtyKey);
+
+                    window.AutosaveUx && window.AutosaveUx.onRecovered(sectionId);
+
+                    if (inFlight === 0 && statusEl) {
+                        statusEl.textContent = "Saved";
+                        statusEl.classList.remove("text-muted", "text-danger");
+                        statusEl.classList.add("text-success");
+                    }
+
+                    // if this section had failed before, mark it recovered; otherwise treat as normal saved
+                    if (window.AutosaveUx) {
+                        if (typeof window.AutosaveUx.onRecovered === "function") window.AutosaveUx.onRecovered(sectionId);
+                        else window.AutosaveUx.onSaved(sectionId);
+                    }
+
+                    return data;
+                } catch (e) {
+                    inFlight--;
+
+                    if (statusEl) {
+                        statusEl.textContent = "Save failed";
+                        statusEl.classList.remove("text-muted", "text-success");
+                        statusEl.classList.add("text-danger");
+                        statusEl.title = (e && e.message) ? e.message : "Error";
+                    }
+
+                    window.AutosaveUx && window.AutosaveUx.onFailed(sectionId, () => runSave());
+
+                    const msg = (e && e.message) ? e.message : "Save failed.";
+                    window.AutosaveUx && window.AutosaveUx.onFailed(sectionId, msg, () => runSave());
+
+                    showErrors(e && e.errors ? e.errors : []);
+                    return null;
+                }
+            }
+
+            const debounced = debounce(runSave, 1000);
+
+            return {
+                notifyChanged: () => {
+                    // ✅ Mark section dirty when user changes
+                    window.PageDirty && typeof window.PageDirty.set === "function" && window.PageDirty.set(dirtyKey);
+                    debounced();
+                },
+                saveNow: () => runSave()
+            };
+        }
+
 
             window.SectionAutoSave = {
                 bindSectionAutoSave
@@ -521,29 +666,49 @@
             // Global dirty state
             // -----------------------------
             const Dirty = {
-                isDirty: false,
-                set() { this.isDirty = true; },
-                clear() { this.isDirty = false; },
+                _keys: new Set(),
+                get isDirty() { return this._keys.size > 0; },
+
+                // Mark dirty. If no key is provided, default to "page".
+                set(key) {
+                    this._keys.add(key || "page");
+                },
+
+                // Clear dirty state.
+                // - clear() clears ALL dirty flags (used on full page save / navigation actions)
+                // - clear(key) clears only that scope (used by autosaved sections)
+                clear(key) {
+                    if (!key) {
+                        this._keys.clear();
+                        return;
+                    }
+                    this._keys.delete(key);
+                },
+
                 confirmIfDirty(msg) {
                     if (!this.isDirty) return true;
                     return window.confirm(msg || "You have unsaved changes. Leave this page?");
                 }
             };
 
+
             // Expose globally so section editors can call it
             window.PageDirty = Dirty;
 
             document.addEventListener("DOMContentLoaded", function () {
-                const form = document.querySelector("form");
+            const form = document.getElementById("pageForm") || document.querySelector("form:not(#antiForgeryForm)");
+
                 if (!form) return;
 
-                // Mark dirty on any form field edits
+                // Mark page-level dirty ONLY for page-scoped inputs
                 form.addEventListener("input", function (e) {
                     const t = e.target;
                     if (!t) return;
                     if (t.name === "__RequestVerificationToken") return;
-                    if (t.matches("input, textarea, select")) {
-                        Dirty.set();
+
+                    if (t.matches("input, textarea, select") &&
+                        t.getAttribute("data-dirty-scope") === "page") {
+                        Dirty.set("page");
                     }
                 }, true);
 
@@ -551,10 +716,13 @@
                     const t = e.target;
                     if (!t) return;
                     if (t.name === "__RequestVerificationToken") return;
-                    if (t.matches("input, textarea, select")) {
-                        Dirty.set();
+
+                    if (t.matches("input, textarea, select") &&
+                        t.getAttribute("data-dirty-scope") === "page") {
+                        Dirty.set("page");
                     }
                 }, true);
+
 
                 // Clear dirty on normal Save submit
                 form.addEventListener("submit", function () {

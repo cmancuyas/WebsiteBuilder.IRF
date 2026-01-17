@@ -23,6 +23,7 @@
         }
     }
 
+    // Razor Pages handler URL: OnPostSaveSectionAsync
     var saveUrl = Url.Page(null, null, new { handler = "SaveSection" }, null);
 }
 
@@ -46,36 +47,16 @@
 
 <script>
     (function () {
-          const sectionId = @sectionId;
-          const saveUrl = "@saveUrl";
-          const textarea = document.getElementById("text-editor-" + sectionId);
-          const statusEl = document.getElementById("save-status-" + sectionId);
-          const errorsEl = document.getElementById("errors-" + sectionId);
-
-        function onImageAdded(asset) {
-            addToGallery(asset);
-            window.PageDirty && window.PageDirty.set();
-        }
-
-        function removeImage(id) {
-            gallery.splice(index, 1);
-            window.PageDirty && window.PageDirty.set();
-        }
-
-        onEnd: function () {
-            updateGalleryOrder();
-            window.PageDirty && window.PageDirty.set();
-        }
-
-        altInput.addEventListener("input", function () {
-            updateAltText();
-            window.PageDirty && window.PageDirty.set();
-        });
+      const sectionId = @sectionId;
+      const saveUrl = "@saveUrl";
+      const textarea = document.getElementById("text-editor-" + sectionId);
+      const statusEl = document.getElementById("save-status-" + sectionId);
+      const errorsEl = document.getElementById("errors-" + sectionId);
 
       function init() {
         if (!textarea) return true;
 
-        // Wait until the helper exists (it loads later via section Scripts)
+        // Wait until helper exists (loaded by Edit.cshtml)
         if (!window.SectionAutoSave || !window.SectionAutoSave.bindSectionAutoSave) return false;
 
         const autosave = window.SectionAutoSave.bindSectionAutoSave(
@@ -86,13 +67,16 @@
           errorsEl
         );
 
-        textarea.addEventListener("input", () => autosave.notifyChanged());
+        textarea.addEventListener("input", () => {
+          autosave.notifyChanged();
+        });
+
         return true;
       }
 
       if (init()) return;
 
-      // Retry for ~2 seconds to handle script-order timing
+      // Retry for ~2 seconds (handles script-order timing)
       let tries = 0;
       const t = setInterval(() => {
         tries++;
