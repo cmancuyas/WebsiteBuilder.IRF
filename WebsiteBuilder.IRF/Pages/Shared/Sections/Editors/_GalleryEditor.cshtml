@@ -11,7 +11,7 @@
     var sectionId = Model?.Id ?? 0;
 
     // CHANGE THIS LINE IF NEEDED:
-    var initialJson = Model?.SettingsJson ?? Model?.SettingsJson;
+    var initialJson = Model?.SettingsJson ?? "";
 
     var safeInitialJson = initialJson ?? "";
 }
@@ -119,6 +119,29 @@
         // Undo
         let lastRemoved = null; // { item, index }
 
+        async function saveSectionContent() {
+            const token = document.querySelector('input[name="__RequestVerificationToken"]')?.value;
+
+            const payload = {
+                sectionId: sectionId,
+                typeKey: "Gallery",
+                settingsJson: toContentJson()
+            };
+
+            const res = await fetch(`?handler=SaveSection`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "RequestVerificationToken": token
+                },
+                body: JSON.stringify(payload)
+            });
+
+            if (!res.ok) {
+                console.error("Gallery SaveSection failed", res.status);
+            }
+        }
+
         // ---------- Antiforgery ----------
         function getToken() {
             // common patterns in your project:
@@ -178,18 +201,27 @@
         }
 
         function toContentJson() {
+            const cols = Number(layout.columns || 3);
+            const spacing = (layout.spacing || "md");
+
             return JSON.stringify({
-                items: items.map(x => ({
-                    mediaAssetId: Number(x.mediaAssetId),
-                    altText: x.altText || "",
-                    caption: x.caption || ""
-                })),
-                layout: {
-                    columns: Number(layout.columns || 3),
-                    spacing: layout.spacing || "md"
-                }
+                images: items.map(x => {
+                    const id = Number(x.mediaAssetId);
+                    const vm = lookup.get(id);
+
+                    return {
+                        mediaAssetId: id,                 // extra is fine
+                        url: (vm?.Url || "").trim(),      // REQUIRED
+                        alt: (x.altText || "").trim(),    // validator expects "alt"
+                        caption: (x.caption || "").trim()
+                    };
+                }),
+                columns: cols,                           // root number
+                layout: spacing                          // root string
             });
         }
+
+
 
         // ---------- Persist / autosave ----------
         function updateHiddenAndAutosave() {
@@ -236,11 +268,11 @@
         function resolvePreviewUrl(id) {
             const vm = lookup.get(Number(id));
             if (!vm) return "";
-            const storageKey = vm.ThumbUrl || vm.Url;
-            if (!storageKey) return "";
-            return MEDIA_PUBLIC_PREFIX + storageKey;
-        }
 
+            // vm.ThumbUrl / vm.Url already look like "/uploads/..."
+            const u = vm.ThumbUrl || vm.Url;
+            return u || "";
+        }
         function resolveTitle(id) {
             const vm = lookup.get(Number(id));
             if (!vm) return `Media #${id}`;
@@ -346,6 +378,7 @@
                     const i = Number(inp.getAttribute("data-alt"));
                     items[i].altText = inp.value || "";
                     updateHiddenAndAutosave();
+                    saveSectionContent();
                 });
             });
 
@@ -354,6 +387,7 @@
                     const i = Number(inp.getAttribute("data-caption"));
                     items[i].caption = inp.value || "";
                     updateHiddenAndAutosave();
+                    saveSectionContent();
                 });
             });
 
@@ -368,6 +402,7 @@
 
             render();
             updateHiddenAndAutosave();
+            saveSectionContent();
             showUndoBar();
         }
 
@@ -379,6 +414,7 @@
             hideUndoBar();
             render();
             updateHiddenAndAutosave();
+            saveSectionContent();
         });
 
         undoDismissBtn.addEventListener("click", hideUndoBar);
@@ -410,6 +446,7 @@
                     dragIndex = null;
                     render();
                     updateHiddenAndAutosave();
+                    saveSectionContent();
                 });
 
                 card.addEventListener("dragend", () => { dragIndex = null; });
@@ -457,6 +494,7 @@
             hideUndoBar();
             render();
             updateHiddenAndAutosave();
+            await saveSectionContent();
         }
 
         function openPicker() {
@@ -503,6 +541,7 @@
             hideUndoBar();
             render();
             updateHiddenAndAutosave();
+            saveSectionContent();
         });
 
         // Layout controls
@@ -510,12 +549,14 @@
             layout.columns = Number(ddlColumns.value || 3);
             render();
             updateHiddenAndAutosave();
+            saveSectionContent();
         });
 
         ddlSpacing.addEventListener("change", () => {
             layout.spacing = ddlSpacing.value || "md";
             render();
             updateHiddenAndAutosave();
+            saveSectionContent();
         });
 
         // ---------- Init ----------
@@ -528,13 +569,22 @@
                     layout.spacing = parsed.layout.spacing || "md";
                 }
 
-                if (Array.isArray(parsed.items)) {
-                    items = parsed.items.map(x => ({
+                if (Array.isArray(parsed.images)) {
+                    items = parsed.images.map(x => ({
                         mediaAssetId: Number(x.mediaAssetId || x.id),
-                        altText: x.altText || "",
+                        altText: x.alt || "",            // note: "alt"
                         caption: x.caption || ""
                     })).filter(x => x.mediaAssetId > 0);
                 }
+
+                // load root layout/columns (validator shape)
+                if (typeof parsed.layout === "string") {
+                    layout.spacing = parsed.layout || "md";
+                }
+                if (typeof parsed.columns === "number") {
+                    layout.columns = Number(parsed.columns || 3);
+                }
+
             }
 
             ddlColumns.value = String(layout.columns || 3);

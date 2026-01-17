@@ -1,5 +1,21 @@
 ﻿@page
+@using Microsoft.EntityFrameworkCore
 @model WebsiteBuilder.IRF.Pages.IndexModel
+
+@{
+    var isDev = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") == "Development";
+    var adminUrl = "https://chris.yourplatform.com:7274/admin/pages";
+}
+
+@if (isDev)
+{
+    <div style="position:fixed; bottom:16px; right:16px; z-index:9999;">
+        <a href="@adminUrl"
+           class="btn btn-sm btn-outline-secondary">
+            Admin Pages
+        </a>
+    </div>
+}
 
 @if (!Model.IsTenantResolved)
 {
