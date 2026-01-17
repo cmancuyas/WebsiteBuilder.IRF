@@ -7,7 +7,7 @@
 }
 
 <!-- Global anti-forgery token available for JS fetch calls -->
-<form id="antiForgeryForm" method="post">
+<form id="pageForm" method="post">
     @Html.AntiForgeryToken()
 </form>
 <div id="sectionFeedback"
@@ -726,6 +726,7 @@
                     incBadge("trashCountBadge", -1);
 
                     // Reload to reconstruct full editor card (partial views)
+                    hideUndoBanner();
                     window.location.reload();
 
                 } catch (e) {

@@ -548,8 +548,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                 .AsTracking()
                 .FirstOrDefaultAsync(s =>
                     s.Id == request.SectionId &&
-                    s.TenantId == _tenant.TenantId &&
-                    !s.IsDeleted, ct);
+                    s.TenantId == _tenant.TenantId, ct);
 
             if (section == null)
                 return new JsonResult(new { ok = false, message = "Section not found." });
@@ -791,9 +790,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                 .AsTracking()
                 .FirstOrDefaultAsync(s =>
                     s.Id == request.SectionId &&
-                    s.TenantId == _tenant.TenantId &&
-                    s.IsActive, ct);
-
+                    s.TenantId == _tenant.TenantId, ct);
 
             if (section == null)
                 return new JsonResult(new { ok = false, message = "Section not found." });
@@ -803,8 +800,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                 .AsNoTracking()
                 .AnyAsync(p =>
                     p.TenantId == _tenant.TenantId &&
-                    p.DraftRevisionId == section.PageRevisionId &&
-                    !p.IsDeleted, ct);
+                    p.DraftRevisionId == section.PageRevisionId, ct);
 
             if (!isCurrentDraft)
                 return new JsonResult(new { ok = false, message = "Section is not part of the current draft." });
@@ -840,8 +836,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                 .AsTracking()
                 .FirstOrDefaultAsync(s =>
                     s.Id == request.SectionId &&
-                    s.TenantId == _tenant.TenantId &&
-                    s.IsActive, ct);
+                    s.TenantId == _tenant.TenantId, ct);
 
 
             if (section == null)
@@ -852,8 +847,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                 .AsNoTracking()
                 .AnyAsync(p =>
                     p.TenantId == _tenant.TenantId &&
-                    p.DraftRevisionId == section.PageRevisionId &&
-                    !p.IsDeleted, ct);
+                    p.DraftRevisionId == section.PageRevisionId, ct);
 
             if (!isCurrentDraft)
                 return new JsonResult(new { ok = false, message = "Section is not part of the current draft." });
@@ -874,6 +868,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
 
             return new JsonResult(new { ok = true });
         }
+
         private async Task LoadTrashCountAsync(int pageId, CancellationToken ct)
         {
             var draftRevisionId = await _db.Pages
