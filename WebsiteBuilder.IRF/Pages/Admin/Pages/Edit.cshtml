@@ -10,6 +10,10 @@
 <form id="antiForgeryForm" method="post">
     @Html.AntiForgeryToken()
 </form>
+<div id="sectionFeedback"
+     class="alert alert-info py-2 d-none"
+     role="alert">
+</div>
 
 <div class="container py-4">
 
@@ -33,7 +37,11 @@
             @if (Model.CanPublish)
             {
                 <form method="post" class="d-inline" asp-page-handler="Publish" asp-route-id="@Model.Input.Id">
-                    <button type="submit" class="btn btn-success">Publish</button>
+                    <button id="btnPublish"
+                            class="btn btn-success page-action-btn"
+                            type="submit">
+                        Publish
+                    </button>
                 </form>
             }
             else
@@ -45,7 +53,10 @@
             @if (Model.CanUnpublish)
             {
                 <form method="post" class="d-inline" asp-page-handler="Unpublish" asp-route-id="@Model.Input.Id">
-                    <button type="submit" class="btn btn-outline-warning">Unpublish</button>
+                    <button class="btn btn-warning page-action-btn"
+                            type="submit">
+                        Unpublish
+                    </button>
                 </form>
             }
             else
@@ -57,7 +68,10 @@
             @if (Model.CanArchive)
             {
                 <form method="post" class="d-inline" asp-page-handler="Archive" asp-route-id="@Model.Input.Id">
-                    <button type="submit" class="btn btn-outline-danger">Archive</button>
+                    <button class="btn btn-danger page-action-btn"
+                            type="submit">
+                        Archive
+                    </button>
                 </form>
             }
             else
@@ -157,7 +171,7 @@
                         <span class="badge bg-secondary">@Model.SectionCount</span>
 
                         <button type="button"
-                                class="btn btn-sm btn-primary"
+                                class="btn btn-sm btn-primary page-action-btn"
                                 data-bs-toggle="modal"
                                 data-bs-target="#addSectionModal">
                             Add Section
@@ -306,10 +320,22 @@
             }
 
             let isSaving = false;
+            let hasPendingChanges = false;
+
+            // mark dirty during reorder
             function setSaving(state) {
                 isSaving = state;
-                if (publishBtn) publishBtn.disabled = state || publishBtn.disabled; // keep disabled if already disabled by rules
+                hasPendingChanges = state;
+                document.querySelectorAll(".page-action-btn").forEach(btn => {
+                    btn.disabled = state || btn.disabled;
+                });
             }
+
+            window.addEventListener("beforeunload", function (e) {
+                if (!hasPendingChanges) return;
+                e.preventDefault();
+                e.returnValue = "";
+            });
 
             Sortable.create(el, {
                 handle: ".cursor-grab",
@@ -370,6 +396,16 @@
     <script>
         // Section autosave helper (authoritative)
         (function () {
+            function showSectionFeedback(message, type = "info") {
+                const el = document.getElementById("sectionFeedback");
+                if (!el) return;
+
+                el.className = `alert alert-${type} py-2`;
+                el.textContent = message;
+                el.classList.remove("d-none");
+
+                setTimeout(() => el.classList.add("d-none"), 3000);
+            }
 
             function debounce(fn, delay) {
                 let t = null;
