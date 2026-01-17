@@ -25,8 +25,8 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
             Guid actorUserId,
             CancellationToken ct = default)
         {
+            // Load page + draft pointer (do NOT include legacy page.Sections)
             var page = await _db.Pages
-                .Include(p => p.Sections)
                 .FirstOrDefaultAsync(p =>
                     p.Id == pageId &&
                     p.TenantId == _tenant.TenantId &&
@@ -35,34 +35,64 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
             if (page == null)
                 return PublishResult.Fail("Page not found.");
 
-            var sections = page.Sections
-                .Where(s => !s.IsDeleted)
-                .OrderBy(s => s.SortOrder)
-                .ToList();
+            if (page.DraftRevisionId == null)
+                return PublishResult.Fail("Cannot publish: no draft revision found.");
 
-            if (sections.Count == 0)
+            // Load draft revision (title/slug/meta snapshot comes from revision)
+            var draft = await _db.PageRevisions
+                .AsNoTracking()
+                .FirstOrDefaultAsync(r =>
+                    r.Id == page.DraftRevisionId &&
+                    r.TenantId == _tenant.TenantId &&
+                    r.PageId == pageId &&
+                    !r.IsDeleted, ct);
+
+            if (draft == null)
+                return PublishResult.Fail("Cannot publish: draft revision not found.");
+
+            // Load draft sections
+            var draftSections = await _db.PageRevisionSections
+                .AsNoTracking()
+                .Where(s =>
+                    s.TenantId == _tenant.TenantId &&
+                    s.PageRevisionId == draft.Id &&
+                    !s.IsDeleted &&
+                    s.IsActive)
+                .OrderBy(s => s.SortOrder)
+                .ThenBy(s => s.Id)
+                .ToListAsync(ct);
+
+            if (draftSections.Count == 0)
                 return PublishResult.Fail("Cannot publish: this page has no sections.");
 
-            // Resolve SectionTypeId -> Name once
-            var sectionTypeIds = sections.Select(s => s.SectionTypeId).Distinct().ToList();
+            // Resolve SectionTypeId -> Key once (do NOT use Name)
+            var sectionTypeIds = draftSections.Select(s => s.SectionTypeId).Distinct().ToList();
 
-            var sectionTypeNames = await _db.SectionTypes
-                .Where(st => sectionTypeIds.Contains(st.Id))
-                .ToDictionaryAsync(st => st.Id, st => st.Name, ct);
+            var sectionTypeKeys = await _db.SectionTypes
+                .AsNoTracking()
+                .Where(st => sectionTypeIds.Contains(st.Id) && st.IsActive && !st.IsDeleted)
+                .ToDictionaryAsync(st => st.Id, st => st.Key, ct);
 
+            // Validate all sections
             var errors = new List<string>();
 
-            foreach (var s in sections)
+            foreach (var s in draftSections)
             {
-                var typeKey = sectionTypeNames.TryGetValue(s.SectionTypeId, out var name)
-                    ? name
-                    : s.SectionTypeId.ToString(); // fallback only
+                if (!sectionTypeKeys.TryGetValue(s.SectionTypeId, out var key) || string.IsNullOrWhiteSpace(key))
+                {
+                    errors.Add($"SectionTypeId '{s.SectionTypeId}': missing SectionTypes.Key.");
+                    continue;
+                }
 
-                // Validate SettingsJson payload (service-layer hard rule)
-                var validation = await _sectionValidation.ValidateAsync(typeKey, s.SettingsJson);
+                var typeKey = key.Trim().ToLowerInvariant();
+                var json = string.IsNullOrWhiteSpace(s.SettingsJson) ? "{}" : s.SettingsJson.Trim();
 
+                var validation = await _sectionValidation.ValidateAsync(typeKey, json);
                 if (!validation.IsValid)
+                {
+                    // validation.Errors is a list of strings in your result type
                     errors.AddRange(validation.Errors.Select(e => $"Section '{typeKey}': {e}"));
+                }
             }
 
             if (errors.Count > 0)
@@ -81,19 +111,20 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
 
                 var now = DateTime.UtcNow;
 
-                var revision = new PageRevision
+                // 1) Create published snapshot revision from draft content
+                var publishedRevision = new PageRevision
                 {
                     TenantId = _tenant.TenantId,
                     PageId = pageId,
                     VersionNumber = nextVersion,
                     IsPublishedSnapshot = true,
 
-                    Title = page.Title,
-                    Slug = page.Slug,
-                    LayoutKey = page.LayoutKey ?? string.Empty,
-                    MetaTitle = page.MetaTitle ?? string.Empty,
-                    MetaDescription = page.MetaDescription ?? string.Empty,
-                    OgImageAssetId = page.OgImageAssetId,
+                    Title = draft.Title,
+                    Slug = draft.Slug,
+                    LayoutKey = draft.LayoutKey ?? string.Empty,
+                    MetaTitle = draft.MetaTitle ?? string.Empty,
+                    MetaDescription = draft.MetaDescription ?? string.Empty,
+                    OgImageAssetId = draft.OgImageAssetId,
                     PublishedAt = now,
 
                     IsActive = true,
@@ -102,12 +133,64 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
                     CreatedBy = actorUserId
                 };
 
-                foreach (var s in sections)
+                foreach (var s in draftSections)
                 {
-                    revision.Sections.Add(new PageRevisionSection
+                    publishedRevision.Sections.Add(new PageRevisionSection
                     {
                         TenantId = _tenant.TenantId,
-                        SourcePageSectionId = s.Id,
+                        // keep provenance if present; otherwise leave null
+                        SourcePageSectionId = s.SourcePageSectionId,
+
+                        SectionTypeId = s.SectionTypeId,
+                        SortOrder = s.SortOrder,
+                        SettingsJson = string.IsNullOrWhiteSpace(s.SettingsJson) ? "{}" : s.SettingsJson.Trim(),
+
+                        IsActive = true,
+                        IsDeleted = false,
+                        CreatedAt = now,
+                        CreatedBy = actorUserId
+                    });
+                }
+
+                _db.PageRevisions.Add(publishedRevision);
+                await _db.SaveChangesAsync(ct);
+
+                // 2) Update canonical publish pointer on Page
+                page.PublishedRevisionId = publishedRevision.Id;
+                page.PublishedAt = now;
+                page.PageStatusId = PageStatusIds.Published;
+                page.UpdatedAt = now;
+                page.UpdatedBy = actorUserId;
+
+                await _db.SaveChangesAsync(ct);
+
+                // 3) Create a fresh draft revision cloned from the published snapshot
+                var newDraft = new PageRevision
+                {
+                    TenantId = _tenant.TenantId,
+                    PageId = pageId,
+                    VersionNumber = publishedRevision.VersionNumber, // keep same number for draft lineage (optional)
+                    IsPublishedSnapshot = false,
+
+                    Title = publishedRevision.Title,
+                    Slug = publishedRevision.Slug,
+                    LayoutKey = publishedRevision.LayoutKey ?? string.Empty,
+                    MetaTitle = publishedRevision.MetaTitle ?? string.Empty,
+                    MetaDescription = publishedRevision.MetaDescription ?? string.Empty,
+                    OgImageAssetId = publishedRevision.OgImageAssetId,
+
+                    IsActive = true,
+                    IsDeleted = false,
+                    CreatedAt = now,
+                    CreatedBy = actorUserId
+                };
+
+                foreach (var s in publishedRevision.Sections.OrderBy(x => x.SortOrder).ThenBy(x => x.Id))
+                {
+                    newDraft.Sections.Add(new PageRevisionSection
+                    {
+                        TenantId = _tenant.TenantId,
+                        SourcePageSectionId = s.SourcePageSectionId,
 
                         SectionTypeId = s.SectionTypeId,
                         SortOrder = s.SortOrder,
@@ -120,21 +203,18 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
                     });
                 }
 
-                // 1) Save revision first to get real revision.Id
-                _db.PageRevisions.Add(revision);
+                _db.PageRevisions.Add(newDraft);
                 await _db.SaveChangesAsync(ct);
 
-                // 2) Update canonical publish pointer on Page (now revision.Id is real)
-                page.PublishedRevisionId = revision.Id;
-                page.PublishedAt = revision.PublishedAt;
-                page.PageStatusId = PageStatusIds.Published;
+                page.DraftRevisionId = newDraft.Id;
                 page.UpdatedAt = now;
                 page.UpdatedBy = actorUserId;
 
                 await _db.SaveChangesAsync(ct);
+
                 await tx.CommitAsync(ct);
 
-                return PublishResult.Ok(revision.Id);
+                return PublishResult.Ok(publishedRevision.Id);
             }
             catch
             {
@@ -142,5 +222,6 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
                 throw;
             }
         }
+
     }
 }

@@ -78,12 +78,15 @@ namespace WebsiteBuilder.IRF.Pages
 
             if (IsPreview)
             {
-                var draftSections = await _db.PageSections
+                if (PageEntity.DraftRevisionId == null)
+                    return NotFound();
+
+                var draftSections = await _db.PageRevisionSections
                     .AsNoTracking()
                     .Include(s => s.SectionType)
                     .Where(s =>
                         s.TenantId == _tenant.TenantId &&
-                        s.PageId == PageEntity.Id &&
+                        s.PageRevisionId == PageEntity.DraftRevisionId.Value &&
                         s.IsActive &&
                         !s.IsDeleted)
                     .OrderBy(s => s.SortOrder)
@@ -98,8 +101,10 @@ namespace WebsiteBuilder.IRF.Pages
                     SettingsJson = s.SettingsJson
                 }).ToList();
 
+                ApplyNoCacheHeaders();
                 return Page();
             }
+
 
             if (PageEntity.PublishedRevisionId == null)
                 return NotFound();
