@@ -5,6 +5,7 @@ using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
 using WebsiteBuilder.IRF.DataAccess;
+using WebsiteBuilder.IRF.Infrastructure.Auth;
 using WebsiteBuilder.IRF.Infrastructure.Pages;
 using WebsiteBuilder.IRF.Infrastructure.Sections;
 using WebsiteBuilder.IRF.Infrastructure.Tenancy;
@@ -42,6 +43,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             _sectionValidation = sectionValidation;
             _pageRevisionSectionService = pageRevisionSectionService;
         }
+
         public Page PageEntity { get; set; } = default!;
 
         [BindProperty]
@@ -100,8 +102,6 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             };
         }
 
-
-
         public string PreviewUrl
         {
             get
@@ -112,6 +112,36 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
 
                 return $"/{slug}?preview=true";
             }
+        }
+
+        private Guid GetUserGuid()
+        {
+            // If identity exists later, this will start working automatically.
+            var s = User?.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+
+            return Guid.TryParse(s, out var g) ? g : Guid.Empty;
+        }
+
+        private Guid GetUserIdOrEmpty()
+        {
+            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            return Guid.TryParse(userId, out var g) ? g : Guid.Empty;
+        }
+
+        private bool CanSeeAllTenantPages()
+        {
+            return User.IsInRole(AppRoles.SuperAdmin) || User.IsInRole(AppRoles.Admin);
+        }
+
+        private IQueryable<Page> PagesForCurrentUser()
+        {
+            var q = _db.Pages.Where(p => p.TenantId == _tenant.TenantId && !p.IsDeleted);
+
+            if (CanSeeAllTenantPages())
+                return q;
+
+            var userId = GetUserIdOrEmpty();
+            return q.Where(p => p.OwnerUserId == userId);
         }
 
         // =======================
@@ -149,14 +179,6 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             return Page();
         }
 
-        private Guid GetUserGuid()
-        {
-            // If identity exists later, this will start working automatically.
-            var s = User?.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
-
-            return Guid.TryParse(s, out var g) ? g : Guid.Empty;
-        }
-
         // =======================
         // PAGE SAVE (POST)
         // =======================
@@ -181,8 +203,8 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                 return Page();
             }
 
-            var page = await _db.Pages
-                .FirstOrDefaultAsync(p => p.Id == Input.Id && p.TenantId == _tenant.TenantId && !p.IsDeleted, ct);
+            var page = await PagesForCurrentUser()
+                .FirstOrDefaultAsync(p => p.Id == Input.Id, ct);
 
             if (page == null)
                 return NotFound();
@@ -216,9 +238,9 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                 return NotFound("Tenant not resolved.");
 
             // Guard: must have a draft revision with sections
-            var draftRevisionId = await _db.Pages
+            var draftRevisionId = await PagesForCurrentUser()
                 .AsNoTracking()
-                .Where(p => p.TenantId == _tenant.TenantId && p.Id == id && !p.IsDeleted)
+                .Where(p => p.Id == id)
                 .Select(p => p.DraftRevisionId)
                 .FirstOrDefaultAsync(ct);
 
@@ -278,11 +300,8 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             if (!_tenant.IsResolved)
                 return NotFound("Tenant not resolved.");
 
-            var page = await _db.Pages
-                .FirstOrDefaultAsync(p =>
-                    p.Id == id &&
-                    p.TenantId == _tenant.TenantId &&
-                    !p.IsDeleted, ct);
+            var page = await PagesForCurrentUser()
+                .FirstOrDefaultAsync(p => p.Id == id, ct);
 
             if (page == null)
                 return NotFound();
@@ -311,11 +330,8 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             if (!_tenant.IsResolved)
                 return NotFound("Tenant not resolved.");
 
-            var page = await _db.Pages
-                .FirstOrDefaultAsync(p =>
-                    p.Id == id &&
-                    p.TenantId == _tenant.TenantId &&
-                    !p.IsDeleted, ct);
+            var page = await PagesForCurrentUser()
+                .FirstOrDefaultAsync(p => p.Id == id, ct);
 
             if (page == null)
                 return NotFound();
@@ -345,11 +361,8 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             if (!_tenant.IsResolved)
                 return NotFound("Tenant not resolved.");
 
-            var page = await _db.Pages
-                .FirstOrDefaultAsync(p =>
-                    p.Id == id &&
-                    p.TenantId == _tenant.TenantId &&
-                    !p.IsDeleted, ct);
+            var page = await PagesForCurrentUser()
+                .FirstOrDefaultAsync(p => p.Id == id, ct);
 
             if (page == null)
                 return NotFound();
@@ -378,7 +391,6 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             return RedirectToPage(new { id });
         }
 
-
         // =======================
         // SECTIONS CRUD (DRAFT REVISION)
         // =======================
@@ -390,8 +402,8 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             if (id <= 0 || sectionTypeId <= 0)
                 return RedirectToPage(new { id });
 
-            var page = await _db.Pages
-                .FirstOrDefaultAsync(p => p.Id == id && p.TenantId == _tenant.TenantId && !p.IsDeleted, ct);
+            var page = await PagesForCurrentUser()
+                .FirstOrDefaultAsync(p => p.Id == id, ct);
 
             if (page == null)
                 return NotFound();
@@ -445,7 +457,6 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                             .Where(s =>
                                 s.TenantId == _tenant.TenantId &&
                                 s.PageRevisionId == draftRevisionId &&
-                                // s.IsActive &&
                                 !s.IsDeleted)
                             .Select(s => (int?)s.SortOrder)
                             .MaxAsync(ct) ?? 0;
@@ -492,7 +503,6 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             });
         }
 
-
         private static bool IsUniqueSortOrderViolation(DbUpdateException ex)
         {
             // SQL Server unique index violation = 2601 or 2627
@@ -507,7 +517,6 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             public int PageId { get; set; }
             public int[] OrderedSectionIds { get; set; } = Array.Empty<int>();
         }
-
 
         public async Task<IActionResult> OnPostReorderSectionsAsync(
             [FromBody] ReorderSectionsRequest request,
@@ -527,12 +536,9 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             if (orderedIds.Length == 0)
                 return new JsonResult(new { ok = false, message = "No sections provided." });
 
-            var page = await _db.Pages
+            var page = await PagesForCurrentUser()
                 .AsNoTracking()
-                .FirstOrDefaultAsync(p =>
-                    p.Id == request.PageId &&
-                    p.TenantId == _tenant.TenantId &&
-                    !p.IsDeleted, ct);
+                .FirstOrDefaultAsync(p => p.Id == request.PageId, ct);
 
             if (page == null)
                 return new JsonResult(new { ok = false, message = "Page not found." }) { StatusCode = 404 };
@@ -561,7 +567,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                             s.TenantId == _tenant.TenantId &&
                             s.PageRevisionId == draftRevisionId &&
                             !s.IsDeleted &&
-                            s.IsActive) // keep this if your unique index is filtered by IsActive=1
+                            s.IsActive)
                         .OrderBy(s => s.SortOrder)
                         .ThenBy(s => s.Id)
                         .ToListAsync(ct);
@@ -633,7 +639,11 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             });
         }
 
-
+        public sealed class SaveSectionRequest
+        {
+            public int SectionId { get; set; }
+            public string? SettingsJson { get; set; }
+        }
 
         public async Task<IActionResult> OnPostSaveSectionAsync(
             [FromBody] SaveSectionRequest request,
@@ -655,13 +665,10 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             if (section == null)
                 return new JsonResult(new { ok = false, message = "Section not found." });
 
-            // Ensure this section belongs to a current draft revision of a page in this tenant
-            var isCurrentDraft = await _db.Pages
+            // Ensure this section belongs to a current draft revision of a page visible to this user
+            var isCurrentDraft = await PagesForCurrentUser()
                 .AsNoTracking()
-                .AnyAsync(p =>
-                    p.TenantId == _tenant.TenantId &&
-                    p.DraftRevisionId == section.PageRevisionId &&
-                    !p.IsDeleted, ct);
+                .AnyAsync(p => p.DraftRevisionId == section.PageRevisionId, ct);
 
             if (!isCurrentDraft)
                 return new JsonResult(new { ok = false, message = "Section is not part of the current draft." });
@@ -717,12 +724,9 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
         // =======================
         private async Task<bool> EnsurePageEntityLoadedAsync(int pageId, CancellationToken ct)
         {
-            var page = await _db.Pages
+            var page = await PagesForCurrentUser()
                 .AsNoTracking()
-                .FirstOrDefaultAsync(p =>
-                    p.TenantId == _tenant.TenantId &&
-                    p.Id == pageId &&
-                    !p.IsDeleted, ct);
+                .FirstOrDefaultAsync(p => p.Id == pageId, ct);
 
             if (page == null)
                 return false;
@@ -740,9 +744,9 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
 
         private async Task LoadSectionCountAsync(int pageId, CancellationToken ct)
         {
-            var draftRevisionId = await _db.Pages
+            var draftRevisionId = await PagesForCurrentUser()
                 .AsNoTracking()
-                .Where(p => p.TenantId == _tenant.TenantId && p.Id == pageId && !p.IsDeleted)
+                .Where(p => p.Id == pageId)
                 .Select(p => p.DraftRevisionId)
                 .SingleOrDefaultAsync(ct);
 
@@ -763,9 +767,9 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
 
         private async Task LoadSectionsAsync(int pageId, CancellationToken ct)
         {
-            var draftRevisionId = await _db.Pages
+            var draftRevisionId = await PagesForCurrentUser()
                 .AsNoTracking()
-                .Where(p => p.TenantId == _tenant.TenantId && p.Id == pageId && !p.IsDeleted)
+                .Where(p => p.Id == pageId)
                 .Select(p => p.DraftRevisionId)
                 .SingleOrDefaultAsync(ct);
 
@@ -848,12 +852,6 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             return value.ToLowerInvariant();
         }
 
-        private Guid GetUserIdOrEmpty()
-        {
-            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            return Guid.TryParse(userId, out var g) ? g : Guid.Empty;
-        }
-
         private async Task<int> EnsureDraftRevisionExistsAsync(Page page, CancellationToken ct)
         {
             var userGuid = GetUserGuid();
@@ -868,8 +866,8 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                 await using var tx = await _db.Database.BeginTransactionAsync(
                     System.Data.IsolationLevel.Serializable, ct);
 
-                var fresh = await _db.Pages
-                    .FirstOrDefaultAsync(p => p.Id == page.Id && p.TenantId == _tenant.TenantId && !p.IsDeleted, ct);
+                var fresh = await PagesForCurrentUser()
+                    .FirstOrDefaultAsync(p => p.Id == page.Id, ct);
 
                 if (fresh == null)
                     throw new InvalidOperationException("Page not found.");
@@ -906,14 +904,6 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             });
         }
 
-
-
-        public sealed class SaveSectionRequest
-        {
-            public int SectionId { get; set; }
-            public string? SettingsJson { get; set; }
-        }
-
         public sealed class SectionIdRequest
         {
             public int SectionId { get; set; }
@@ -938,13 +928,10 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             if (section == null)
                 return new JsonResult(new { ok = false, message = "Section not found." });
 
-            // Find the owning page of this draft revision
-            var page = await _db.Pages
+            // Find the owning page of this draft revision (must be visible to current user)
+            var page = await PagesForCurrentUser()
                 .AsNoTracking()
-                .FirstOrDefaultAsync(p =>
-                    p.TenantId == _tenant.TenantId &&
-                    !p.IsDeleted &&
-                    p.DraftRevisionId == section.PageRevisionId, ct);
+                .FirstOrDefaultAsync(p => p.DraftRevisionId == section.PageRevisionId, ct);
 
             if (page == null)
                 return new JsonResult(new { ok = false, message = "Section is not part of the current draft." });
@@ -1005,13 +992,10 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
 
             var draftRevisionId = revisionId[0];
 
-            // Validate the draft revision belongs to current draft page and is Draft status
-            var page = await _db.Pages
+            // Validate the draft revision belongs to current draft page visible to this user and is Draft status
+            var page = await PagesForCurrentUser()
                 .AsNoTracking()
-                .FirstOrDefaultAsync(p =>
-                    p.TenantId == _tenant.TenantId &&
-                    !p.IsDeleted &&
-                    p.DraftRevisionId == draftRevisionId, ct);
+                .FirstOrDefaultAsync(p => p.DraftRevisionId == draftRevisionId, ct);
 
             if (page == null)
                 return new JsonResult(new { ok = false, message = "Draft not found." }) { StatusCode = 409 };
@@ -1050,13 +1034,11 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             return new JsonResult(new { ok = true, restored = restoredCount });
         }
 
-
-
         private async Task LoadTrashCountAsync(int pageId, CancellationToken ct)
         {
-            var draftRevisionId = await _db.Pages
+            var draftRevisionId = await PagesForCurrentUser()
                 .AsNoTracking()
-                .Where(p => p.TenantId == _tenant.TenantId && p.Id == pageId && !p.IsDeleted)
+                .Where(p => p.Id == pageId)
                 .Select(p => p.DraftRevisionId)
                 .SingleOrDefaultAsync(ct);
 
@@ -1076,9 +1058,9 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
 
         private async Task LoadTrashedSectionsAsync(int pageId, CancellationToken ct)
         {
-            var draftRevisionId = await _db.Pages
+            var draftRevisionId = await PagesForCurrentUser()
                 .AsNoTracking()
-                .Where(p => p.TenantId == _tenant.TenantId && p.Id == pageId && !p.IsDeleted)
+                .Where(p => p.Id == pageId)
                 .Select(p => p.DraftRevisionId)
                 .SingleOrDefaultAsync(ct);
 
@@ -1118,6 +1100,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                 GetSectionTitle(s),
                 GetEditorPartialPath(s));
         }
+
         public async Task<IActionResult> OnGetRevisionSectionRowAsync(int sectionId, CancellationToken ct = default)
         {
             if (!_tenant.IsResolved)
@@ -1137,12 +1120,9 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             if (section == null)
                 return Content("Section not found.", "text/plain");
 
-            var pageInfo = await _db.Pages
+            var pageInfo = await PagesForCurrentUser()
                 .AsNoTracking()
-                .Where(p =>
-                    p.TenantId == _tenant.TenantId &&
-                    !p.IsDeleted &&
-                    p.DraftRevisionId == section.PageRevisionId)
+                .Where(p => p.DraftRevisionId == section.PageRevisionId)
                 .Select(p => new { p.Id, p.PageStatusId })
                 .FirstOrDefaultAsync(ct);
 
@@ -1181,19 +1161,15 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             };
         }
 
-
-
-
         private bool IsDraftEditable(Page page)
         {
             // Draft only. Published/Archived should be changed via Unpublish/Publish actions.
             return page.PageStatusId == PageStatusIds.Draft;
         }
-
     }
+
     public sealed class SectionIdsRequest
     {
         public int[] SectionIds { get; set; } = Array.Empty<int>();
     }
-
 }
