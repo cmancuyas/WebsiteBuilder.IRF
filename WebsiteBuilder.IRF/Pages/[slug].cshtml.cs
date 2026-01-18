@@ -59,6 +59,13 @@ namespace WebsiteBuilder.IRF.Pages
             if (string.IsNullOrWhiteSpace(normalizedSlug))
                 normalizedSlug = "home";
 
+            // Canonicalize home: redirect /home -> /
+            if (normalizedSlug == "home" &&
+                HttpContext.Request.Path.Equals("/home", StringComparison.OrdinalIgnoreCase))
+            {
+                return Redirect("/");
+            }
+
             var pageQuery = _db.Pages
                 .AsNoTracking()
                 .Where(p =>

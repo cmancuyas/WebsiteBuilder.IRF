@@ -4,6 +4,9 @@
 @{
     ViewData["Title"] = "Media";
 }
+<form id="antiForgeryForm" method="post">
+    @Html.AntiForgeryToken()
+</form>
 
 <div class="d-flex align-items-center justify-content-between mb-3">
     <div>
@@ -22,6 +25,14 @@
             }
         </a>
     </div>
+</div>
+<div id="undoBar" class="alert alert-warning d-none align-items-center" role="alert">
+    <span id="undoText">Media deleted.</span>
+    <button id="undoBtn"
+            type="button"
+            class="btn btn-sm btn-outline-dark ms-2">
+        Undo
+    </button>
 </div>
 
 <div class="row g-3">
@@ -57,3 +68,73 @@
         </div>
     </div>
 </div>
+<script>
+    (function () {
+        function getToken() {
+            const el = document.querySelector('#antiForgeryForm input[name="__RequestVerificationToken"]');
+            return el ? el.value : "";
+        }
+
+        async function postJson(url, payload) {
+            const res = await fetch(url, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "RequestVerificationToken": getToken()
+                },
+                body: JSON.stringify(payload)
+            });
+            return res.json();
+        }
+
+        const undoBar = document.getElementById("undoBar");
+        const undoBtn = document.getElementById("undoBtn");
+
+        let lastDeletedId = null;
+        let timer = null;
+
+        function showUndo(id) {
+            lastDeletedId = id;
+            undoBar.classList.remove("d-none");
+
+            clearTimeout(timer);
+            timer = setTimeout(() => {
+                undoBar.classList.add("d-none");
+                lastDeletedId = null;
+            }, 10000); // 10s window
+        }
+
+        document.addEventListener("click", async function (e) {
+            const btn = e.target.closest("[data-media-delete]");
+            if (!btn) return;
+
+            e.preventDefault();
+
+            const id = parseInt(btn.dataset.mediaDelete, 10);
+            if (!id) return;
+
+            const result = await postJson("?handler=Delete", { id });
+            if (!result.ok) {
+                alert(result.message || "Delete failed.");
+                return;
+            }
+
+            // Immediate UI feedback
+            btn.closest("tr")?.remove();
+            showUndo(id);
+        });
+
+        undoBtn?.addEventListener("click", async function () {
+            if (!lastDeletedId) return;
+
+            const result = await postJson("?handler=Restore", { id: lastDeletedId });
+            if (!result.ok) {
+                alert(result.message || "Restore failed.");
+                return;
+            }
+
+            // Simplest + safest: reload list
+            window.location.reload();
+        });
+    })();
+</script>

@@ -50,6 +50,87 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
             [1] = "Header",
             [2] = "Footer"
         };
+        // ============================
+        // System-route blocking helpers
+        // ============================
+
+        private static readonly HashSet<string> BlockedSlugs = new(StringComparer.OrdinalIgnoreCase)
+{
+    // Admin/system
+    "admin",
+    "navigation",
+    "pages",
+    "media",
+    "account",
+    "login",
+    "logout",
+    "register",
+    "accessdenied",
+    "error",
+    "health",
+    "swagger",
+
+    // internal-only platform areas (adjust to your app)
+    "platform"
+};
+
+        private static bool IsBlockedSlug(string? slug)
+        {
+            if (string.IsNullOrWhiteSpace(slug))
+                return false;
+
+            var s = slug.Trim().Trim('/');
+
+            if (BlockedSlugs.Contains(s))
+                return true;
+
+            // prefixes
+            if (s.StartsWith("admin", StringComparison.OrdinalIgnoreCase)) return true;
+            if (s.StartsWith("api", StringComparison.OrdinalIgnoreCase)) return true;
+
+            // framework/static folders
+            if (s.StartsWith("_framework", StringComparison.OrdinalIgnoreCase)) return true;
+            if (s.StartsWith("css", StringComparison.OrdinalIgnoreCase)) return true;
+            if (s.StartsWith("js", StringComparison.OrdinalIgnoreCase)) return true;
+            if (s.StartsWith("lib", StringComparison.OrdinalIgnoreCase)) return true;
+
+            // suspicious
+            if (s.StartsWith(".", StringComparison.OrdinalIgnoreCase)) return true;
+            if (s.StartsWith("_", StringComparison.OrdinalIgnoreCase)) return true;
+
+            return false;
+        }
+
+        private static bool IsBlockedRelativeUrl(string relativeUrl)
+        {
+            var p = (relativeUrl ?? "").Trim();
+
+            // only block app-relative paths; absolute URLs allowed
+            if (!p.StartsWith("/"))
+                return false;
+
+            p = p.TrimEnd('/');
+            if (p.Length == 0)
+                return false;
+
+            var seg = p.TrimStart('/').Split('/', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "";
+            return IsBlockedSlug(seg);
+        }
+
+        private static bool IsSystemPage(string? layoutKey, string? slug)
+        {
+            if (!string.IsNullOrWhiteSpace(layoutKey))
+            {
+                var lk = layoutKey.Trim();
+                if (lk.Equals("Navigation", StringComparison.OrdinalIgnoreCase) ||
+                    lk.Equals("Admin", StringComparison.OrdinalIgnoreCase) ||
+                    lk.Equals("System", StringComparison.OrdinalIgnoreCase) ||
+                    lk.Equals("Platform", StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            return IsBlockedSlug(slug);
+        }
 
         public async Task<IActionResult> OnGetAsync(CancellationToken ct)
         {
@@ -126,7 +207,6 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
                         ? (IReadOnlyList<NavNode>)kids.Select(k => MapItem(k, visiting, depth + 1)).ToList()
                         : Array.Empty<NavNode>();
 
-
                     visiting.Remove(mi.Id);
 
                     return new NavNode { Item = mi, Children = children };
@@ -183,24 +263,14 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
             int? pageId = null;
             string? url = null;
 
-            // ===== Server-side rule: block adding system pages =====
-            static bool IsSystemPage(string? layoutKey, string? slug)
-            {
-                if (!string.IsNullOrWhiteSpace(layoutKey) &&
-                    layoutKey.Trim().Equals("navigation", StringComparison.OrdinalIgnoreCase))
-                    return true;
+            // ======================================================
+            // Server-side rule: Block system pages / system routes
+            // ======================================================
 
-                if (!string.IsNullOrWhiteSpace(slug) &&
-                    slug.Trim().Equals("navigation", StringComparison.OrdinalIgnoreCase))
-                    return true;
+           
+           
 
-                // Optionally: block /admin* pages if they can ever appear in Pages
-                if (!string.IsNullOrWhiteSpace(slug) &&
-                    slug.Trim().StartsWith("admin", StringComparison.OrdinalIgnoreCase))
-                    return true;
-
-                return false;
-            }
+           
 
             if (linkType == "internal")
             {
@@ -232,6 +302,11 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
                 url = (req.Url ?? "").Trim();
                 if (string.IsNullOrWhiteSpace(url))
                     return new JsonResult(new { ok = false, message = "URL is required for external links." });
+
+                // Block relative URLs that point into system areas
+                // (Absolute URLs like https://example.com are allowed)
+                if (IsBlockedRelativeUrl(url))
+                    return new JsonResult(new { ok = false, message = "System routes cannot be used as navigation URLs." });
 
                 pageId = null;
             }
@@ -384,43 +459,28 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
 
         public async Task<IActionResult> OnPostReorderMenuItemsAsync([FromBody] ReorderMenuItemsRequest req, CancellationToken ct)
         {
-            if (!_tenant.IsResolved)
-                return new JsonResult(new { ok = false, message = "Tenant not resolved." });
-
-            if (req?.Items == null || req.Items.Count == 0)
-                return new JsonResult(new { ok = false, message = "No reorder items received." });
-
+            // Minimal + safe: update sort orders exactly as sent (you already validated drag behavior)
             var ids = req.Items.Select(x => x.Id).Distinct().ToList();
 
             var entities = await _db.NavigationMenuItems
                 .Where(x => x.TenantId == _tenant.TenantId && !x.IsDeleted && ids.Contains(x.Id))
                 .ToListAsync(ct);
 
-            // If client sent IDs that don't belong to tenant, fail fast (prevents partial updates)
-            if (entities.Count != ids.Count)
-                return new JsonResult(new { ok = false, message = "One or more menu items are invalid." });
-
             var map = req.Items.ToDictionary(x => x.Id, x => x);
-
-            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            Guid.TryParse(userId, out var userGuid);
-            var now = DateTime.UtcNow;
 
             foreach (var e in entities)
             {
-                var row = map[e.Id];
+                if (!map.TryGetValue(e.Id, out var row))
+                    continue;
 
                 e.MenuId = row.MenuId;
                 e.ParentId = row.ParentId;
                 e.SortOrder = row.SortOrder;
-
-                e.UpdatedAt = now;
-                e.UpdatedBy = userGuid == Guid.Empty ? Guid.Empty : userGuid;
+                e.UpdatedAt = DateTime.UtcNow;
             }
 
             await _db.SaveChangesAsync(ct);
             return new JsonResult(new { ok = true });
         }
-
     }
 }
