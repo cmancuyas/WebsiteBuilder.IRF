@@ -480,5 +480,72 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
 
             return new JsonResult(new { ok = true });
         }
+        // =======================
+        // Reorder Menu Item
+        // =======================
+        public sealed class ReorderMenuItemRequest
+        {
+            public int Id { get; set; }
+            public int MenuId { get; set; }
+            public int? ParentId { get; set; }
+            public int? AfterId { get; set; }
+        }
+
+        public async Task<IActionResult> OnPostReorderMenuItemAsync(
+            [FromBody] ReorderMenuItemRequest req,
+            CancellationToken ct = default)
+        {
+            if (!_tenant.IsResolved)
+                return new JsonResult(new { ok = false, message = "Tenant not resolved." });
+
+            var item = await _db.NavigationMenuItems
+                .FirstOrDefaultAsync(x =>
+                    x.Id == req.Id &&
+                    x.TenantId == _tenant.TenantId &&
+                    !x.IsDeleted, ct);
+
+            if (item == null)
+                return new JsonResult(new { ok = false, message = "Item not found." });
+
+            // Guardrails
+            if (item.MenuId != req.MenuId || item.ParentId != req.ParentId)
+                return new JsonResult(new { ok = false, message = "Invalid reorder scope." });
+
+            var siblings = await _db.NavigationMenuItems
+                .Where(x =>
+                    x.TenantId == _tenant.TenantId &&
+                    !x.IsDeleted &&
+                    x.MenuId == req.MenuId &&
+                    x.ParentId == req.ParentId)
+                .OrderBy(x => x.SortOrder)
+                .ToListAsync(ct);
+
+            // Remove moved item
+            siblings.RemoveAll(x => x.Id == item.Id);
+
+            // Insert at new position
+            if (req.AfterId.HasValue)
+            {
+                var index = siblings.FindIndex(x => x.Id == req.AfterId.Value);
+                siblings.Insert(index + 1, item);
+            }
+            else
+            {
+                siblings.Insert(0, item);
+            }
+
+            // Normalize sort order
+            var order = 1;
+            foreach (var s in siblings)
+            {
+                s.SortOrder = order++;
+            }
+
+            await _db.SaveChangesAsync(ct);
+            _nav.Invalidate();
+
+            return new JsonResult(new { ok = true });
+        }
+
     }
 }

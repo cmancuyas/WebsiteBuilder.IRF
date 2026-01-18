@@ -115,6 +115,7 @@
                                     <table class="table table-sm mb-0" id="menuItemsTable">
                                         <thead class="table-light">
                                             <tr>
+                                                <th style="width: 36px;"></th>
                                                 <th style="width: 90px;">Menu</th>
                                                 <th style="width: 80px;">Parent</th>
                                                 <th style="width: 70px;">Sort</th>
@@ -135,6 +136,7 @@
                                                     data-pageid="@(mi.PageId?.ToString() ?? "")"
                                                     data-url="@mi.Url"
                                                     data-newtab="@(mi.OpenInNewTab ? "1" : "0")">
+                                                    <td class="text-muted drag-handle" style="cursor: grab;">☰</td>
                                                     <td>@menuName</td>
                                                     <td>@(mi.ParentId?.ToString() ?? "-")</td>
                                                     <td>@mi.SortOrder</td>
@@ -488,5 +490,47 @@
 
             setLinkTypeUI();
         })();
+
+        (function () {
+            const tableBody = document.querySelector("#menuItemsTable tbody");
+            if (!tableBody) return;
+
+            new Sortable(tableBody, {
+                handle: ".drag-handle",
+                animation: 150,
+                ghostClass: "bg-light",
+                onEnd: function (evt) {
+                    const row = evt.item;
+                    const prev = row.previousElementSibling;
+
+                    const moved = {
+                        id: parseInt(row.dataset.id),
+                        menuId: parseInt(row.dataset.menuid),
+                        parentId: row.dataset.parentid ? parseInt(row.dataset.parentid) : null,
+                        afterId: prev ? parseInt(prev.dataset.id) : null
+                    };
+
+                    saveReorder(moved);
+                }
+            });
+
+            async function saveReorder(payload) {
+                const res = await fetch("?handler=ReorderMenuItem", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "RequestVerificationToken": document.querySelector('input[name="__RequestVerificationToken"]').value
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                const result = await res.json();
+                if (!result.ok) {
+                    alert(result.message || "Reorder failed.");
+                    window.location.reload();
+                }
+            }
+        })();
+
     </script>
 }
