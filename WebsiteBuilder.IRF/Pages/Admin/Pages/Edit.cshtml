@@ -814,8 +814,8 @@
                 if (!id) return;
 
                 try {
-                    // 1) flip IsDeleted=false
-                    await postJson("?handler=RestoreRevisionSection", { sectionId: id });
+                    // 1) flip IsDeleted=false (server handler is plural)
+                    await postJson("?handler=RestoreRevisionSections", { sectionIds: [id] });
 
                     // 2) remove from trash UI
                     const trashCard = document.getElementById(`trash-section-${id}`);
