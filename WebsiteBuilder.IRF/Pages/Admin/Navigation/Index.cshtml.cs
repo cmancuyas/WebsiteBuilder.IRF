@@ -9,106 +9,63 @@ using WebsiteBuilder.Models.Constants;
 
 namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
 {
-    [ValidateAntiForgeryToken]
     public class IndexModel : PageModel
     {
         private readonly DataContext _db;
         private readonly ITenantContext _tenant;
-        private readonly ITenantNavigationService _nav;
 
-        public IndexModel(DataContext db, ITenantContext tenant, ITenantNavigationService nav)
+        public IndexModel(DataContext db, ITenantContext tenant)
         {
             _db = db;
             _tenant = tenant;
-            _nav = nav;
         }
 
-        // -----------------------------
-        // TAB A: Pages-based navigation
-        // -----------------------------
-        public sealed class NavPageRowVm
-        {
-            public int Id { get; set; }
-            public string Title { get; set; } = "";
-            public string Slug { get; set; } = "";
-            public int PageStatusId { get; set; }
-            public bool ShowInNavigation { get; set; }
-            public int NavigationOrder { get; set; }
-        }
+        public sealed record PublishedPageVm(int Id, string Title, string? Slug);
 
-        public IReadOnlyList<NavPageRowVm> Pages { get; private set; } = Array.Empty<NavPageRowVm>();
+        public sealed record MenuItemVm(
+            int Id,
+            int MenuId,
+            int? ParentId,
+            int SortOrder,
+            string Label,
+            int? PageId,
+            string? Url,
+            bool OpenInNewTab
+        );
 
-        // -----------------------------------------
-        // TAB B: NavigationMenuItems (Step 1 + Step 2)
-        // -----------------------------------------
         public sealed class NavNode
         {
-            public required NavigationMenuItem Item { get; init; }
-            public List<NavNode> Children { get; } = new();
+            public required MenuItemVm Item { get; init; }
+            public IReadOnlyList<NavNode> Children { get; init; } = Array.Empty<NavNode>();
         }
-        public IReadOnlyList<NavigationMenuItem> MenuItemsFlat { get; private set; } = Array.Empty<NavigationMenuItem>();
-        public IReadOnlyDictionary<int, IReadOnlyList<NavNode>> MenuTreesByMenuId { get; private set; }
+
+        public List<PublishedPageVm> PublishedPages { get; private set; } = new();
+        public List<MenuItemVm> MenuItemsFlat { get; private set; } = new();
+
+        public IReadOnlyDictionary<int, IReadOnlyList<NavNode>> TreesByMenu { get; private set; }
             = new Dictionary<int, IReadOnlyList<NavNode>>();
 
-        // Published pages for "Internal page" dropdown
-        public sealed class PublishedPageOption
-        {
-            public int Id { get; set; }
-            public string Title { get; set; } = "";
-            public string Slug { get; set; } = "";
-        }
-
-        public IReadOnlyList<PublishedPageOption> PublishedPages { get; private set; } = Array.Empty<PublishedPageOption>();
-
-        public static readonly IReadOnlyDictionary<int, string> MenuNames = new Dictionary<int, string>
+        private static readonly IReadOnlyDictionary<int, string> MenuNames = new Dictionary<int, string>
         {
             [1] = "Header",
             [2] = "Footer"
         };
-        public IReadOnlyDictionary<int, string> MenuNamesMap => MenuNames;
-        public async Task<IActionResult> OnGetAsync(CancellationToken ct = default)
+
+        public async Task<IActionResult> OnGetAsync(CancellationToken ct)
         {
-            if (!_tenant.IsResolved)
-                return NotFound("Tenant not resolved.");
-
-            // A) Pages tab (unchanged)
-            Pages = await _db.Pages
-                .AsNoTracking()
-                .Where(p =>
-                    p.TenantId == _tenant.TenantId &&
-                    !p.IsDeleted &&
-                    p.IsActive)
-                .OrderByDescending(p => p.ShowInNavigation)
-                .ThenBy(p => p.NavigationOrder == 0 ? int.MaxValue : p.NavigationOrder)
-                .ThenBy(p => p.Title)
-                .Select(p => new NavPageRowVm
-                {
-                    Id = p.Id,
-                    Title = p.Title ?? "",
-                    Slug = p.Slug ?? "",
-                    PageStatusId = p.PageStatusId,
-                    ShowInNavigation = p.ShowInNavigation,
-                    NavigationOrder = p.NavigationOrder
-                })
-                .ToListAsync(ct);
-
-            // Published pages for internal linking (Published only)
+            // Published pages for internal link dropdown
             PublishedPages = await _db.Pages
                 .AsNoTracking()
                 .Where(p =>
                     p.TenantId == _tenant.TenantId &&
-                    p.IsActive && !p.IsDeleted &&
+                    !p.IsDeleted &&
+                    p.IsActive &&
                     p.PageStatusId == PageStatusIds.Published)
                 .OrderBy(p => p.Title)
-                .Select(p => new PublishedPageOption
-                {
-                    Id = p.Id,
-                    Title = p.Title ?? "",
-                    Slug = p.Slug ?? ""
-                })
+                .Select(p => new PublishedPageVm(p.Id, p.Title, p.Slug))
                 .ToListAsync(ct);
 
-            // Menu items (draft working set)
+            // Menu items (flat, ordered)
             MenuItemsFlat = await _db.NavigationMenuItems
                 .AsNoTracking()
                 .Where(x => x.TenantId == _tenant.TenantId && !x.IsDeleted)
@@ -116,262 +73,199 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
                 .ThenBy(x => x.ParentId)
                 .ThenBy(x => x.SortOrder)
                 .ThenBy(x => x.Id)
+                .Select(x => new MenuItemVm(
+                    x.Id,
+                    x.MenuId,
+                    x.ParentId,
+                    x.SortOrder,
+                    x.Label,
+                    x.PageId,
+                    x.Url,
+                    x.OpenInNewTab
+                ))
                 .ToListAsync(ct);
 
-            MenuTreesByMenuId = BuildTreesByMenu(MenuItemsFlat);
+            TreesByMenu = BuildTrees(MenuItemsFlat);
 
             return Page();
         }
 
-        private static IReadOnlyDictionary<int, IReadOnlyList<NavNode>> BuildTreesByMenu(IReadOnlyList<NavigationMenuItem> flat)
+        private static IReadOnlyDictionary<int, IReadOnlyList<NavNode>> BuildTrees(IReadOnlyList<MenuItemVm> items)
         {
+            const int RootKey = 0;
+
+            var byMenu = items
+                .GroupBy(x => x.MenuId)
+                .ToDictionary(g => g.Key, g => g.ToList());
+
             var result = new Dictionary<int, IReadOnlyList<NavNode>>();
 
-            foreach (var grp in flat.GroupBy(x => x.MenuId).OrderBy(g => g.Key))
+            foreach (var kvp in byMenu)
             {
-                var items = grp.ToList();
+                var menuId = kvp.Key;
+                var menuItems = kvp.Value;
 
-                var nodesById = items.ToDictionary(
-                    x => x.Id,
-                    x => new NavNode { Item = x });
+                // Non-nullable dictionary key: ParentId ?? RootKey
+                var byParent = menuItems
+                    .GroupBy(x => x.ParentId ?? RootKey)
+                    .ToDictionary(
+                        g => g.Key,
+                        g => g.OrderBy(x => x.SortOrder).ThenBy(x => x.Id).ToList()
+                    );
 
-                var roots = new List<NavNode>();
-
-                foreach (var item in items)
+                NavNode MapItem(MenuItemVm mi, HashSet<int> visiting, int depth)
                 {
-                    var node = nodesById[item.Id];
+                    // depth guard (prevents runaway if bad data)
+                    if (depth > 25)
+                        return new NavNode { Item = mi, Children = Array.Empty<NavNode>() };
 
-                    if (item.ParentId.HasValue && nodesById.TryGetValue(item.ParentId.Value, out var parent))
-                        parent.Children.Add(node);
-                    else
-                        roots.Add(node);
+                    if (!visiting.Add(mi.Id))
+                        return new NavNode { Item = mi, Children = Array.Empty<NavNode>() };
+
+                    IReadOnlyList<NavNode> children = byParent.TryGetValue(mi.Id, out var kids)
+                        ? (IReadOnlyList<NavNode>)kids.Select(k => MapItem(k, visiting, depth + 1)).ToList()
+                        : Array.Empty<NavNode>();
+
+
+                    visiting.Remove(mi.Id);
+
+                    return new NavNode { Item = mi, Children = children };
                 }
 
-                result[grp.Key] = roots;
+                IReadOnlyList<NavNode> roots = byParent.TryGetValue(RootKey, out var rootRows)
+                    ? (IReadOnlyList<NavNode>)rootRows.Select(r => MapItem(r, new HashSet<int>(), 0)).ToList()
+                    : Array.Empty<NavNode>();
+
+                result[menuId] = roots;
             }
+
+            // Ensure menu buckets exist even if empty
+            if (!result.ContainsKey(1)) result[1] = Array.Empty<NavNode>();
+            if (!result.ContainsKey(2)) result[2] = Array.Empty<NavNode>();
 
             return result;
         }
 
-        // -----------------------------
-        // Existing Save handler (unchanged)
-        // -----------------------------
-        public sealed class UpdateNavigationRequest
-        {
-            public List<int> OrderedVisiblePageIds { get; set; } = new();
-            public Dictionary<int, bool> Visibility { get; set; } = new();
-        }
-
-        public async Task<IActionResult> OnPostUpdateNavigationAsync(
-            [FromBody] UpdateNavigationRequest request,
-            CancellationToken ct = default)
-        {
-            if (!_tenant.IsResolved)
-                return new JsonResult(new { ok = false, message = "Tenant not resolved." });
-
-            if (request is null)
-                return new JsonResult(new { ok = false, message = "Invalid request." });
-
-            var orderedVisible = request.OrderedVisiblePageIds
-                .Where(id => id > 0)
-                .Distinct()
-                .ToList();
-
-            var allIds = request.Visibility.Keys
-                .Where(id => id > 0)
-                .Distinct()
-                .ToList();
-
-            if (allIds.Count == 0)
-                return new JsonResult(new { ok = false, message = "No pages provided." });
-
-            var pages = await _db.Pages
-                .Where(p =>
-                    p.TenantId == _tenant.TenantId &&
-                    allIds.Contains(p.Id) &&
-                    !p.IsDeleted)
-                .ToListAsync(ct);
-
-            if (pages.Count != allIds.Count)
-                return new JsonResult(new { ok = false, message = "One or more pages are invalid for this tenant." });
-
-            var errors = new List<string>();
-            foreach (var p in pages)
-            {
-                if (request.Visibility.TryGetValue(p.Id, out var show) && show)
-                {
-                    if (p.PageStatusId != PageStatusIds.Published)
-                        errors.Add($"Page '{p.Title}' must be Published before it can be shown in navigation.");
-                }
-            }
-
-            if (errors.Count > 0)
-                return new JsonResult(new { ok = false, message = string.Join(" ", errors) });
-
-            var before = pages.ToDictionary(x => x.Id, x => (x.ShowInNavigation, x.NavigationOrder));
-
-            foreach (var p in pages)
-                p.ShowInNavigation = request.Visibility.TryGetValue(p.Id, out var show) && show;
-
-            var setOrder = new HashSet<int>(orderedVisible);
-
-            var order = 1;
-            foreach (var pageId in orderedVisible)
-            {
-                var page = pages.FirstOrDefault(x => x.Id == pageId);
-                if (page == null) continue;
-
-                if (page.ShowInNavigation)
-                {
-                    page.NavigationOrder = order;
-                    order++;
-                }
-            }
-
-            foreach (var page in pages
-                .Where(p => p.ShowInNavigation && !setOrder.Contains(p.Id))
-                .OrderBy(p => p.Title))
-            {
-                page.NavigationOrder = order;
-                order++;
-            }
-
-            foreach (var page in pages.Where(p => !p.ShowInNavigation))
-                page.NavigationOrder = 0;
-
-            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            Guid.TryParse(userId, out var userGuid);
-            var now = DateTime.UtcNow;
-
-            foreach (var p in pages)
-            {
-                p.UpdatedAt = now;
-                if (userGuid != Guid.Empty)
-                    p.UpdatedBy = userGuid;
-            }
-
-            await _db.SaveChangesAsync(ct);
-
-            var changed = pages.Any(p =>
-            {
-                var b = before[p.Id];
-                return b.ShowInNavigation != p.ShowInNavigation || b.NavigationOrder != p.NavigationOrder;
-            });
-
-            if (changed)
-                _nav.Invalidate();
-
-            return new JsonResult(new { ok = true });
-        }
-
-        // -----------------------------
-        // Step 2: Menu Item CRUD
-        // -----------------------------
+        // =========================
+        // AJAX Handlers (Step 2/3)
+        // =========================
 
         public sealed class UpsertMenuItemRequest
         {
-            public int? Id { get; set; }                // null => create
-            public int MenuId { get; set; }             // 1=Header, 2=Footer
-            public int? ParentId { get; set; }          // optional
-            public string Label { get; set; } = "";
-            public string LinkType { get; set; } = "";  // "internal" or "external"
-            public int? PageId { get; set; }            // internal
-            public string? Url { get; set; }            // external
+            public int? Id { get; set; }
+            public int MenuId { get; set; }
+            public int? ParentId { get; set; }
+            public string? Label { get; set; }
+            public string? LinkType { get; set; } // "internal" | "external"
+            public int? PageId { get; set; }
+            public string? Url { get; set; }
             public bool OpenInNewTab { get; set; }
         }
 
-        public async Task<IActionResult> OnPostUpsertMenuItemAsync(
-            [FromBody] UpsertMenuItemRequest req,
-            CancellationToken ct = default)
+        public async Task<IActionResult> OnPostUpsertMenuItemAsync([FromBody] UpsertMenuItemRequest req, CancellationToken ct)
         {
             if (!_tenant.IsResolved)
                 return new JsonResult(new { ok = false, message = "Tenant not resolved." });
-
-            if (req is null)
-                return new JsonResult(new { ok = false, message = "Invalid request." });
-
-            // Minimal validation
-            req.Label = (req.Label ?? "").Trim();
-            req.LinkType = (req.LinkType ?? "").Trim().ToLowerInvariant();
-            req.Url = (req.Url ?? "").Trim();
 
             if (!MenuNames.ContainsKey(req.MenuId))
                 return new JsonResult(new { ok = false, message = "Invalid menu selected." });
 
-            if (string.IsNullOrWhiteSpace(req.Label))
+            var label = (req.Label ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(label))
                 return new JsonResult(new { ok = false, message = "Label is required." });
+            if (label.Length > 100)
+                return new JsonResult(new { ok = false, message = "Label is too long (max 100)." });
 
-            if (req.Label.Length > 200)
-                return new JsonResult(new { ok = false, message = "Label is too long (max 200)." });
-
-            if (req.LinkType != "internal" && req.LinkType != "external")
+            var linkType = (req.LinkType ?? "").Trim().ToLowerInvariant();
+            if (linkType != "internal" && linkType != "external")
                 return new JsonResult(new { ok = false, message = "Invalid link type." });
 
-            if (req.LinkType == "internal")
+            int? pageId = null;
+            string? url = null;
+
+            // ===== Server-side rule: block adding system pages =====
+            static bool IsSystemPage(string? layoutKey, string? slug)
             {
-                if (req.PageId is null || req.PageId.Value <= 0)
-                    return new JsonResult(new { ok = false, message = "Please select a published page." });
+                if (!string.IsNullOrWhiteSpace(layoutKey) &&
+                    layoutKey.Trim().Equals("navigation", StringComparison.OrdinalIgnoreCase))
+                    return true;
 
-                var pageOk = await _db.Pages
+                if (!string.IsNullOrWhiteSpace(slug) &&
+                    slug.Trim().Equals("navigation", StringComparison.OrdinalIgnoreCase))
+                    return true;
+
+                // Optionally: block /admin* pages if they can ever appear in Pages
+                if (!string.IsNullOrWhiteSpace(slug) &&
+                    slug.Trim().StartsWith("admin", StringComparison.OrdinalIgnoreCase))
+                    return true;
+
+                return false;
+            }
+
+            if (linkType == "internal")
+            {
+                if (!req.PageId.HasValue || req.PageId.Value <= 0)
+                    return new JsonResult(new { ok = false, message = "Published page is required for internal links." });
+
+                var page = await _db.Pages
                     .AsNoTracking()
-                    .AnyAsync(p =>
-                        p.Id == req.PageId.Value &&
+                    .Where(p =>
                         p.TenantId == _tenant.TenantId &&
-                        p.IsActive && !p.IsDeleted &&
-                        p.PageStatusId == PageStatusIds.Published, ct);
+                        p.Id == req.PageId.Value &&
+                        !p.IsDeleted &&
+                        p.IsActive &&
+                        p.PageStatusId == PageStatusIds.Published)
+                    .Select(p => new { p.Id, p.LayoutKey, p.Slug })
+                    .FirstOrDefaultAsync(ct);
 
-                if (!pageOk)
-                    return new JsonResult(new { ok = false, message = "Selected page is not a published page for this tenant." });
+                if (page == null)
+                    return new JsonResult(new { ok = false, message = "Selected page is invalid or not published." });
 
-                // Optional: keep Url empty for internal (we resolve by PageId later)
-                req.Url = "";
+                if (IsSystemPage(page.LayoutKey, page.Slug))
+                    return new JsonResult(new { ok = false, message = "System pages cannot be added to navigation." });
+
+                pageId = page.Id;
+                url = null;
             }
             else
             {
-                if (string.IsNullOrWhiteSpace(req.Url))
-                    return new JsonResult(new { ok = false, message = "External URL is required." });
+                url = (req.Url ?? "").Trim();
+                if (string.IsNullOrWhiteSpace(url))
+                    return new JsonResult(new { ok = false, message = "URL is required for external links." });
 
-                if (req.Url!.Length > 500)
-                    return new JsonResult(new { ok = false, message = "URL is too long (max 500)." });
-
-                req.PageId = null;
+                pageId = null;
             }
 
-            // Parent validation: must belong to same tenant + same menu + not deleted + not self
-            if (req.ParentId.HasValue)
+            // parent must be within same menu
+            int? parentId = req.ParentId;
+            if (parentId.HasValue)
             {
-                if (req.Id.HasValue && req.ParentId.Value == req.Id.Value)
-                    return new JsonResult(new { ok = false, message = "Parent cannot be the item itself." });
-
-                var parentOk = await _db.NavigationMenuItems
-                    .AsNoTracking()
-                    .AnyAsync(x =>
-                        x.Id == req.ParentId.Value &&
-                        x.TenantId == _tenant.TenantId &&
-                        !x.IsDeleted &&
-                        x.MenuId == req.MenuId, ct);
-
-                if (!parentOk)
-                    return new JsonResult(new { ok = false, message = "Invalid parent item for the selected menu." });
-            }
-            if (req.LinkType == "internal" && req.PageId.HasValue)
-            {
-                var duplicate = await _db.NavigationMenuItems
+                var parentExists = await _db.NavigationMenuItems
                     .AsNoTracking()
                     .AnyAsync(x =>
                         x.TenantId == _tenant.TenantId &&
                         !x.IsDeleted &&
                         x.MenuId == req.MenuId &&
-                        x.PageId == req.PageId &&
-                        (!req.Id.HasValue || x.Id != req.Id.Value),
-                        ct);
+                        x.Id == parentId.Value, ct);
 
-                if (duplicate)
-                    return new JsonResult(new
-                    {
-                        ok = false,
-                        message = "This page already exists in the selected menu."
-                    });
+                if (!parentExists)
+                    return new JsonResult(new { ok = false, message = "Invalid parent selected." });
+            }
+
+            // Duplicate guard for internal links: same menu + same pageId (excluding self on edit)
+            if (pageId.HasValue)
+            {
+                var duplicateExists = await _db.NavigationMenuItems
+                    .AsNoTracking()
+                    .AnyAsync(x =>
+                        x.TenantId == _tenant.TenantId &&
+                        !x.IsDeleted &&
+                        x.MenuId == req.MenuId &&
+                        x.PageId == pageId.Value &&
+                        (!req.Id.HasValue || x.Id != req.Id.Value), ct);
+
+                if (duplicateExists)
+                    return new JsonResult(new { ok = false, message = "This page already exists in the selected menu." });
             }
 
             var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -383,48 +277,34 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
             if (req.Id.HasValue && req.Id.Value > 0)
             {
                 entity = await _db.NavigationMenuItems
-                    .FirstOrDefaultAsync(x =>
-                        x.Id == req.Id.Value &&
+                    .Where(x =>
                         x.TenantId == _tenant.TenantId &&
-                        !x.IsDeleted, ct);
+                        !x.IsDeleted &&
+                        x.Id == req.Id.Value)
+                    .FirstOrDefaultAsync(ct);
 
-                if (entity is null)
+                if (entity == null)
                     return new JsonResult(new { ok = false, message = "Menu item not found." });
-
-                entity.MenuId = req.MenuId;
-                entity.ParentId = req.ParentId;
-                entity.Label = req.Label;
-                entity.PageId = req.PageId;
-                entity.Url = req.Url ?? "";
-                entity.OpenInNewTab = req.OpenInNewTab;
-
-                entity.UpdatedAt = now;
-                if (userGuid != Guid.Empty) entity.UpdatedBy = userGuid;
             }
             else
             {
-                // Default SortOrder: append to end within (MenuId, ParentId)
-                var maxSort = await _db.NavigationMenuItems
+                // next sort order under same menu + parent
+                var nextSort = await _db.NavigationMenuItems
                     .AsNoTracking()
                     .Where(x =>
                         x.TenantId == _tenant.TenantId &&
                         !x.IsDeleted &&
                         x.MenuId == req.MenuId &&
-                        x.ParentId == req.ParentId)
-                    .MaxAsync(x => (int?)x.SortOrder, ct);
-
-                var nextSort = (maxSort ?? 0) + 1;
+                        x.ParentId == parentId)
+                    .Select(x => (int?)x.SortOrder)
+                    .MaxAsync(ct) ?? 0;
 
                 entity = new NavigationMenuItem
                 {
                     TenantId = _tenant.TenantId,
                     MenuId = req.MenuId,
-                    ParentId = req.ParentId,
-                    SortOrder = nextSort,
-                    Label = req.Label,
-                    PageId = req.PageId,
-                    Url = req.Url ?? "",
-                    OpenInNewTab = req.OpenInNewTab,
+                    ParentId = parentId,
+                    SortOrder = nextSort + 1,
                     IsActive = true,
                     IsDeleted = false,
                     CreatedAt = now,
@@ -434,12 +314,39 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
                 await _db.NavigationMenuItems.AddAsync(entity, ct);
             }
 
+            // prevent cycle: cannot set parent to itself or descendants
+            if (parentId.HasValue)
+            {
+                if (req.Id.HasValue && parentId.Value == req.Id.Value)
+                    return new JsonResult(new { ok = false, message = "Parent cannot be the item itself." });
+
+                var cursor = parentId;
+                while (cursor.HasValue)
+                {
+                    if (req.Id.HasValue && cursor.Value == req.Id.Value)
+                        return new JsonResult(new { ok = false, message = "Invalid parent (cycle detected)." });
+
+                    cursor = await _db.NavigationMenuItems
+                        .AsNoTracking()
+                        .Where(x => x.TenantId == _tenant.TenantId && !x.IsDeleted && x.Id == cursor.Value)
+                        .Select(x => x.ParentId)
+                        .FirstOrDefaultAsync(ct);
+                }
+            }
+
+            entity.MenuId = req.MenuId;
+            entity.ParentId = parentId;
+            entity.Label = label;
+            entity.PageId = pageId;
+            entity.Url = url;
+            entity.OpenInNewTab = req.OpenInNewTab;
+
+            entity.UpdatedAt = now;
+            entity.UpdatedBy = userGuid == Guid.Empty ? Guid.Empty : userGuid;
+
             await _db.SaveChangesAsync(ct);
 
-            // invalidate navigation cache since draft set changed
-            _nav.Invalidate();
-
-            return new JsonResult(new { ok = true, id = entity.Id });
+            return new JsonResult(new { ok = true });
         }
 
         public sealed class DeleteMenuItemRequest
@@ -447,103 +354,71 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
             public int Id { get; set; }
         }
 
-        public async Task<IActionResult> OnPostDeleteMenuItemAsync(
-            [FromBody] DeleteMenuItemRequest req,
-            CancellationToken ct = default)
+        public async Task<IActionResult> OnPostDeleteMenuItemAsync([FromBody] DeleteMenuItemRequest req, CancellationToken ct)
+        {
+            var entity = await _db.NavigationMenuItems
+                .Where(x => x.TenantId == _tenant.TenantId && !x.IsDeleted && x.Id == req.Id)
+                .FirstOrDefaultAsync(ct);
+
+            if (entity == null)
+                return new JsonResult(new { ok = false, message = "Menu item not found." });
+
+            entity.IsDeleted = true;
+            entity.UpdatedAt = DateTime.UtcNow;
+
+            await _db.SaveChangesAsync(ct);
+            return new JsonResult(new { ok = true });
+        }
+
+        public sealed class ReorderMenuItemsRequest
+        {
+            public List<ReorderRow> Items { get; set; } = new();
+            public sealed class ReorderRow
+            {
+                public int Id { get; set; }
+                public int MenuId { get; set; }
+                public int? ParentId { get; set; }
+                public int SortOrder { get; set; }
+            }
+        }
+
+        public async Task<IActionResult> OnPostReorderMenuItemsAsync([FromBody] ReorderMenuItemsRequest req, CancellationToken ct)
         {
             if (!_tenant.IsResolved)
                 return new JsonResult(new { ok = false, message = "Tenant not resolved." });
 
-            if (req is null || req.Id <= 0)
-                return new JsonResult(new { ok = false, message = "Invalid request." });
+            if (req?.Items == null || req.Items.Count == 0)
+                return new JsonResult(new { ok = false, message = "No reorder items received." });
 
-            var item = await _db.NavigationMenuItems
-                .FirstOrDefaultAsync(x =>
-                    x.Id == req.Id &&
-                    x.TenantId == _tenant.TenantId &&
-                    !x.IsDeleted, ct);
+            var ids = req.Items.Select(x => x.Id).Distinct().ToList();
 
-            if (item is null)
-                return new JsonResult(new { ok = false, message = "Menu item not found." });
+            var entities = await _db.NavigationMenuItems
+                .Where(x => x.TenantId == _tenant.TenantId && !x.IsDeleted && ids.Contains(x.Id))
+                .ToListAsync(ct);
 
-            // Soft delete (Step 2 rule)
+            // If client sent IDs that don't belong to tenant, fail fast (prevents partial updates)
+            if (entities.Count != ids.Count)
+                return new JsonResult(new { ok = false, message = "One or more menu items are invalid." });
+
+            var map = req.Items.ToDictionary(x => x.Id, x => x);
+
             var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
             Guid.TryParse(userId, out var userGuid);
             var now = DateTime.UtcNow;
 
-            item.IsDeleted = true;
-            item.DeletedAt = now;
-            if (userGuid != Guid.Empty) item.DeletedBy = userGuid;
-
-            await _db.SaveChangesAsync(ct);
-            _nav.Invalidate();
-
-            return new JsonResult(new { ok = true });
-        }
-        // =======================
-        // Reorder Menu Item
-        // =======================
-        public sealed class ReorderMenuItemRequest
-        {
-            public int Id { get; set; }
-            public int MenuId { get; set; }
-            public int? ParentId { get; set; }
-            public int? AfterId { get; set; }
-        }
-
-        public async Task<IActionResult> OnPostReorderMenuItemAsync(
-            [FromBody] ReorderMenuItemRequest req,
-            CancellationToken ct = default)
-        {
-            if (!_tenant.IsResolved)
-                return new JsonResult(new { ok = false, message = "Tenant not resolved." });
-
-            var item = await _db.NavigationMenuItems
-                .FirstOrDefaultAsync(x =>
-                    x.Id == req.Id &&
-                    x.TenantId == _tenant.TenantId &&
-                    !x.IsDeleted, ct);
-
-            if (item == null)
-                return new JsonResult(new { ok = false, message = "Item not found." });
-
-            // Guardrails
-            if (item.MenuId != req.MenuId || item.ParentId != req.ParentId)
-                return new JsonResult(new { ok = false, message = "Invalid reorder scope." });
-
-            var siblings = await _db.NavigationMenuItems
-                .Where(x =>
-                    x.TenantId == _tenant.TenantId &&
-                    !x.IsDeleted &&
-                    x.MenuId == req.MenuId &&
-                    x.ParentId == req.ParentId)
-                .OrderBy(x => x.SortOrder)
-                .ToListAsync(ct);
-
-            // Remove moved item
-            siblings.RemoveAll(x => x.Id == item.Id);
-
-            // Insert at new position
-            if (req.AfterId.HasValue)
+            foreach (var e in entities)
             {
-                var index = siblings.FindIndex(x => x.Id == req.AfterId.Value);
-                siblings.Insert(index + 1, item);
-            }
-            else
-            {
-                siblings.Insert(0, item);
-            }
+                var row = map[e.Id];
 
-            // Normalize sort order
-            var order = 1;
-            foreach (var s in siblings)
-            {
-                s.SortOrder = order++;
+                e.MenuId = row.MenuId;
+                e.ParentId = row.ParentId;
+                e.SortOrder = row.SortOrder;
+
+                e.UpdatedAt = now;
+                e.UpdatedBy = userGuid == Guid.Empty ? Guid.Empty : userGuid;
             }
 
             await _db.SaveChangesAsync(ct);
-            _nav.Invalidate();
-
             return new JsonResult(new { ok = true });
         }
 

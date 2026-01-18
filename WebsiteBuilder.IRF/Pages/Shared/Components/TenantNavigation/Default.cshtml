@@ -4,9 +4,7 @@
 <nav class="navbar navbar-expand-sm navbar-light bg-white border-bottom box-shadow mb-3">
     <div class="container">
 
-        <a class="navbar-brand" href="/">
-            WebsiteBuilder.IRF
-        </a>
+        <a class="navbar-brand" href="/">WebsiteBuilder.IRF</a>
 
         <button class="navbar-toggler" type="button"
                 data-bs-toggle="collapse"
@@ -19,16 +17,55 @@
 
         <div class="collapse navbar-collapse d-sm-inline-flex justify-content-between" id="mainNavbar">
             <ul class="navbar-nav flex-grow-1">
+                @{
+                    var idx = 0;
+                }
+
                 @foreach (var item in Model)
                 {
                     var isActive = Context.Request.Path.Equals(item.Url, StringComparison.OrdinalIgnoreCase);
+                    var hasChildren = item.Children is not null && item.Children.Count > 0;
 
-                    <li class="nav-item">
-                        <a class="nav-link text-dark @(isActive ? "active" : "")"
-                           href="@item.Url">
-                            @item.Title
-                        </a>
-                    </li>
+                    if (!hasChildren)
+                    {
+                        <li class="nav-item">
+                            <a class="nav-link text-dark @(isActive ? "active" : "")"
+                               href="@item.Url"
+                               target="@(item.OpenInNewTab ? "_blank" : null)"
+                               rel="@(item.OpenInNewTab ? "noopener noreferrer" : null)">
+                                @item.Title
+                            </a>
+                        </li>
+                    }
+                    else
+                    {
+                        var ddId = $"nav-dd-{idx++}";
+
+                        <li class="nav-item dropdown">
+                            <a class="nav-link dropdown-toggle text-dark @(isActive ? "active" : "")"
+                               href="@item.Url"
+                               id="@ddId"
+                               role="button"
+                               data-bs-toggle="dropdown"
+                               aria-expanded="false">
+                                @item.Title
+                            </a>
+
+                            <ul class="dropdown-menu" aria-labelledby="@ddId">
+                                @foreach (var child in item.Children)
+                                {
+                                    <li>
+                                        <a class="dropdown-item"
+                                           href="@child.Url"
+                                           target="@(child.OpenInNewTab ? "_blank" : null)"
+                                           rel="@(child.OpenInNewTab ? "noopener noreferrer" : null)">
+                                            @child.Title
+                                        </a>
+                                    </li>
+                                }
+                            </ul>
+                        </li>
+                    }
                 }
             </ul>
         </div>

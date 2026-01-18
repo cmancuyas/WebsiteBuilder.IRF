@@ -102,7 +102,7 @@ namespace WebsiteBuilder.IRF.DataAccess.Migrations.Data
                         .IsUnique()
                         .HasFilter("[IsPrimary] = 1");
 
-                    b.ToTable("DomainMappings");
+                    b.ToTable("DomainMappings", (string)null);
                 });
 
             modelBuilder.Entity("WebsiteBuilder.Models.MediaAlert", b =>
@@ -584,7 +584,7 @@ namespace WebsiteBuilder.IRF.DataAccess.Migrations.Data
                     b.HasIndex("TenantId", "Slug")
                         .IsUnique();
 
-                    b.ToTable("Pages");
+                    b.ToTable("Pages", (string)null);
                 });
 
             modelBuilder.Entity("WebsiteBuilder.Models.PageRevision", b =>
@@ -681,7 +681,7 @@ namespace WebsiteBuilder.IRF.DataAccess.Migrations.Data
                     b.HasIndex("TenantId", "PageId", "VersionNumber")
                         .IsUnique();
 
-                    b.ToTable("PageRevisions");
+                    b.ToTable("PageRevisions", (string)null);
                 });
 
             modelBuilder.Entity("WebsiteBuilder.Models.PageRevisionSection", b =>
@@ -820,7 +820,7 @@ namespace WebsiteBuilder.IRF.DataAccess.Migrations.Data
                     b.HasIndex("Name")
                         .IsUnique();
 
-                    b.ToTable("PageStatuses");
+                    b.ToTable("PageStatuses", (string)null);
 
                     b.HasData(
                         new
@@ -1005,7 +1005,7 @@ namespace WebsiteBuilder.IRF.DataAccess.Migrations.Data
                     b.HasIndex("Slug")
                         .IsUnique();
 
-                    b.ToTable("Tenants");
+                    b.ToTable("Tenants", (string)null);
                 });
 
             modelBuilder.Entity("WebsiteBuilder.Models.Theme", b =>
@@ -1072,7 +1072,7 @@ namespace WebsiteBuilder.IRF.DataAccess.Migrations.Data
 
                     b.HasIndex("TenantId", "Name");
 
-                    b.ToTable("Themes");
+                    b.ToTable("Themes", (string)null);
                 });
 
             modelBuilder.Entity("WebsiteBuilder.Models.DomainMapping", b =>
