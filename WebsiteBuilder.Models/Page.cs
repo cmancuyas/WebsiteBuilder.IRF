@@ -14,6 +14,7 @@ namespace WebsiteBuilder.Models
         // URL path segment per tenant, e.g. "about", "listings", "" for home
         [Required, MaxLength(200)]
         public string Slug { get; set; } = string.Empty;
+        public Guid OwnerUserId { get; set; }
 
         // Draft/Published/Archived
         public int PageStatusId { get; set; }

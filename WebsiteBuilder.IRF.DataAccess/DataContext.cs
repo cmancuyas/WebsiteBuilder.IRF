@@ -176,6 +176,15 @@ namespace WebsiteBuilder.IRF.DataAccess
                     .WithMany()
                     .HasForeignKey(x => x.PublishedRevisionId)
                     .OnDelete(DeleteBehavior.Restrict);
+
+                // Owner scoping (required)
+                b.Property(x => x.OwnerUserId)
+                    .IsRequired()
+                    .HasDefaultValue(Guid.Empty);
+
+                // Agent list performance
+                b.HasIndex(x => new { x.TenantId, x.OwnerUserId });
+
             });
         }
 
@@ -271,6 +280,11 @@ namespace WebsiteBuilder.IRF.DataAccess
                 b.Property(x => x.TenantId)
                     .IsRequired();
 
+                // Owner scoping (required)
+                b.Property(x => x.OwnerUserId)
+                    .IsRequired()
+                    .HasDefaultValue(Guid.Empty);
+
                 b.Property(x => x.FileName)
                     .HasMaxLength(255)
                     .IsRequired();
@@ -279,42 +293,47 @@ namespace WebsiteBuilder.IRF.DataAccess
                     .HasMaxLength(255)
                     .IsRequired();
 
+                // Numeric (long)
                 b.Property(x => x.SizeBytes)
-                    .HasMaxLength(255);
+                    .IsRequired();
 
                 b.Property(x => x.StorageKey)
                     .HasMaxLength(500)
                     .IsRequired();
 
-                // Thumbnail URL path (optional but recommended)
+                // Optional thumbnail pointer
                 b.Property(x => x.ThumbStorageKey)
                     .HasMaxLength(500);
 
+                // Numeric (nullable ints)
                 b.Property(x => x.Width)
-                    .HasMaxLength(500);
+                    .IsRequired(false);
 
                 b.Property(x => x.Height)
-                    .HasMaxLength(500);
+                    .IsRequired(false);
 
                 b.Property(x => x.AltText)
                     .HasMaxLength(1000);
 
                 b.Property(x => x.CheckSum)
-                    .HasMaxLength(64);
+                    .HasMaxLength(64)
+                    .IsRequired();
 
                 // Indexes
                 b.HasIndex(x => x.StorageKey);
                 b.HasIndex(x => x.FileName);
                 b.HasIndex(x => x.ContentType);
 
-                // Tenant-aware indexes (important)
+                // Tenant-aware indexes
                 b.HasIndex(x => new { x.TenantId, x.IsDeleted });
-                b.HasIndex(x => new { x.TenantId, x.CheckSum }); // dedupe per tenant
+                b.HasIndex(x => new { x.TenantId, x.CheckSum });      // dedupe per tenant
+                b.HasIndex(x => new { x.TenantId, x.OwnerUserId });   // agent queries
 
-                // Optional: fast thumb lookup / diagnostics
+                // Optional: thumb lookup
                 b.HasIndex(x => x.ThumbStorageKey);
             });
         }
+
         private static void ConfigureMediaCleanupRunLogs(ModelBuilder modelBuilder)
         {
             modelBuilder.Entity<MediaCleanupRunLog>(b =>
@@ -450,52 +469,44 @@ namespace WebsiteBuilder.IRF.DataAccess
                 b.HasKey(x => x.Id);
                 b.Property(x => x.Id).ValueGeneratedOnAdd();
 
-                b.Property(x => x.TenantId)
-                    .IsRequired();
-
-                b.Property(x => x.MenuId)
-                    .IsRequired();
-
-                b.Property(x => x.ParentId)
-                    .IsRequired(false);
+                b.Property(x => x.TenantId).IsRequired();
+                b.Property(x => x.MenuId).IsRequired();
+                b.Property(x => x.ParentId).IsRequired(false);
 
                 b.Property(x => x.Label)
                     .HasMaxLength(200)
                     .IsRequired();
 
+                // Make consistent with model (non-nullable string)
                 b.Property(x => x.Url)
                     .HasMaxLength(500)
-                    .IsRequired(false);
+                    .IsRequired();
 
                 b.Property(x => x.OpenInNewTab)
                     .HasDefaultValue(false);
 
-                // NEW columns (add these after you update the model)
                 b.Property(x => x.SortOrder)
+                    .IsRequired()
                     .HasDefaultValue(0);
 
                 b.Property(x => x.PageId)
                     .IsRequired(false);
 
-                // Index for rendering menus quickly: tenant + menu + parent + ordering
                 b.HasIndex(x => new { x.TenantId, x.MenuId, x.ParentId, x.SortOrder });
-
-                // Helpful filtering index
                 b.HasIndex(x => new { x.TenantId, x.IsDeleted, x.IsActive });
 
-                // Optional: allow nested menus (self reference)
                 b.HasOne<NavigationMenuItem>()
                     .WithMany()
                     .HasForeignKey(x => x.ParentId)
                     .OnDelete(DeleteBehavior.Restrict);
 
-                // Optional: if you add PageId to the model, link to Pages
                 b.HasOne<Page>()
                     .WithMany()
                     .HasForeignKey(x => x.PageId)
                     .OnDelete(DeleteBehavior.Restrict);
             });
         }
+
 
     }
 }

@@ -11,6 +11,7 @@ namespace WebsiteBuilder.Models
 
         // Tenant scoping
         public Guid TenantId { get; set; }
+        public Guid OwnerUserId { get; set; }
 
         [Required, MaxLength(255)]
         public string FileName { get; set; } = string.Empty;

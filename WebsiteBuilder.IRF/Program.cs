@@ -1,6 +1,7 @@
 ﻿using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using WebsiteBuilder.IRF.DataAccess;
+using WebsiteBuilder.IRF.Infrastructure.Auth;
 using WebsiteBuilder.IRF.Infrastructure.Media;
 using WebsiteBuilder.IRF.Infrastructure.Middleware;
 using WebsiteBuilder.IRF.Infrastructure.Pages;
@@ -15,7 +16,14 @@ using WebsiteBuilder.Models.Constants;
 var builder = WebApplication.CreateBuilder(args);
 
 // Razor Pages
-builder.Services.AddRazorPages();
+builder.Services.AddRazorPages(options =>
+{
+    // Everything under /Admin requires auth
+    options.Conventions.AuthorizeFolder("/Admin");
+
+    // Allow anonymous access to login/logout pages
+    options.Conventions.AllowAnonymousToFolder("/Admin/Account");
+});
 
 // === Database Contexts ===
 
@@ -44,6 +52,7 @@ builder.Services.AddDbContext<DataContext>(options =>
         }
     )
 );
+
 // Identity
 builder.Services
     .AddIdentity<ApplicationUser, ApplicationRole>(options =>
@@ -53,18 +62,27 @@ builder.Services
     .AddEntityFrameworkStores<AppDbContext>()
     .AddDefaultTokenProviders();
 
-// Authorization (Identity already wires up auth; this is fine)
+// Cookie paths (moved AFTER AddIdentity)
+builder.Services.ConfigureApplicationCookie(options =>
+{
+    options.LoginPath = "/Admin/Account/Login";
+    options.AccessDeniedPath = "/Admin/Account/AccessDenied";
+    options.SlidingExpiration = true;
+    options.ExpireTimeSpan = TimeSpan.FromHours(12);
+});
+
+// Authorization (updated to include SuperAdmin + use AppRoles)
 builder.Services.AddAuthorization(options =>
 {
     options.AddPolicy("PagesPreview", policy =>
     {
         policy.RequireAuthenticatedUser();
         policy.RequireAssertion(ctx =>
-            ctx.User.IsInRole("Admin") ||
+            ctx.User.IsInRole(AppRoles.SuperAdmin) ||
+            ctx.User.IsInRole(AppRoles.Admin) ||
             ctx.User.HasClaim("Permission", "Pages.Preview"));
     });
 });
-
 
 // Tenant services
 builder.Services.AddMemoryCache();
@@ -107,12 +125,15 @@ builder.Services.Configure<MediaAlertsOptions>(
     builder.Configuration.GetSection("Media:Alerts"));
 
 builder.Services.AddHttpClient();
-builder.Services.AddScoped<IMediaAlertNotifier, CompositeMediaAlertNotifier>();
 
-builder.Services.AddScoped<IMediaAlertNotifier, DbMediaAlertNotifier>();
-
+// FIX: Register concrete notifiers and map interface to Composite
+builder.Services.AddScoped<DbMediaAlertNotifier>();
+builder.Services.AddScoped<CompositeMediaAlertNotifier>();
+builder.Services.AddScoped<IMediaAlertNotifier>(sp => sp.GetRequiredService<CompositeMediaAlertNotifier>());
 
 var app = builder.Build();
+
+await IdentitySeeder.SeedAsync(app.Services, app.Configuration);
 
 using (var scope = app.Services.CreateScope())
 {
@@ -125,7 +146,6 @@ using (var scope = app.Services.CreateScope())
     if (!valid)
         throw new InvalidOperationException("PageStatus seed mismatch.");
 }
-
 
 if (!app.Environment.IsDevelopment())
 {
