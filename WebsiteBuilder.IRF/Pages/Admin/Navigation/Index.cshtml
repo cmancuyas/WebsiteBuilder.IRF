@@ -221,6 +221,165 @@
 
 @section Scripts {
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+    <script>
+        (function () {
+            function getToken() {
+                const el = document.querySelector('input[name="__RequestVerificationToken"]');
+                return el ? el.value : null;
+            }
+
+            async function postJson(url, payload) {
+                const token = getToken();
+                const res = await fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...(token ? { 'RequestVerificationToken': token } : {})
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                const data = await res.json().catch(() => null);
+                return { ok: res.ok, data };
+            }
+                        // Step 3B: drag & drop reorder (TREE) with nesting + auto-save
+            function serializeTree(menuRootUl) {
+                const menuId = parseInt(menuRootUl.dataset.menuid, 10);
+                const items = [];
+
+                function walk(ul, parentId) {
+                    const nodes = Array.from(ul.children).filter(x => x.classList.contains('nav-node'));
+                    nodes.forEach((li, idx) => {
+                        const id = parseInt(li.dataset.id, 10);
+
+                        items.push({
+                            id: id,
+                            menuId: menuId,
+                            parentId: parentId,
+                            sortOrder: idx + 1
+                        });
+
+                        const childUl = li.querySelector(':scope > ul.nav-children');
+                        if (childUl) walk(childUl, id);
+                    });
+                }
+
+                walk(menuRootUl, null);
+                return { items };
+            }
+
+            function initTreeSortable(menuRootUl) {
+                const menuId = parseInt(menuRootUl.dataset.menuid, 10);
+                const groupName = `nav-tree-${menuId}`;
+
+                // Initialize Sortable on root + every child UL
+                const allUls = [menuRootUl, ...menuRootUl.querySelectorAll('ul.nav-children')];
+
+                allUls.forEach(ul => {
+                    Sortable.create(ul, {
+                        group: groupName,              // prevents header/footer mixing
+                        handle: '.drag-handle',
+                        draggable: '.nav-node',
+                        animation: 150,
+                        fallbackOnBody: true,
+                        swapThreshold: 0.65,
+
+                        onEnd: async function () {
+                            const root = ul.closest('.nav-root');
+                            if (!root) return;
+
+                            const payload = serializeTree(root);
+
+                            const resp = await postJson('?handler=ReorderMenuItems', payload);
+                            if (!resp.ok || !resp.data?.ok) {
+                                alert(resp.data?.message || 'Reorder failed.');
+                                location.reload(); // safest recovery to DB state
+                                return;
+                            }
+
+                            location.reload();
+                        }
+                    });
+                });
+            }
+
+            document.querySelectorAll('.nav-root').forEach(initTreeSortable);
+
+            function serializeMenu(menuRootUl) {
+                const menuId = parseInt(menuRootUl.dataset.menuid, 10);
+                const items = [];
+
+                function walk(ul, parentId) {
+                    const children = Array.from(ul.children).filter(x => x.classList.contains('nav-node'));
+
+                    children.forEach((li, idx) => {
+                        const id = parseInt(li.dataset.id, 10);
+
+                        items.push({
+                            id: id,
+                            menuId: menuId,
+                            parentId: parentId,
+                            sortOrder: idx + 1
+                        });
+
+                        const childUl = li.querySelector(':scope > .nav-children');
+                        if (childUl) walk(childUl, id);
+                    });
+                }
+
+                walk(menuRootUl, null);
+                return { items };
+            }
+
+            function initNestedSortable(menuRootUl) {
+                const menuId = parseInt(menuRootUl.dataset.menuid, 10);
+
+                // Important: Sortable must be initialized on root + every .nav-children
+                const uls = [menuRootUl, ...menuRootUl.querySelectorAll('.nav-children')];
+
+                // Prevent cross-menu dragging: Header and Footer must not mix
+                const groupName = `nav-menu-${menuId}`;
+
+                uls.forEach(ul => {
+                    Sortable.create(ul, {
+                        group: groupName,
+                        handle: '.drag-handle',
+                        draggable: '.nav-node',
+                        animation: 150,
+                        fallbackOnBody: true,
+                        swapThreshold: 0.65,
+
+                        onEnd: async function (evt) {
+                            // Only save once per drop; compute from the root
+                            const root = evt.to.closest('.nav-root');
+                            if (!root) return;
+
+                            // Build payload exactly matching ReorderMenuItemsRequest
+                            const payload = serializeMenu(root);
+
+                            // Optional: guard against empty
+                            if (!payload.items || payload.items.length === 0) return;
+
+                            const resp = await postJson('?handler=ReorderMenuItems', payload);
+
+                            if (!resp.ok || !resp.data || resp.data.ok !== true) {
+                                alert(resp.data?.message || 'Reorder failed.');
+                                // safest recovery: reload to reflect DB state
+                                location.reload();
+                                return;
+                            }
+
+                            // Reload so SortOrder badges and both panels stay consistent
+                            location.reload();
+                        }
+                    });
+                });
+            }
+
+            // Init for each menu tree (Header + Footer)
+            document.querySelectorAll('.nav-root').forEach(initNestedSortable);
+        })();
+    </script>
 
     <script>
         (function () {
@@ -518,40 +677,38 @@
         IEnumerable<WebsiteBuilder.IRF.Pages.Admin.Navigation.IndexModel.NavNode> nodes,
         int menuId,
         int depth,
-        bool isRoot = false)
+        bool isRoot = false
+    )
     {
+        // Root UL needs a special class + data-menuid for grouping
         var ul = new TagBuilder("ul");
-
-        if (isRoot)
-        {
-            ul.AddCssClass("nav-root list-unstyled mb-0");
-            ul.Attributes["data-menuid"] = menuId.ToString();
-        }
-        else
-        {
-            ul.AddCssClass("nav-children list-unstyled ms-4 mb-0");
-        }
+        ul.AddCssClass(isRoot ? "nav-root list-unstyled mb-0" : "nav-children list-unstyled ms-4 mb-0");
+        ul.Attributes["data-menuid"] = menuId.ToString();
 
         foreach (var n in nodes)
         {
+            // Each LI must be a draggable node with ID + MenuId
             var li = new TagBuilder("li");
             li.AddCssClass("nav-node mb-2");
             li.Attributes["data-id"] = n.Item.Id.ToString();
             li.Attributes["data-menuid"] = menuId.ToString();
 
+            // Row wrapper
             var row = new TagBuilder("div");
-            row.AddCssClass("d-flex align-items-center gap-2 border rounded p-2 bg-white");
+            row.AddCssClass("d-flex align-items-center gap-2 border rounded px-2 py-2");
 
+            // Drag handle (Sortable handle)
             var handle = new TagBuilder("span");
             handle.AddCssClass("drag-handle text-muted");
-            handle.Attributes["title"] = "Drag to reorder / nest";
-            handle.Attributes["style"] = "cursor:grab; user-select:none;";
+            handle.Attributes["style"] = "cursor: grab;";
             handle.InnerHtml.Append("☰");
 
+            // Badge
             var badge = new TagBuilder("span");
             badge.AddCssClass("badge bg-light text-dark border");
             badge.InnerHtml.Append($"S{n.Item.SortOrder}");
 
+            // Label
             var label = new TagBuilder("span");
             label.AddCssClass("fw-semibold");
             label.InnerHtml.Append(n.Item.Label ?? "");
@@ -562,16 +719,15 @@
 
             li.InnerHtml.AppendHtml(row);
 
-            // Always render a child UL so Sortable can drop into it
+            // Always render a children UL so you can drop into “empty” parents
             if (n.Children != null && n.Children.Any())
-            {
                 li.InnerHtml.AppendHtml(RenderNodes(n.Children, menuId, depth + 1, isRoot: false));
-            }
             else
             {
-                var emptyChild = new TagBuilder("ul");
-                emptyChild.AddCssClass("nav-children list-unstyled ms-4 mb-0");
-                li.InnerHtml.AppendHtml(emptyChild);
+                var emptyChildren = new TagBuilder("ul");
+                emptyChildren.AddCssClass("nav-children list-unstyled ms-4 mb-0");
+                emptyChildren.Attributes["data-menuid"] = menuId.ToString();
+                li.InnerHtml.AppendHtml(emptyChildren);
             }
 
             ul.InnerHtml.AppendHtml(li);
@@ -580,4 +736,3 @@
         return ul;
     }
 }
-

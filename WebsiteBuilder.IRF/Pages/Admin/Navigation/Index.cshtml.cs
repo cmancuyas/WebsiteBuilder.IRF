@@ -446,7 +446,9 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
             entity.UpdatedAt = DateTime.UtcNow;
 
             await _db.SaveChangesAsync(ct);
+            _nav.InvalidateMenu(entity.MenuId);
             return new JsonResult(new { ok = true });
+
         }
 
         public sealed class ReorderMenuItemsRequest
@@ -463,7 +465,12 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
 
         public async Task<IActionResult> OnPostReorderMenuItemsAsync([FromBody] ReorderMenuItemsRequest req, CancellationToken ct)
         {
-            // Minimal + safe: update sort orders exactly as sent (you already validated drag behavior)
+            if (!_tenant.IsResolved)
+                return new JsonResult(new { ok = false, message = "Tenant not resolved." });
+
+            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            Guid.TryParse(userId, out var userGuid);
+
             var ids = req.Items.Select(x => x.Id).Distinct().ToList();
 
             var entities = await _db.NavigationMenuItems
@@ -471,6 +478,8 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
                 .ToListAsync(ct);
 
             var map = req.Items.ToDictionary(x => x.Id, x => x);
+
+            var now = DateTime.UtcNow;
 
             foreach (var e in entities)
             {
@@ -480,7 +489,8 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
                 e.MenuId = row.MenuId;
                 e.ParentId = row.ParentId;
                 e.SortOrder = row.SortOrder;
-                e.UpdatedAt = DateTime.UtcNow;
+                e.UpdatedAt = now;
+                e.UpdatedBy = userGuid == Guid.Empty ? Guid.Empty : userGuid;
             }
 
             await _db.SaveChangesAsync(ct);
@@ -490,5 +500,6 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
 
             return new JsonResult(new { ok = true });
         }
+
     }
 }
