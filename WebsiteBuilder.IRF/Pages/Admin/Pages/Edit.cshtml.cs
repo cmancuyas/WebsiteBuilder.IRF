@@ -122,24 +122,18 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             if (!_tenant.IsResolved)
                 return NotFound("Tenant not resolved.");
 
-            var page = await _db.Pages
-                .AsNoTracking()
-                .FirstOrDefaultAsync(p => p.Id == id && p.TenantId == _tenant.TenantId && !p.IsDeleted, ct);
-
-            if (page == null)
+            if (!await EnsurePageEntityLoadedAsync(id, ct))
                 return NotFound();
-
-            PageEntity = page;
 
             // Map to VM (keep this minimal and safe)
             Input = new PageEditVm
             {
-                Id = page.Id,
-                Title = page.Title,
-                Slug = page.Slug,
-                PageStatusId = page.PageStatusId,
-                ShowInNavigation = page.ShowInNavigation,
-                NavigationOrder = page.NavigationOrder
+                Id = PageEntity.Id,
+                Title = PageEntity.Title,
+                Slug = PageEntity.Slug,
+                PageStatusId = PageEntity.PageStatusId,
+                ShowInNavigation = PageEntity.ShowInNavigation,
+                NavigationOrder = PageEntity.NavigationOrder
             };
 
             SaveSuccess = saveSuccess;
@@ -147,13 +141,14 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             await BuildSelectListsAsync(Input.PageStatusId, ct);
             await LoadSectionTypeLookupAsync(ct);
             await LoadSectionTypeOptionsAsync(ct);
-            await LoadSectionCountAsync(page.Id, ct);
-            await LoadTrashCountAsync(page.Id, ct);
-            await LoadSectionsAsync(page.Id, ct);
-            await LoadTrashedSectionsAsync(page.Id, ct);
+            await LoadSectionCountAsync(PageEntity.Id, ct);
+            await LoadTrashCountAsync(PageEntity.Id, ct);
+            await LoadSectionsAsync(PageEntity.Id, ct);
+            await LoadTrashedSectionsAsync(PageEntity.Id, ct);
 
             return Page();
         }
+
         private Guid GetUserGuid()
         {
             // If identity exists later, this will start working automatically.
@@ -170,8 +165,12 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             if (!_tenant.IsResolved)
                 return NotFound("Tenant not resolved.");
 
+            if (!await EnsurePageEntityLoadedAsync(Input.Id, ct))
+                return NotFound();
+
             if (!ModelState.IsValid)
             {
+                // Input.Title/Input.Slug remain as the user typed; PageEntity + PageStatusId are now safe.
                 await BuildSelectListsAsync(Input.PageStatusId, ct);
                 await LoadSectionTypeLookupAsync(ct);
                 await LoadSectionTypeOptionsAsync(ct);
@@ -716,6 +715,29 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
         // =======================
         // LOAD HELPERS
         // =======================
+        private async Task<bool> EnsurePageEntityLoadedAsync(int pageId, CancellationToken ct)
+        {
+            var page = await _db.Pages
+                .AsNoTracking()
+                .FirstOrDefaultAsync(p =>
+                    p.TenantId == _tenant.TenantId &&
+                    p.Id == pageId &&
+                    !p.IsDeleted, ct);
+
+            if (page == null)
+                return false;
+
+            PageEntity = page;
+
+            // Ensure Input has the server-truth status for UI guards (Publish/Unpublish buttons, etc.)
+            // Keep user-entered Title/Slug intact on validation errors.
+            Input ??= new PageEditVm();
+            Input.Id = page.Id;
+            Input.PageStatusId = page.PageStatusId;
+
+            return true;
+        }
+
         private async Task LoadSectionCountAsync(int pageId, CancellationToken ct)
         {
             var draftRevisionId = await _db.Pages
@@ -969,7 +991,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             // Load the sections (trashed only) for this tenant
             var sections = await _db.PageRevisionSections
                 .AsTracking()
-                .Where(s => s.TenantId == _tenant.TenantId && ids.Contains(s.Id))
+                .Where(s => s.TenantId == _tenant.TenantId && ids.Contains(s.Id) && s.IsDeleted)
                 .ToListAsync(ct);
 
             if (sections.Count == 0)
@@ -1115,15 +1137,19 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             if (section == null)
                 return Content("Section not found.", "text/plain");
 
-            var isCurrentDraft = await _db.Pages
+            var pageInfo = await _db.Pages
                 .AsNoTracking()
-                .AnyAsync(p =>
+                .Where(p =>
                     p.TenantId == _tenant.TenantId &&
                     !p.IsDeleted &&
-                    p.DraftRevisionId == section.PageRevisionId, ct);
+                    p.DraftRevisionId == section.PageRevisionId)
+                .Select(p => new { p.Id, p.PageStatusId })
+                .FirstOrDefaultAsync(ct);
 
-            if (!isCurrentDraft)
+            if (pageInfo == null)
                 return Content("Section is not part of the current draft.", "text/plain");
+
+            var isEditable = pageInfo.PageStatusId == PageStatusIds.Draft;
 
             await LoadSectionTypeLookupAsync(ct);
 
@@ -1137,6 +1163,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
 
             var vm = BuildSectionRowRenderVm(row);
 
+            // IMPORTANT: Create a fresh ViewDataDictionary of the correct model type
             var vd = new Microsoft.AspNetCore.Mvc.ViewFeatures.ViewDataDictionary<SectionRowRenderVm>(
                 metadataProvider: MetadataProvider,
                 modelState: ModelState)
@@ -1144,12 +1171,18 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                 Model = vm
             };
 
+            // Pass editability explicitly so the partial won't render "disabled/grey"
+            vd["IsEditable"] = isEditable;
+
             return new PartialViewResult
             {
                 ViewName = "~/Pages/Admin/Pages/Partials/_PageRevisionSectionRow.cshtml",
                 ViewData = vd
             };
         }
+
+
+
 
         private bool IsDraftEditable(Page page)
         {
