@@ -1,0 +1,111 @@
+﻿@using WebsiteBuilder.IRF.Infrastructure.Tenancy
+@inject ITenantNavigationService NavService
+@inject ITenantContext TenantContext
+
+@functions {
+    private static string NormalizePath(string? path)
+    {
+        var p = (path ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(p))
+            return "/";
+
+        // Only normalize app-relative paths; do not touch absolute URLs
+        if (!p.StartsWith("/", StringComparison.Ordinal))
+            return p;
+
+        // Strip query/hash if present
+        var q = p.IndexOfAny(new[] { '?', '#' });
+        if (q >= 0) p = p.Substring(0, q);
+
+        // Normalize trailing slash
+        p = p.TrimEnd('/');
+        if (p.Length == 0) p = "/";
+
+        // Treat /home as /
+        if (p.Equals("/home", StringComparison.OrdinalIgnoreCase))
+            p = "/";
+
+        return p;
+    }
+
+    private static bool IsAbsoluteUrl(string? url)
+        => !string.IsNullOrWhiteSpace(url) &&
+           (url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+            url.StartsWith("https://", StringComparison.OrdinalIgnoreCase));
+
+    private static bool MatchCurrent(string currentPath, string itemUrl)
+    {
+        if (IsAbsoluteUrl(itemUrl))
+            return false;
+
+        return string.Equals(
+            NormalizePath(currentPath),
+            NormalizePath(itemUrl),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool TryFindPath(
+        IReadOnlyList<NavItem> items,
+        string currentPath,
+        List<NavItem> trail)
+    {
+        foreach (var item in items)
+        {
+            trail.Add(item);
+
+            if (MatchCurrent(currentPath, item.Url))
+                return true;
+
+            if (item.Children != null && item.Children.Count > 0)
+            {
+                if (TryFindPath(item.Children, currentPath, trail))
+                    return true;
+            }
+
+            trail.RemoveAt(trail.Count - 1);
+        }
+
+        return false;
+    }
+}
+
+@if (TenantContext.IsResolved)
+{
+    var currentPath = Context?.Request?.Path.Value ?? "/";
+    var headerItems = await NavService.GetHeaderAsync();
+
+    var trail = new List<NavItem>();
+    var found = TryFindPath(headerItems, currentPath, trail);
+
+    // If not found or it's home/root, don't show breadcrumbs
+    if (found && trail.Count > 0 && NormalizePath(currentPath) != "/")
+    {
+        <nav aria-label="breadcrumb" class="mb-3">
+            <ol class="breadcrumb mb-0">
+                <li class="breadcrumb-item">
+                    <a href="/" class="text-decoration-none">Home</a>
+                </li>
+
+                @for (int i = 0; i < trail.Count; i++)
+                {
+                    var item = trail[i];
+                    var isLast = (i == trail.Count - 1);
+
+                    if (isLast)
+                    {
+                        <li class="breadcrumb-item active" aria-current="page">@item.Title</li>
+                    }
+                    else
+                    {
+                        // Guard: if Url is empty, fall back to "#"
+                        var href = string.IsNullOrWhiteSpace(item.Url) ? "#" : item.Url;
+
+                        <li class="breadcrumb-item">
+                            <a class="text-decoration-none" href="@href">@item.Title</a>
+                        </li>
+                    }
+                }
+            </ol>
+        </nav>
+    }
+}

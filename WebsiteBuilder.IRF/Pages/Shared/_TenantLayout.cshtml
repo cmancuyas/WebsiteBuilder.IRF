@@ -21,15 +21,20 @@
 
     <div class="container">
         <main role="main" class="pb-3">
+            <partial name="_TenantBreadcrumbs" />
             @RenderBody()
         </main>
     </div>
 
-    <footer class="border-top footer text-muted">
-        <div class="container">
-            &copy; 2026 - WebsiteBuilder.IRF
+    <footer class="border-top footer text-muted mt-4">
+        <div class="container py-3">
+            <partial name="_TenantFooterNav" />
+            <div class="mt-2 small">
+                &copy; 2026 - WebsiteBuilder.IRF
+            </div>
         </div>
     </footer>
+
 
     <script src="~/lib/jquery/dist/jquery.min.js"></script>
     <script src="~/lib/bootstrap/dist/js/bootstrap.bundle.min.js"></script>
