@@ -5,7 +5,7 @@ using WebsiteBuilder.Models.Constants;
 
 namespace WebsiteBuilder.IRF.Infrastructure.Tenancy
 {
-    // Supports hierarchical menus (dropdown) but still "Option 1": only MenuId = 1 (Header).
+    // Supports hierarchical menus (dropdown).
     public sealed record NavItem(
         string Title,
         string Url,
@@ -16,13 +16,13 @@ namespace WebsiteBuilder.IRF.Infrastructure.Tenancy
 
     public sealed class TenantNavigationService : ITenantNavigationService
     {
+        // If you have a constants class for these, you can replace these literals.
         private const int HeaderMenuId = 1;
+        private const int FooterMenuId = 2;
 
         private readonly DataContext _db;
         private readonly ITenantContext _tenant;
         private readonly IMemoryCache _cache;
-
-        private string CacheKey => $"tenant-nav:{_tenant.TenantId}:menu:{HeaderMenuId}";
 
         public TenantNavigationService(DataContext db, ITenantContext tenant, IMemoryCache cache)
         {
@@ -31,21 +31,36 @@ namespace WebsiteBuilder.IRF.Infrastructure.Tenancy
             _cache = cache;
         }
 
-        public async Task<IReadOnlyList<NavItem>> GetNavAsync(CancellationToken ct = default)
+        // Backward compatible: existing callers get Header
+        public Task<IReadOnlyList<NavItem>> GetNavAsync(CancellationToken ct = default)
+            => GetHeaderAsync(ct);
+
+        public Task<IReadOnlyList<NavItem>> GetHeaderAsync(CancellationToken ct = default)
+            => GetMenuAsync(HeaderMenuId, ct);
+
+        public Task<IReadOnlyList<NavItem>> GetFooterAsync(CancellationToken ct = default)
+            => GetMenuAsync(FooterMenuId, ct);
+
+        private string CacheKey(int menuId) => $"tenant-nav:{_tenant.TenantId}:menu:{menuId}";
+
+        private async Task<IReadOnlyList<NavItem>> GetMenuAsync(int menuId, CancellationToken ct = default)
         {
             if (!_tenant.IsResolved)
                 return Array.Empty<NavItem>();
 
-            if (_cache.TryGetValue(CacheKey, out IReadOnlyList<NavItem>? cached) && cached is not null)
+            var cacheKey = CacheKey(menuId);
+
+            if (_cache.TryGetValue(cacheKey, out IReadOnlyList<NavItem>? cached) && cached is not null)
                 return cached;
 
-            // 1) Load menu items for header only (MenuId=1)
+            // 1) Load menu items for this menuId
             var items = await _db.NavigationMenuItems
                 .AsNoTracking()
                 .Where(x =>
                     x.TenantId == _tenant.TenantId &&
                     !x.IsDeleted &&
-                    x.MenuId == HeaderMenuId)
+                    x.IsActive &&
+                    x.MenuId == menuId)
                 .OrderBy(x => x.ParentId)
                 .ThenBy(x => x.SortOrder)
                 .ThenBy(x => x.Id)
@@ -71,16 +86,18 @@ namespace WebsiteBuilder.IRF.Infrastructure.Tenancy
                 .Distinct()
                 .ToList();
 
-            var publishedSlugs = await _db.Pages
-                .AsNoTracking()
-                .Where(p =>
-                    p.TenantId == _tenant.TenantId &&
-                    p.IsActive &&
-                    !p.IsDeleted &&
-                    p.PageStatusId == PageStatusIds.Published &&
-                    pageIds.Contains(p.Id))
-                .Select(p => new { p.Id, p.Slug })
-                .ToDictionaryAsync(x => x.Id, x => x.Slug, ct);
+            var publishedSlugs = pageIds.Count == 0
+                ? new Dictionary<int, string>()
+                : await _db.Pages
+                    .AsNoTracking()
+                    .Where(p =>
+                        p.TenantId == _tenant.TenantId &&
+                        p.IsActive &&
+                        !p.IsDeleted &&
+                        p.PageStatusId == PageStatusIds.Published &&
+                        pageIds.Contains(p.Id))
+                    .Select(p => new { p.Id, p.Slug })
+                    .ToDictionaryAsync(x => x.Id, x => x.Slug, ct);
 
             // 3) ParentId -> children lookup (ParentId is nullable int)
             const int RootKey = 0;
@@ -91,6 +108,7 @@ namespace WebsiteBuilder.IRF.Infrastructure.Tenancy
 
             string ResolveUrl(int? pageId, string? url)
             {
+                // Prefer published PageId -> slug
                 if (pageId.HasValue &&
                     publishedSlugs.TryGetValue(pageId.Value, out var slug) &&
                     !string.IsNullOrWhiteSpace(slug))
@@ -98,8 +116,18 @@ namespace WebsiteBuilder.IRF.Infrastructure.Tenancy
                     return ToUrl(slug);
                 }
 
+                // Fallback to stored URL
                 if (!string.IsNullOrWhiteSpace(url))
-                    return url.Trim();
+                {
+                    var trimmed = url.Trim();
+
+                    // Normalize common home variant so Home doesn't end up as /home
+                    // (slug handler should still canonicalize /home -> /, but this improves UX)
+                    if (trimmed.Equals("/home", StringComparison.OrdinalIgnoreCase))
+                        return "/";
+
+                    return trimmed;
+                }
 
                 // safe fallback (don’t emit empty href)
                 return "#";
@@ -160,8 +188,7 @@ namespace WebsiteBuilder.IRF.Infrastructure.Tenancy
                     .AsReadOnly()
                 : (IReadOnlyList<NavItem>)Array.Empty<NavItem>();
 
-
-            _cache.Set(CacheKey, roots, new MemoryCacheEntryOptions
+            _cache.Set(cacheKey, roots, new MemoryCacheEntryOptions
             {
                 AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(5)
             });
@@ -171,8 +198,11 @@ namespace WebsiteBuilder.IRF.Infrastructure.Tenancy
 
         public void Invalidate()
         {
-            if (_tenant.IsResolved)
-                _cache.Remove(CacheKey);
+            if (!_tenant.IsResolved)
+                return;
+
+            _cache.Remove(CacheKey(HeaderMenuId));
+            _cache.Remove(CacheKey(FooterMenuId));
         }
 
         private static string ToUrl(string? slug)

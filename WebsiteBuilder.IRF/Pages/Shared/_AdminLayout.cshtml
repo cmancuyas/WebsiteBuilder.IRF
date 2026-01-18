@@ -1,5 +1,4 @@
-﻿@inject WebsiteBuilder.IRF.Infrastructure.Tenancy.ITenantNavigationService NavService
-@using WebsiteBuilder.IRF.Infrastructure.Tenancy
+﻿@using WebsiteBuilder.IRF.Infrastructure.Tenancy
 @inject ITenantContext TenantContext
 
 <!DOCTYPE html>
@@ -7,7 +6,7 @@
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>@ViewData["Title"] - WebsiteBuilder.IRF</title>
+    <title>@ViewData["Title"] - Admin - WebsiteBuilder.IRF</title>
 
     <link rel="stylesheet" href="~/lib/bootstrap/dist/css/bootstrap.min.css" />
     <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
@@ -16,46 +15,47 @@
     @RenderSection("Head", required: false)
 </head>
 <body>
-    <partial name="_TenantHeaderNav" />
-    <header>
-        <nav class="navbar navbar-expand-sm navbar-toggleable-sm navbar-light bg-white border-bottom box-shadow mb-3">
-            <div class="container">
 
-                <a class="navbar-brand" href="/">
-                    @(TenantContext.IsResolved? TenantContext.Host: "WebsiteBuilder.IRF")
+    <!-- Admin top bar -->
+    <header>
+        <nav class="navbar navbar-expand-sm navbar-light bg-white border-bottom box-shadow mb-3">
+            <div class="container">
+                <a class="navbar-brand" href="/admin/pages">
+                    Admin
+                    @if (TenantContext.IsResolved)
+                    {
+                        <span class="text-muted">- @TenantContext.Host</span>
+                    }
                 </a>
 
-                <!-- Proper bootstrap toggler attributes -->
                 <button class="navbar-toggler" type="button"
                         data-bs-toggle="collapse"
-                        data-bs-target="#mainNavbar"
-                        aria-controls="mainNavbar"
+                        data-bs-target="#adminNavbar"
+                        aria-controls="adminNavbar"
                         aria-expanded="false"
                         aria-label="Toggle navigation">
                     <span class="navbar-toggler-icon"></span>
                 </button>
 
-                <div class="navbar-collapse collapse d-sm-inline-flex justify-content-between" id="mainNavbar">
-
-                    @{
-                        // Avoid DB/cache calls for Admin routes
-                        var isAdmin = Context.Request.Path.StartsWithSegments("/Admin");
-                        var navItems = isAdmin
-                        ? Array.Empty<NavItem>()
-                        : await NavService.GetNavAsync(Context.RequestAborted);
-                    }
-
-                    <ul class="navbar-nav flex-grow-1">
-                        @foreach (var item in navItems)
-                        {
-                            <li class="nav-item">
-                                <a class="nav-link text-dark" href="@item.Url">@item.Title</a>
-                            </li>
-                        }
+                <div class="navbar-collapse collapse d-sm-inline-flex justify-content-between" id="adminNavbar">
+                    <ul class="navbar-nav me-auto">
+                        <li class="nav-item">
+                            <a class="nav-link text-dark" href="/admin/pages">Pages</a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link text-dark" href="/admin/navigation">Navigation</a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link text-dark" href="/admin/media">Media</a>
+                        </li>
                     </ul>
 
+                    <ul class="navbar-nav">
+                        <li class="nav-item">
+                            <a class="nav-link text-dark" href="/">View site</a>
+                        </li>
+                    </ul>
                 </div>
-
             </div>
         </nav>
     </header>
@@ -75,11 +75,13 @@
     <script src="~/lib/jquery/dist/jquery.min.js"></script>
     <script src="~/lib/bootstrap/dist/js/bootstrap.bundle.min.js"></script>
     <script src="~/js/site.js" asp-append-version="true"></script>
+
+    <!-- Admin-only vendor scripts -->
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
 
+    <!-- Global Media Picker bridge (admin-only) -->
     <script>
         (function () {
-            // Global Media Picker bridge (authoritative)
             window.MediaPicker = {
                 open: function ({ multiple, onSelect }) {
                     const pickerUrl = "/Admin/Media/Picker";
@@ -107,9 +109,9 @@
         })();
     </script>
 
-    @RenderSection("Scripts", required: false)
-
-
+    <!-- Admin-only live JSON validation -->
     <script src="~/js/admin/sections/live-json-validate.js"></script>
+
+    @RenderSection("Scripts", required: false)
 </body>
 </html>

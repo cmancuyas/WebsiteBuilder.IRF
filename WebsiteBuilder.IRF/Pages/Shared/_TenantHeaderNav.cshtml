@@ -1,68 +1,81 @@
-﻿@using WebsiteBuilder.IRF.Infrastructure.Tenancy
-@inject ITenantNavigationService Nav
+﻿@using Microsoft.AspNetCore.Html
+@using Microsoft.AspNetCore.Mvc.Rendering
+@using WebsiteBuilder.IRF.Infrastructure.Tenancy
+@inject WebsiteBuilder.IRF.Infrastructure.Tenancy.ITenantNavigationService NavService
+@inject WebsiteBuilder.IRF.Infrastructure.Tenancy.ITenantContext TenantContext
 
-@{
-    var items = await Nav.GetNavAsync();
+@functions {
+    private IHtmlContent RenderNavItems(
+        IReadOnlyList<NavItem> items,
+        bool isDropdown = false)
+    {
+        var ul = new TagBuilder("ul");
+        ul.AddCssClass(isDropdown ? "dropdown-menu" : "navbar-nav me-auto mb-2 mb-lg-0");
+
+        foreach (var item in items)
+        {
+            var hasChildren = item.Children?.Count > 0;
+
+            var li = new TagBuilder("li");
+            li.AddCssClass(hasChildren && !isDropdown ? "nav-item dropdown" : "nav-item");
+
+            var a = new TagBuilder("a");
+
+            // -------------------------------
+            // NORMALIZE HOME URL
+            // -------------------------------
+            var href = string.IsNullOrWhiteSpace(item.Url) ? "/" : item.Url.Trim();
+
+            if (string.Equals(href, "/home", StringComparison.OrdinalIgnoreCase))
+            {
+                href = "/";
+            }
+
+            a.Attributes["href"] = href;
+
+            if (item.OpenInNewTab)
+            {
+                a.Attributes["target"] = "_blank";
+                a.Attributes["rel"] = "noopener";
+            }
+
+            if (!isDropdown)
+            {
+                a.AddCssClass(hasChildren ? "nav-link dropdown-toggle" : "nav-link");
+
+                if (hasChildren)
+                {
+                    a.Attributes["role"] = "button";
+                    a.Attributes["data-bs-toggle"] = "dropdown";
+                    a.Attributes["aria-expanded"] = "false";
+                }
+            }
+            else
+            {
+                a.AddCssClass("dropdown-item");
+            }
+
+            a.InnerHtml.Append(item.Title);
+            li.InnerHtml.AppendHtml(a);
+
+            if (hasChildren)
+            {
+                li.InnerHtml.AppendHtml(RenderNavItems(item.Children!, true));
+            }
+
+            ul.InnerHtml.AppendHtml(li);
+        }
+
+        return ul;
+    }
 }
 
-@if (items.Count > 0)
+@if (TenantContext.IsResolved)
 {
-    <nav class="navbar navbar-expand-lg navbar-light bg-white border-bottom mb-3">
-        <div class="container">
-            <a class="navbar-brand" href="/">@ViewData["TenantName"]</a>
+    var headerItems = await NavService.GetHeaderAsync();
 
-            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#tenantNavbar"
-                    aria-controls="tenantNavbar" aria-expanded="false" aria-label="Toggle navigation">
-                <span class="navbar-toggler-icon"></span>
-            </button>
-
-            <div class="collapse navbar-collapse" id="tenantNavbar">
-                <ul class="navbar-nav me-auto mb-2 mb-lg-0">
-                    @foreach (var item in items)
-                    {
-                        var hasChildren = item.Children is { Count: > 0 };
-
-                        if (!hasChildren)
-                        {
-                            <li class="nav-item">
-                                <a class="nav-link"
-                                   href="@item.Url"
-                                   target="@(item.OpenInNewTab ? "_blank" : null)"
-                                   rel="@(item.OpenInNewTab ? "noopener noreferrer" : null)">
-                                    @item.Title
-                                </a>
-                            </li>
-                        }
-                        else
-                        {
-                            var dropdownId = $"navdd_{item.Title.GetHashCode()}_{item.Order}";
-                            <li class="nav-item dropdown">
-                                <a class="nav-link dropdown-toggle"
-                                   href="#"
-                                   id="@dropdownId"
-                                   role="button"
-                                   data-bs-toggle="dropdown"
-                                   aria-expanded="false">
-                                    @item.Title
-                                </a>
-                                <ul class="dropdown-menu" aria-labelledby="@dropdownId">
-                                    @foreach (var child in item.Children!)
-                                    {
-                                        <li>
-                                            <a class="dropdown-item"
-                                               href="@child.Url"
-                                               target="@(child.OpenInNewTab ? "_blank" : null)"
-                                               rel="@(child.OpenInNewTab ? "noopener noreferrer" : null)">
-                                                @child.Title
-                                            </a>
-                                        </li>
-                                    }
-                                </ul>
-                            </li>
-                        }
-                    }
-                </ul>
-            </div>
-        </div>
-    </nav>
+    if (headerItems.Count > 0)
+    {
+        @RenderNavItems(headerItems)
+    }
 }
