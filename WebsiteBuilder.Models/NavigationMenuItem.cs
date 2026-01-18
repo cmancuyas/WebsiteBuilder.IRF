@@ -15,6 +15,8 @@ namespace WebsiteBuilder.Models
 
         public int MenuId { get; set; }
         public int? ParentId { get; set; }
+        public int SortOrder { get; set; }      
+        public int? PageId { get; set; }     
 
         [MaxLength(200)]
         public string Label { get; set; } = string.Empty;

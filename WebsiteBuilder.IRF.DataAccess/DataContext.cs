@@ -19,6 +19,8 @@ namespace WebsiteBuilder.IRF.DataAccess
         public DbSet<MediaAsset> MediaAssets => Set<MediaAsset>();
         public DbSet<MediaCleanupRunLog> MediaCleanupRunLogs => Set<MediaCleanupRunLog>();
         public DbSet<MediaAlert> MediaAlerts => Set<MediaAlert>();
+        public DbSet<NavigationMenuItem> NavigationMenuItems => Set<NavigationMenuItem>();
+
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
@@ -32,6 +34,7 @@ namespace WebsiteBuilder.IRF.DataAccess
 
             ConfigurePageRevisions(modelBuilder);
             ConfigurePageRevisionSections(modelBuilder);
+            ConfigureNavigationMenuItems(modelBuilder);
 
             ConfigureMediaAssets(modelBuilder);
             ConfigureMediaCleanupRunLogs(modelBuilder);
@@ -438,6 +441,61 @@ namespace WebsiteBuilder.IRF.DataAccess
             });
         }
 
+        private static void ConfigureNavigationMenuItems(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<NavigationMenuItem>(b =>
+            {
+                b.ToTable("NavigationMenuItems");
+
+                b.HasKey(x => x.Id);
+                b.Property(x => x.Id).ValueGeneratedOnAdd();
+
+                b.Property(x => x.TenantId)
+                    .IsRequired();
+
+                b.Property(x => x.MenuId)
+                    .IsRequired();
+
+                b.Property(x => x.ParentId)
+                    .IsRequired(false);
+
+                b.Property(x => x.Label)
+                    .HasMaxLength(200)
+                    .IsRequired();
+
+                b.Property(x => x.Url)
+                    .HasMaxLength(500)
+                    .IsRequired(false);
+
+                b.Property(x => x.OpenInNewTab)
+                    .HasDefaultValue(false);
+
+                // NEW columns (add these after you update the model)
+                b.Property(x => x.SortOrder)
+                    .HasDefaultValue(0);
+
+                b.Property(x => x.PageId)
+                    .IsRequired(false);
+
+                // Index for rendering menus quickly: tenant + menu + parent + ordering
+                b.HasIndex(x => new { x.TenantId, x.MenuId, x.ParentId, x.SortOrder });
+
+                // Helpful filtering index
+                b.HasIndex(x => new { x.TenantId, x.IsDeleted, x.IsActive });
+
+                // Optional: allow nested menus (self reference)
+                b.HasOne<NavigationMenuItem>()
+                    .WithMany()
+                    .HasForeignKey(x => x.ParentId)
+                    .OnDelete(DeleteBehavior.Restrict);
+
+                // Optional: if you add PageId to the model, link to Pages
+                b.HasOne<Page>()
+                    .WithMany()
+                    .HasForeignKey(x => x.PageId)
+                    .OnDelete(DeleteBehavior.Restrict);
+            });
+        }
 
     }
 }
