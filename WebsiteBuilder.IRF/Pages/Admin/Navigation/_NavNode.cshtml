@@ -1,0 +1,70 @@
+﻿@model WebsiteBuilder.IRF.ViewModels.Admin.Navigation.NavNodeVm
+
+<li class="nav-node mb-2" data-id="@Model.Id">
+    <div class="node-row border rounded p-2 bg-white">
+        <div class="d-flex align-items-start gap-2">
+            <div class="drag-handle text-muted" title="Drag to reorder" style="cursor: grab; user-select: none;">
+                &#x2630;
+            </div>
+
+            <div class="flex-grow-1">
+                <div class="row g-2">
+                    <div class="col-12">
+                        <label class="form-label mb-1 small">Label</label>
+                        <input class="form-control form-control-sm node-label" value="@Model.Label" maxlength="200" />
+                    </div>
+
+                    <div class="col-12">
+                        <label class="form-label mb-1 small">Link Type</label>
+                        <select class="form-select form-select-sm node-linktype">
+                            <option value="page">Internal Page</option>
+                            <option value="url">External URL</option>
+                        </select>
+                    </div>
+
+                    <div class="col-12 node-pagewrap">
+                        <label class="form-label mb-1 small">Page</label>
+                        <select class="form-select form-select-sm node-pageid">
+                            <option value="">-- Select page --</option>
+                            @foreach (var p in Model.PageOptions)
+                            {
+                                <option value="@p.Id" selected="@(Model.PageId == p.Id)">
+                                    @p.Title (@p.Slug)
+                                </option>
+                            }
+                        </select>
+                    </div>
+
+                    <div class="col-12 node-urlwrap d-none">
+                        <label class="form-label mb-1 small">URL</label>
+                        <input class="form-control form-control-sm node-url" value="@Model.Url" maxlength="500" placeholder="https://..." />
+                    </div>
+
+                    <div class="col-12 d-flex gap-3 align-items-center">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input node-newtab" type="checkbox" checked="@(Model.OpenInNewTab)">
+                            <label class="form-check-label small">Open in new tab</label>
+                        </div>
+
+                        <div class="form-check form-switch">
+                            <input class="form-check-input node-active" type="checkbox" checked="@(Model.IsActive)">
+                            <label class="form-check-label small">Active</label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="d-flex flex-column gap-2">
+                <button type="button" class="btn btn-sm btn-outline-secondary add-child">Add Child</button>
+                <button type="button" class="btn btn-sm btn-outline-danger delete-node">Delete</button>
+            </div>
+        </div>
+    </div>
+
+    <ul class="nav-children list-unstyled ms-4 mt-2 mb-0">
+        @foreach (var child in Model.Children)
+        {
+            @Html.Partial("_NavNode", child)
+        }
+    </ul>
+</li>

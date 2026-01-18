@@ -1,0 +1,385 @@
+﻿@page "{menuId:int}"
+@model WebsiteBuilder.IRF.Pages.Admin.Navigation.EditModel
+@{
+    ViewData["Title"] = "Edit Navigation Menu";
+}
+
+<form id="antiForgeryForm" method="post">
+    @Html.AntiForgeryToken()
+</form>
+
+<div class="d-flex align-items-center justify-content-between mb-3">
+    <div>
+        <h2 class="mb-0">Navigation Builder</h2>
+        <div class="text-muted">Menu ID: @Model.MenuId</div>
+    </div>
+
+    <div class="d-flex gap-2">
+        <button id="addRootBtn" type="button" class="btn btn-outline-primary">
+            Add Item
+        </button>
+        <button id="saveBtn" type="button" class="btn btn-primary">
+            Save Changes
+        </button>
+    </div>
+</div>
+
+<div class="row g-3">
+    <div class="col-lg-8">
+        <div class="card">
+            <div class="card-header d-flex align-items-center justify-content-between">
+                <div>
+                    <strong>Menu Structure</strong>
+                    <div class="text-muted small">Drag to reorder. Drag into an item to nest.</div>
+                </div>
+                <span class="badge text-bg-secondary">Tenant-scoped</span>
+            </div>
+
+            <div class="card-body">
+                <div id="statusMsg" class="alert alert-info d-none"></div>
+
+                <ul id="navRoot" class="nav-tree list-unstyled mb-0">
+                    @* Server renders initial tree *@
+                    @foreach (var node in Model.Tree)
+                    {
+                        @Html.Partial("_NavNode", node)
+                    }
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-4">
+        <div class="card">
+            <div class="card-header">
+                <strong>Linking</strong>
+            </div>
+            <div class="card-body">
+                <p class="text-muted mb-2">
+                    Each menu item can link to either:
+                </p>
+                <ul class="text-muted mb-0">
+                    <li>Internal page (PageId)</li>
+                    <li>External URL (Url)</li>
+                </ul>
+                <hr />
+                <div class="small text-muted">
+                    Tip: If PageId is selected, Url will be ignored on save.
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+    @* SortableJS (CDN) *@
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"
+            integrity="sha384-6c7m2Q1J1gWqNwX5d6q5K8g8mH0p8OQ6l8qgZ7x6wQw8bqYwz8rJ8GmQx5jPqGmE"
+            crossorigin="anonymous"></script>
+
+    <script>
+        (function () {
+            const menuId = @Model.MenuId;
+
+            function getToken() {
+                const el = document.querySelector('#antiForgeryForm input[name="__RequestVerificationToken"]');
+                return el ? el.value : null;
+            }
+
+            function showMsg(text, kind) {
+                const box = document.getElementById('statusMsg');
+                box.classList.remove('d-none', 'alert-info', 'alert-success', 'alert-danger');
+                box.classList.add(kind === 'success' ? 'alert-success' : kind === 'error' ? 'alert-danger' : 'alert-info');
+                box.textContent = text;
+            }
+
+            function uniqueTempId() {
+                // negative IDs for new client-side items
+                return -Math.floor(Math.random() * 1000000000) - 1;
+            }
+
+            function createNodeLi(dto) {
+                const li = document.createElement('li');
+                li.className = 'nav-node mb-2';
+                li.dataset.id = String(dto.id);
+
+                li.innerHTML = `
+                    <div class="node-row border rounded p-2 bg-white">
+                        <div class="d-flex align-items-start gap-2">
+                            <div class="drag-handle text-muted" title="Drag to reorder" style="cursor: grab; user-select: none;">
+                                &#x2630;
+                            </div>
+
+                            <div class="flex-grow-1">
+                                <div class="row g-2">
+                                    <div class="col-12">
+                                        <label class="form-label mb-1 small">Label</label>
+                                        <input class="form-control form-control-sm node-label" value="${escapeHtml(dto.label || '')}" maxlength="200" />
+                                    </div>
+
+                                    <div class="col-12">
+                                        <label class="form-label mb-1 small">Link Type</label>
+                                        <select class="form-select form-select-sm node-linktype">
+                                            <option value="page">Internal Page</option>
+                                            <option value="url">External URL</option>
+                                        </select>
+                                    </div>
+
+                                    <div class="col-12 node-pagewrap">
+                                        <label class="form-label mb-1 small">Page</label>
+                                        <select class="form-select form-select-sm node-pageid">
+                                            <option value="">-- Select page --</option>
+                                            ${renderPageOptions(dto.pageId)}
+                                        </select>
+                                    </div>
+
+                                    <div class="col-12 node-urlwrap d-none">
+                                        <label class="form-label mb-1 small">URL</label>
+                                        <input class="form-control form-control-sm node-url" value="${escapeHtml(dto.url || '')}" maxlength="500" placeholder="https://..." />
+                                    </div>
+
+                                    <div class="col-12 d-flex gap-3 align-items-center">
+                                        <div class="form-check form-switch">
+                                            <input class="form-check-input node-newtab" type="checkbox" ${dto.openInNewTab ? 'checked' : ''}>
+                                            <label class="form-check-label small">Open in new tab</label>
+                                        </div>
+
+                                        <div class="form-check form-switch">
+                                            <input class="form-check-input node-active" type="checkbox" ${dto.isActive ? 'checked' : ''}>
+                                            <label class="form-check-label small">Active</label>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="d-flex flex-column gap-2">
+                                <button type="button" class="btn btn-sm btn-outline-secondary add-child">Add Child</button>
+                                <button type="button" class="btn btn-sm btn-outline-danger delete-node">Delete</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <ul class="nav-children list-unstyled ms-4 mt-2 mb-0"></ul>
+                `;
+
+                wireNodeUi(li);
+                initSortable(li.querySelector('.nav-children'));
+
+                // initial link type selection
+                setLinkType(li, dto.pageId ? 'page' : 'url');
+
+                return li;
+            }
+
+            function escapeHtml(s) {
+                return String(s)
+                    .replaceAll('&', '&amp;')
+                    .replaceAll('<', '&lt;')
+                    .replaceAll('>', '&gt;')
+                    .replaceAll('"', '&quot;')
+                    .replaceAll("'", '&#039;');
+            }
+
+            const pages = @Html.Raw(Model.PagesJson);
+
+            function renderPageOptions(selectedId) {
+                const sel = selectedId ? String(selectedId) : '';
+                return pages.map(p => {
+                    const selected = sel && sel === String(p.id) ? 'selected' : '';
+                    return `<option value="${p.id}" ${selected}>${escapeHtml(p.title)} (${escapeHtml(p.slug)})</option>`;
+                }).join('');
+            }
+
+            function setLinkType(li, type) {
+                const linkType = li.querySelector('.node-linktype');
+                const pageWrap = li.querySelector('.node-pagewrap');
+                const urlWrap = li.querySelector('.node-urlwrap');
+
+                linkType.value = type;
+
+                if (type === 'page') {
+                    pageWrap.classList.remove('d-none');
+                    urlWrap.classList.add('d-none');
+                } else {
+                    urlWrap.classList.remove('d-none');
+                    pageWrap.classList.add('d-none');
+                    // Clear page selection if switching to URL
+                    li.querySelector('.node-pageid').value = '';
+                }
+            }
+
+            function wireNodeUi(li) {
+                li.querySelector('.node-linktype').addEventListener('change', (e) => {
+                    setLinkType(li, e.target.value);
+                });
+
+                li.querySelector('.add-child').addEventListener('click', () => {
+                    const child = createNodeLi({
+                        id: uniqueTempId(),
+                        label: 'New Item',
+                        pageId: null,
+                        url: '',
+                        openInNewTab: false,
+                        isActive: true
+                    });
+                    li.querySelector('.nav-children').appendChild(child);
+                });
+
+                li.querySelector('.delete-node').addEventListener('click', () => {
+                    // soft delete in UI: mark as deleted + hide
+                    li.dataset.deleted = 'true';
+                    li.style.opacity = '0.5';
+                    li.style.display = 'none';
+                });
+            }
+
+            function initSortable(ul) {
+                if (!ul) return;
+
+                Sortable.create(ul, {
+                    group: 'nav',
+                    animation: 150,
+                    handle: '.drag-handle',
+                    draggable: '.nav-node',
+                    fallbackOnBody: true,
+                    swapThreshold: 0.65
+                });
+            }
+
+            function initAllSortables() {
+                initSortable(document.getElementById('navRoot'));
+                document.querySelectorAll('.nav-children').forEach(initSortable);
+            }
+
+            function buildFlatList(rootUl) {
+                const items = [];
+                function walk(ul, parentId) {
+                    const children = Array.from(ul.children).filter(x => x.classList.contains('nav-node'));
+                    children.forEach((li, idx) => {
+                        const id = Number(li.dataset.id);
+                        const deleted = li.dataset.deleted === 'true';
+
+                        const label = li.querySelector('.node-label')?.value?.trim() || '';
+                        const linkType = li.querySelector('.node-linktype')?.value || 'page';
+                        const pageIdRaw = li.querySelector('.node-pageid')?.value || '';
+                        const pageId = pageIdRaw ? Number(pageIdRaw) : null;
+                        const url = li.querySelector('.node-url')?.value?.trim() || '';
+                        const openInNewTab = !!li.querySelector('.node-newtab')?.checked;
+                        const isActive = !!li.querySelector('.node-active')?.checked;
+
+                        items.push({
+                            id,
+                            parentId: parentId,
+                            sortOrder: idx,
+                            label,
+                            pageId: (linkType === 'page') ? pageId : null,
+                            url: (linkType === 'url') ? url : (pageId ? '' : url), // keep safe
+                            openInNewTab,
+                            isActive,
+                            isDeleted: deleted
+                        });
+
+                        const childUl = li.querySelector(':scope > .nav-children');
+                        if (childUl) walk(childUl, id);
+                    });
+                }
+                walk(rootUl, null);
+                return items;
+            }
+
+            async function save() {
+                const token = getToken();
+                if (!token) {
+                    showMsg('Missing antiforgery token.', 'error');
+                    return;
+                }
+
+                const payload = {
+                    menuId,
+                    items: buildFlatList(document.getElementById('navRoot'))
+                };
+
+                // basic validation
+                const invalid = payload.items.find(x => !x.isDeleted && (!x.label || x.label.length === 0));
+                if (invalid) {
+                    showMsg('Validation failed: all non-deleted items must have a Label.', 'error');
+                    return;
+                }
+
+                showMsg('Saving...', 'info');
+
+                const res = await fetch(`?handler=Save`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'RequestVerificationToken': token
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                const data = await res.json().catch(() => null);
+                if (!res.ok || !data || !data.success) {
+                    const err = data && data.error ? data.error : ('Save failed (HTTP ' + res.status + ')');
+                    showMsg(err, 'error');
+                    return;
+                }
+
+                // map temp IDs to real IDs (if returned)
+                if (data.idMap) {
+                    for (const [tempIdStr, realId] of Object.entries(data.idMap)) {
+                        const li = document.querySelector(`.nav-node[data-id="${tempIdStr}"]`);
+                        if (li) li.dataset.id = String(realId);
+                    }
+                }
+
+                showMsg('Saved successfully.', 'success');
+            }
+
+            document.getElementById('addRootBtn').addEventListener('click', () => {
+                const li = createNodeLi({
+                    id: uniqueTempId(),
+                    label: 'New Item',
+                    pageId: null,
+                    url: '',
+                    openInNewTab: false,
+                    isActive: true
+                });
+                document.getElementById('navRoot').appendChild(li);
+            });
+
+            document.getElementById('saveBtn').addEventListener('click', () => {
+                save().catch(err => showMsg(err.message || 'Unexpected error', 'error'));
+            });
+
+            // Initialize SortableJS
+            initAllSortables();
+
+            // Wire server-rendered nodes (partial view)
+            document.querySelectorAll('.nav-node').forEach(li => {
+                wireNodeUi(li);
+                const childrenUl = li.querySelector(':scope > .nav-children');
+                initSortable(childrenUl);
+
+                // set initial link type
+                const pageIdVal = li.querySelector('.node-pageid')?.value;
+                setLinkType(li, pageIdVal ? 'page' : 'url');
+            });
+
+        })();
+    </script>
+
+    <style>
+        .nav-tree .node-row {
+            background: #fff;
+        }
+
+        .nav-node {
+            list-style: none;
+        }
+
+        .drag-handle {
+            width: 20px;
+            text-align: center;
+        }
+    </style>
+}
