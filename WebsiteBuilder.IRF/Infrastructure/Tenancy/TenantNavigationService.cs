@@ -41,9 +41,12 @@ namespace WebsiteBuilder.IRF.Infrastructure.Tenancy
         public Task<IReadOnlyList<NavItem>> GetFooterAsync(CancellationToken ct = default)
             => GetMenuAsync(FooterMenuId, ct);
 
+        public Task<IReadOnlyList<NavItem>> GetMenuAsync(int menuId, CancellationToken ct = default)
+            => GetMenuInternalAsync(menuId, ct);
+
         private string CacheKey(int menuId) => $"tenant-nav:{_tenant.TenantId}:menu:{menuId}";
 
-        private async Task<IReadOnlyList<NavItem>> GetMenuAsync(int menuId, CancellationToken ct = default)
+        private async Task<IReadOnlyList<NavItem>> GetMenuInternalAsync(int menuId, CancellationToken ct = default)
         {
             if (!_tenant.IsResolved)
                 return Array.Empty<NavItem>();
@@ -122,7 +125,6 @@ namespace WebsiteBuilder.IRF.Infrastructure.Tenancy
                     var trimmed = url.Trim();
 
                     // Normalize common home variant so Home doesn't end up as /home
-                    // (slug handler should still canonicalize /home -> /, but this improves UX)
                     if (trimmed.Equals("/home", StringComparison.OrdinalIgnoreCase))
                         return "/";
 
@@ -203,6 +205,14 @@ namespace WebsiteBuilder.IRF.Infrastructure.Tenancy
 
             _cache.Remove(CacheKey(HeaderMenuId));
             _cache.Remove(CacheKey(FooterMenuId));
+        }
+
+        public void InvalidateMenu(int menuId)
+        {
+            if (!_tenant.IsResolved)
+                return;
+
+            _cache.Remove(CacheKey(menuId));
         }
 
         private static string ToUrl(string? slug)

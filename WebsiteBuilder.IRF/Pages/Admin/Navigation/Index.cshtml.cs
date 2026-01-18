@@ -13,11 +13,13 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
     {
         private readonly DataContext _db;
         private readonly ITenantContext _tenant;
+        private readonly ITenantNavigationService _nav;
 
-        public IndexModel(DataContext db, ITenantContext tenant)
+        public IndexModel(DataContext db, ITenantContext tenant, ITenantNavigationService nav)
         {
             _db = db;
             _tenant = tenant;
+            _nav = nav;
         }
 
         public sealed record PublishedPageVm(int Id, string Title, string? Slug);
@@ -420,6 +422,8 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
             entity.UpdatedBy = userGuid == Guid.Empty ? Guid.Empty : userGuid;
 
             await _db.SaveChangesAsync(ct);
+            _nav.InvalidateMenu(req.MenuId);
+
 
             return new JsonResult(new { ok = true });
         }
@@ -480,6 +484,10 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
             }
 
             await _db.SaveChangesAsync(ct);
+
+            foreach (var menuId in req.Items.Select(x => x.MenuId).Distinct())
+                _nav.InvalidateMenu(menuId);
+
             return new JsonResult(new { ok = true });
         }
     }

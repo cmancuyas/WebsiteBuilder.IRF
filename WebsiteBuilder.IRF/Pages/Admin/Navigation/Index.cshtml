@@ -72,7 +72,7 @@
                                     }
                                     else
                                     {
-                                    @RenderNodes(rootNodes, menuId, 0)
+                                        @RenderNodes(rootNodes, menuId, 0, isRoot: true)
                                     }
                                 }
                             </div>
@@ -441,34 +441,137 @@
                 }
             });
         }
+
+        function findMenuRoot(el) {
+               return el.closest('.nav-root');
+           }
+
+           function serializeMenu(menuRootUl) {
+               const menuId = parseInt(menuRootUl.dataset.menuid, 10);
+               const items = [];
+
+               function walk(ul, parentId) {
+                   const children = Array.from(ul.children).filter(x => x.classList.contains('nav-node'));
+                   children.forEach((li, idx) => {
+                       const id = parseInt(li.dataset.id, 10);
+
+                       items.push({
+                           id: id,
+                           menuId: menuId,
+                           parentId: parentId,
+                           sortOrder: idx + 1
+                       });
+
+                       const childUl = li.querySelector(':scope > .nav-children');
+                       if (childUl) walk(childUl, id);
+                   });
+               }
+
+               walk(menuRootUl, null);
+               return { items };
+           }
+
+           function initNestedSortableForMenu(menuRootUl) {
+               const menuId = parseInt(menuRootUl.dataset.menuid, 10);
+
+               // Initialize Sortable on root and every children UL
+               const allUls = [menuRootUl, ...menuRootUl.querySelectorAll('.nav-children')];
+
+               allUls.forEach(ul => {
+                   Sortable.create(ul, {
+                       group: `nav-menu-${menuId}`, // prevents cross-menu dragging (Header <-> Footer)
+                       handle: '.drag-handle',
+                       draggable: '.nav-node',
+                       animation: 150,
+                       fallbackOnBody: true,
+                       swapThreshold: 0.65,
+
+                       onEnd: async function (evt) {
+                           const root = findMenuRoot(evt.to);
+                           if (!root) return;
+
+                           const payload = serializeMenu(root);
+
+                           const resp = await postJson('?handler=ReorderMenuItems', payload);
+                           if (!resp.ok || !resp.data?.ok) {
+                               alert(resp.data?.message || 'Reorder failed.');
+                               return;
+                           }
+
+                           // Keep UX simple for now: reload so SortOrder badges update
+                           location.reload();
+                       }
+                   });
+               });
+           }
+
+           // Initialize for each menu tree (Header + Footer)
+           document.querySelectorAll('.nav-root').forEach(initNestedSortableForMenu);
+
+
         })();
     </script>
 }
 
 @functions {
-    IHtmlContent RenderNodes(IEnumerable<WebsiteBuilder.IRF.Pages.Admin.Navigation.IndexModel.NavNode> nodes, int menuId, int depth)
+    IHtmlContent RenderNodes(
+        IEnumerable<WebsiteBuilder.IRF.Pages.Admin.Navigation.IndexModel.NavNode> nodes,
+        int menuId,
+        int depth,
+        bool isRoot = false)
     {
         var ul = new TagBuilder("ul");
-        ul.AddCssClass(depth == 0 ? "list-unstyled mb-0" : "list-unstyled ms-4 mb-0");
+
+        if (isRoot)
+        {
+            ul.AddCssClass("nav-root list-unstyled mb-0");
+            ul.Attributes["data-menuid"] = menuId.ToString();
+        }
+        else
+        {
+            ul.AddCssClass("nav-children list-unstyled ms-4 mb-0");
+        }
 
         foreach (var n in nodes)
         {
             var li = new TagBuilder("li");
-            li.AddCssClass("mb-2");
+            li.AddCssClass("nav-node mb-2");
+            li.Attributes["data-id"] = n.Item.Id.ToString();
+            li.Attributes["data-menuid"] = menuId.ToString();
+
+            var row = new TagBuilder("div");
+            row.AddCssClass("d-flex align-items-center gap-2 border rounded p-2 bg-white");
+
+            var handle = new TagBuilder("span");
+            handle.AddCssClass("drag-handle text-muted");
+            handle.Attributes["title"] = "Drag to reorder / nest";
+            handle.Attributes["style"] = "cursor:grab; user-select:none;";
+            handle.InnerHtml.Append("☰");
 
             var badge = new TagBuilder("span");
-            badge.AddCssClass("badge bg-light text-dark border me-2");
-            badge.InnerHtml.Append($"M{menuId} · S{n.Item.SortOrder}");
+            badge.AddCssClass("badge bg-light text-dark border");
+            badge.InnerHtml.Append($"S{n.Item.SortOrder}");
 
             var label = new TagBuilder("span");
+            label.AddCssClass("fw-semibold");
             label.InnerHtml.Append(n.Item.Label ?? "");
 
-            li.InnerHtml.AppendHtml(badge);
-            li.InnerHtml.AppendHtml(label);
+            row.InnerHtml.AppendHtml(handle);
+            row.InnerHtml.AppendHtml(badge);
+            row.InnerHtml.AppendHtml(label);
 
+            li.InnerHtml.AppendHtml(row);
+
+            // Always render a child UL so Sortable can drop into it
             if (n.Children != null && n.Children.Any())
             {
-                li.InnerHtml.AppendHtml(RenderNodes(n.Children, menuId, depth + 1));
+                li.InnerHtml.AppendHtml(RenderNodes(n.Children, menuId, depth + 1, isRoot: false));
+            }
+            else
+            {
+                var emptyChild = new TagBuilder("ul");
+                emptyChild.AddCssClass("nav-children list-unstyled ms-4 mb-0");
+                li.InnerHtml.AppendHtml(emptyChild);
             }
 
             ul.InnerHtml.AppendHtml(li);
@@ -477,3 +580,4 @@
         return ul;
     }
 }
+
