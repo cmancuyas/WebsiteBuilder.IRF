@@ -21,7 +21,7 @@ namespace WebsiteBuilder.Models
         [MaxLength(200)]
         public string Label { get; set; } = string.Empty;
 
-        [MaxLength(500)]
+        [MaxLength(500)] 
         public string Url { get; set; } = string.Empty;
 
         public bool OpenInNewTab { get; set; }

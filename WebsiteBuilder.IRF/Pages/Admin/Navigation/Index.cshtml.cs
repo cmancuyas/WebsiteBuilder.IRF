@@ -384,28 +384,43 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
 
         public async Task<IActionResult> OnPostReorderMenuItemsAsync([FromBody] ReorderMenuItemsRequest req, CancellationToken ct)
         {
-            // Minimal + safe: update sort orders exactly as sent (you already validated drag behavior)
+            if (!_tenant.IsResolved)
+                return new JsonResult(new { ok = false, message = "Tenant not resolved." });
+
+            if (req?.Items == null || req.Items.Count == 0)
+                return new JsonResult(new { ok = false, message = "No reorder items received." });
+
             var ids = req.Items.Select(x => x.Id).Distinct().ToList();
 
             var entities = await _db.NavigationMenuItems
                 .Where(x => x.TenantId == _tenant.TenantId && !x.IsDeleted && ids.Contains(x.Id))
                 .ToListAsync(ct);
 
+            // If client sent IDs that don't belong to tenant, fail fast (prevents partial updates)
+            if (entities.Count != ids.Count)
+                return new JsonResult(new { ok = false, message = "One or more menu items are invalid." });
+
             var map = req.Items.ToDictionary(x => x.Id, x => x);
+
+            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            Guid.TryParse(userId, out var userGuid);
+            var now = DateTime.UtcNow;
 
             foreach (var e in entities)
             {
-                if (!map.TryGetValue(e.Id, out var row))
-                    continue;
+                var row = map[e.Id];
 
                 e.MenuId = row.MenuId;
                 e.ParentId = row.ParentId;
                 e.SortOrder = row.SortOrder;
-                e.UpdatedAt = DateTime.UtcNow;
+
+                e.UpdatedAt = now;
+                e.UpdatedBy = userGuid == Guid.Empty ? Guid.Empty : userGuid;
             }
 
             await _db.SaveChangesAsync(ct);
             return new JsonResult(new { ok = true });
         }
+
     }
 }

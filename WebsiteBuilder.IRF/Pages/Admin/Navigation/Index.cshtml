@@ -14,6 +14,10 @@
         _ => $"Menu {menuId}"
     };
 }
+<!-- Add this near the top of the page (inside the page, not inside the modal) -->
+<form method="post" id="antiForgeryForm" class="d-none">
+    @Html.AntiForgeryToken()
+</form>
 
 <div class="d-flex align-items-start justify-content-between mb-3">
     <div>
@@ -384,31 +388,59 @@
             });
 
             // Step 3: drag & drop reorder (flat list)
-            const tableBody = document.querySelector('#menuItemsTable tbody');
-            if (tableBody && window.Sortable) {
-                Sortable.create(tableBody, {
-                    handle: '.drag-handle',
-                    animation: 150,
-                    onEnd: async function () {
-                        // build ordered list per menu+parent grouping
-                        const rows = Array.from(tableBody.querySelectorAll('tr'));
-                        const items = rows.map((r, index) => ({
+                 // Step 3: drag & drop reorder (flat list)
+        const tableBody = document.querySelector('#menuItemsTable tbody');
+
+        function groupKeyFromRow(row) {
+            const menuId = row?.dataset?.menuid ?? '';
+            const parentId = row?.dataset?.parentid ?? ''; // empty string means null
+            return `${menuId}|${parentId}`;
+        }
+
+        if (tableBody && window.Sortable) {
+            Sortable.create(tableBody, {
+                handle: '.drag-handle',
+                animation: 150,
+
+                // Prevent dragging across different menu/parent “buckets”
+                onMove: function (evt) {
+                    const dragged = evt.dragged;
+                    const related = evt.related;
+
+                    // If there is no related row (edge case), allow.
+                    if (!dragged || !related) return true;
+
+                    return groupKeyFromRow(dragged) === groupKeyFromRow(related);
+                },
+
+                onEnd: async function () {
+                    const rows = Array.from(tableBody.querySelectorAll('tr'));
+
+                    // Assign SortOrder per (MenuId, ParentId) group based on DOM order
+                    const counters = new Map(); // key -> next sort
+                    const items = rows.map((r) => {
+                        const key = groupKeyFromRow(r);
+                        const next = (counters.get(key) ?? 0) + 1;
+                        counters.set(key, next);
+
+                        return {
                             id: parseInt(r.dataset.id, 10),
                             menuId: parseInt(r.dataset.menuid, 10),
                             parentId: r.dataset.parentid ? parseInt(r.dataset.parentid, 10) : null,
-                            sortOrder: index + 1
-                        }));
+                            sortOrder: next
+                        };
+                    });
 
-                        const r = await postJson('?handler=ReorderMenuItems', { items });
-                        if (!r.ok || !r.data?.ok) {
-                            alert(r.data?.message || 'Reorder failed.');
-                            return;
-                        }
-
-                        location.reload();
+                    const resp = await postJson('?handler=ReorderMenuItems', { items });
+                    if (!resp.ok || !resp.data?.ok) {
+                        alert(resp.data?.message || 'Reorder failed.');
+                        return;
                     }
-                });
-            }
+
+                    location.reload();
+                }
+            });
+        }
         })();
     </script>
 }
