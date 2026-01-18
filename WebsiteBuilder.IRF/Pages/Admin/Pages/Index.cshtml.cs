@@ -1,7 +1,9 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
+using System.Security.Claims;
 using WebsiteBuilder.IRF.DataAccess;
+using WebsiteBuilder.IRF.Infrastructure.Auth;
 using WebsiteBuilder.IRF.Infrastructure.Tenancy;
 
 namespace WebsiteBuilder.IRF.Pages.Admin.Pages
@@ -25,13 +27,34 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
 
         public List<PageListItemVm> Items { get; private set; } = new();
 
-        public async Task<IActionResult> OnGetAsync()
+        private Guid GetUserIdOrEmpty()
         {
-            if (!_tenant.IsResolved) return NotFound();
+            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            return Guid.TryParse(userId, out var g) ? g : Guid.Empty;
+        }
 
-            var query = _db.Pages
-                .AsNoTracking()
-                .Where(p => p.TenantId == _tenant.TenantId && p.IsActive && !p.IsDeleted);
+        private bool CanSeeAllTenantPages()
+        {
+            return User.IsInRole(AppRoles.SuperAdmin) || User.IsInRole(AppRoles.Admin);
+        }
+
+        private IQueryable<WebsiteBuilder.Models.Page> PagesForCurrentUser()
+        {
+            var q = _db.Pages.Where(p => p.TenantId == _tenant.TenantId && p.IsActive && !p.IsDeleted);
+
+            if (CanSeeAllTenantPages())
+                return q;
+
+            var userId = GetUserIdOrEmpty();
+            return q.Where(p => p.OwnerUserId == userId);
+        }
+
+        public async Task<IActionResult> OnGetAsync(CancellationToken ct)
+        {
+            if (!_tenant.IsResolved)
+                return NotFound();
+
+            var query = PagesForCurrentUser().AsNoTracking();
 
             if (!string.IsNullOrWhiteSpace(Q))
             {
@@ -54,7 +77,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                     PageStatusId = p.PageStatusId,
                     UpdatedAt = p.UpdatedAt ?? p.CreatedAt
                 })
-                .ToListAsync();
+                .ToListAsync(ct);
 
             return Page();
         }

@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.AspNetCore.Mvc.Rendering;
 using Microsoft.EntityFrameworkCore;
@@ -9,6 +9,7 @@ using WebsiteBuilder.IRF.Infrastructure.Tenancy;
 using WebsiteBuilder.IRF.ViewModels.Admin.Pages;
 using WebsiteBuilder.Models;
 using WebsiteBuilder.Models.Constants;
+using Page = WebsiteBuilder.Models.Page;
 
 namespace WebsiteBuilder.IRF.Pages.Admin.Pages
 {
@@ -32,20 +33,21 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
 
         public async Task<IActionResult> OnGetAsync()
         {
-            if (!_tenant.IsResolved) return NotFound();
+            if (!_tenant.IsResolved)
+                return NotFound();
 
             await LoadPageStatusesAsync();
-
             return Page();
         }
 
         public async Task<IActionResult> OnPostAsync()
         {
-            if (!_tenant.IsResolved) return NotFound();
+            if (!_tenant.IsResolved)
+                return NotFound();
 
             await LoadPageStatusesAsync();
 
-            // Server-side normalize BEFORE validation uniqueness
+            // Normalize slug before validation
             Input.Slug = SlugUtil.Normalize(Input.Slug);
 
             if (!ModelState.IsValid)
@@ -65,15 +67,13 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
 
             var userId = GetUserIdOrEmpty();
 
-            if (!_tenant.IsResolved)
-                return NotFound();
-
-            var entity = new WebsiteBuilder.Models.Page
+            var entity = new Page
             {
-                TenantId = _tenant.TenantId,                 // CRITICAL
+                TenantId = _tenant.TenantId,
+                OwnerUserId = userId,                 // ✅ CRITICAL
                 Title = Input.Title.Trim(),
-                Slug = SlugUtil.Normalize(Input.Slug),       // CRITICAL
-                PageStatusId = Input.PageStatusId,
+                Slug = Input.Slug,
+                PageStatusId = PageStatusIds.Draft,   // ✅ FORCE DRAFT
                 LayoutKey = Input.LayoutKey?.Trim() ?? "Default",
                 MetaTitle = string.IsNullOrWhiteSpace(Input.MetaTitle) ? null : Input.MetaTitle.Trim(),
                 MetaDescription = string.IsNullOrWhiteSpace(Input.MetaDescription) ? null : Input.MetaDescription.Trim(),
@@ -82,13 +82,8 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                 IsActive = true,
                 IsDeleted = false,
                 CreatedAt = DateTime.UtcNow,
-                CreatedBy = userId // however you set this
+                CreatedBy = userId
             };
-
-
-            // If created directly as Published, set PublishedAt
-            if (entity.PageStatusId == PageStatusIds.Published)
-                entity.PublishedAt = DateTime.UtcNow;
 
             _db.Pages.Add(entity);
             await _db.SaveChangesAsync();
@@ -100,7 +95,8 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
         {
             var statuses = await _db.PageStatuses
                 .AsNoTracking()
-                .OrderBy(s => s.Id)
+                .OrderBy(s => s.SortOrder)
+                .ThenBy(s => s.Name)
                 .Select(s => new SelectListItem
                 {
                     Value = s.Id.ToString(),
@@ -109,32 +105,6 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                 .ToListAsync();
 
             ViewData["PageStatuses"] = statuses;
-        }
-
-        private static string NormalizeSlug(string? slug)
-        {
-            // Production-default: slug required (matches your [Required] attribute)
-            // If you later want "" allowed for home, adjust here and in validation rules.
-            slug ??= string.Empty;
-            slug = slug.Trim();
-
-            // Remove leading slash
-            while (slug.StartsWith("/"))
-                slug = slug.Substring(1);
-
-            // Lowercase
-            slug = slug.ToLowerInvariant();
-
-            // Replace whitespace with hyphen
-            slug = System.Text.RegularExpressions.Regex.Replace(slug, @"\s+", "-");
-
-            // Collapse multiple hyphens
-            slug = System.Text.RegularExpressions.Regex.Replace(slug, @"-+", "-");
-
-            // Trim hyphens
-            slug = slug.Trim('-');
-
-            return slug;
         }
 
         private Guid GetUserIdOrEmpty()
