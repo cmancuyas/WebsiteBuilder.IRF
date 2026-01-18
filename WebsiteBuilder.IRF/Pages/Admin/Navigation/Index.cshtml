@@ -1,176 +1,149 @@
-﻿@page
+﻿@page "/admin/navigation"
 @model WebsiteBuilder.IRF.Pages.Admin.Navigation.IndexModel
+
 @using Microsoft.AspNetCore.Html
-@using WebsiteBuilder.Models.Constants
+@using Microsoft.AspNetCore.Mvc.Rendering
 
 @{
     ViewData["Title"] = "Navigation Builder";
+
+    string MenuName(int menuId) => menuId switch
+    {
+        1 => "Header",
+        2 => "Footer",
+        _ => $"Menu {menuId}"
+    };
 }
 
-<div class="container py-4">
-
-    <div class="d-flex align-items-center justify-content-between mb-3">
-        <div>
-            <h2 class="mb-0">Navigation Builder</h2>
-            <div class="text-muted small">Manage site navigation configuration.</div>
-        </div>
-
-        <a class="btn btn-outline-secondary" asp-page="/Admin/Pages/Index">Back to Pages</a>
+<div class="d-flex align-items-start justify-content-between mb-3">
+    <div>
+        <h1 class="h3 mb-1">Navigation Builder</h1>
+        <div class="text-muted">Manage site navigation configuration.</div>
     </div>
-
-    <div id="navMsg" class="mb-3"></div>
-
-    <ul class="nav nav-tabs" id="navBuilderTabs" role="tablist">
-        <li class="nav-item" role="presentation">
-            <button class="nav-link active"
-                    id="tab-pages"
-                    data-bs-toggle="tab"
-                    data-bs-target="#pane-pages"
-                    type="button"
-                    role="tab">
-                Pages
-            </button>
-        </li>
-        <li class="nav-item" role="presentation">
-            <button class="nav-link"
-                    id="tab-menuitems"
-                    data-bs-toggle="tab"
-                    data-bs-target="#pane-menuitems"
-                    type="button"
-                    role="tab">
-                Menu Items (DB)
-            </button>
-        </li>
-    </ul>
-
-    <div class="tab-content border border-top-0 rounded-bottom shadow-sm" id="navBuilderTabContent">
-
-        <!-- TAB A: Pages (keep your existing UI here as-is) -->
-        <div class="tab-pane fade show active p-0" id="pane-pages" role="tabpanel">
-            <!-- KEEP YOUR EXISTING PAGES TABLE + SORTABLE SCRIPT (unchanged) -->
-            @* (Your current Pages tab content remains here.) *@
-        </div>
-
-        <!-- TAB B: NavigationMenuItems -->
-        <div class="tab-pane fade p-3" id="pane-menuitems" role="tabpanel">
-
-            <div class="d-flex align-items-start justify-content-between mb-2">
-                <div>
-                    <strong>NavigationMenuItems</strong>
-                    <div class="text-muted small">
-                        Draft working set (Step 2). Header/Footer supported.
-                    </div>
-                </div>
-
-                <div class="d-flex gap-2">
-                    <button type="button" class="btn btn-primary btn-sm" id="btnAddMenuItem">
-                        Add Menu Item
-                    </button>
-                    <span class="badge bg-light text-dark align-self-center">
-                        Total: @Model.MenuItemsFlat.Count
-                    </span>
-                </div>
-            </div>
-
-            @if (Model.MenuItemsFlat.Count == 0)
-            {
-                <div class="alert alert-warning mb-0">
-                    No navigation menu items found for this tenant.
-                </div>
-            }
-            else
-            {
-                <div class="row g-3">
-                    <div class="col-12 col-lg-6">
-                        <div class="card">
-                            <div class="card-header"><strong>Tree</strong></div>
-                            <div class="card-body">
-                                @foreach (var menu in WebsiteBuilder.IRF.Pages.Admin.Navigation.IndexModel.MenuNames.OrderBy(x => x.Key))
-                                {
-                                    var menuId = menu.Key;
-                                    var menuName = menu.Value;
-
-                                    <div class="mb-3">
-                                        <div class="fw-semibold mb-2">@menuName</div>
-
-                                        @if (Model.MenuTreesByMenuId.TryGetValue(menuId, out var roots) && roots.Count > 0)
-                                        {
-                                            @RenderNodes(roots)
-                                        }
-                                        else
-                                        {
-                                            <div class="text-muted small">No items.</div>
-                                        }
-                                    </div>
-                                }
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="col-12 col-lg-6">
-                        <div class="card">
-                            <div class="card-header"><strong>Flat (ordered)</strong></div>
-                            <div class="card-body p-0">
-                                <div class="table-responsive">
-                                    <table class="table table-sm mb-0" id="menuItemsTable">
-                                        <thead class="table-light">
-                                            <tr>
-                                                <th style="width: 36px;"></th>
-                                                <th style="width: 90px;">Menu</th>
-                                                <th style="width: 80px;">Parent</th>
-                                                <th style="width: 70px;">Sort</th>
-                                                <th>Label</th>
-                                                <th style="width: 90px;">PageId</th>
-                                                <th style="width: 90px;">New Tab</th>
-                                                <th style="width: 120px;">Actions</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            @foreach (var mi in Model.MenuItemsFlat)
-                                            {
-                                                var menuName = Model.MenuNamesMap.TryGetValue(mi.MenuId, out var n) ? n : $"Menu {mi.MenuId}";
-                                                <tr data-id="@mi.Id"
-                                                    data-menuid="@mi.MenuId"
-                                                    data-parentid="@(mi.ParentId?.ToString() ?? "")"
-                                                    data-label="@mi.Label"
-                                                    data-pageid="@(mi.PageId?.ToString() ?? "")"
-                                                    data-url="@mi.Url"
-                                                    data-newtab="@(mi.OpenInNewTab ? "1" : "0")">
-                                                    <td class="text-muted drag-handle" style="cursor: grab;">☰</td>
-                                                    <td>@menuName</td>
-                                                    <td>@(mi.ParentId?.ToString() ?? "-")</td>
-                                                    <td>@mi.SortOrder</td>
-                                                    <td class="fw-semibold">@mi.Label</td>
-                                                    <td>@(mi.PageId?.ToString() ?? "-")</td>
-                                                    <td>@(mi.OpenInNewTab ? "Yes" : "No")</td>
-                                                    <td>
-                                                        <button type="button" class="btn btn-outline-primary btn-sm btnEditMenuItem">Edit</button>
-                                                        <button type="button" class="btn btn-outline-danger btn-sm btnDeleteMenuItem">Delete</button>
-                                                    </td>
-                                                </tr>
-                                            }
-                                        </tbody>
-                                    </table>
-                                </div>
-                            </div>
-                            <div class="card-footer text-muted small">
-                                Reordering comes in Step 3 (drag & drop).
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            }
-
-        </div>
+    <div>
+        <a class="btn btn-outline-secondary" href="/admin/pages">Back to Pages</a>
     </div>
 </div>
 
-<!-- Modal: Add/Edit Menu Item -->
+<ul class="nav nav-tabs mb-3">
+    <li class="nav-item">
+        <a class="nav-link" href="/admin/navigation">Menu Items (DB)</a>
+    </li>
+</ul>
+
+<div class="card">
+    <div class="card-body">
+
+        <div class="d-flex justify-content-between align-items-start mb-2">
+            <div>
+                <div class="fw-semibold">NavigationMenuItems</div>
+                <div class="text-muted small">Draft working set (Step 2). Header/Footer supported.</div>
+            </div>
+
+            <div class="d-flex align-items-center gap-2">
+                <button type="button" class="btn btn-primary btn-sm" id="btnAddMenuItem">Add Menu Item</button>
+                <span class="badge bg-light text-dark border">Total: @Model.MenuItemsFlat.Count</span>
+            </div>
+        </div>
+
+        <div class="row g-3">
+            <div class="col-12 col-lg-6">
+                <div class="card h-100">
+                    <div class="card-header"><strong>Tree</strong></div>
+                    <div class="card-body">
+
+                        @foreach (var menuId in new[] { 1, 2 })
+                        {
+                            <div class="mb-3">
+                                <div class="fw-semibold mb-2">@MenuName(menuId)</div>
+                                @{                         
+                                var rootNodes = Model.TreesByMenu.TryGetValue(menuId, out var r)
+                                ? r
+                                : Array.Empty<WebsiteBuilder.IRF.Pages.Admin.Navigation.IndexModel.NavNode>
+                                    ();
+
+                                    if (!rootNodes.Any())
+                                    {
+                                    <div class="text-muted small">No items.</div>
+                                    }
+                                    else
+                                    {
+                                    @RenderNodes(rootNodes, menuId, 0)
+                                    }
+                                }
+                            </div>
+                        }
+
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-12 col-lg-6">
+                <div class="card h-100">
+                    <div class="card-header"><strong>Flat (ordered)</strong></div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table table-sm mb-0" id="menuItemsTable">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th style="width: 30px;"></th>
+                                        <th style="width: 90px;">Menu</th>
+                                        <th style="width: 80px;">Parent</th>
+                                        <th style="width: 70px;">Sort</th>
+                                        <th>Label</th>
+                                        <th style="width: 90px;">PageId</th>
+                                        <th style="width: 90px;">New Tab</th>
+                                        <th style="width: 140px;">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var mi in Model.MenuItemsFlat)
+                                    {
+                                        var menuName = MenuName(mi.MenuId);
+
+                                        <tr data-id="@mi.Id"
+                                            data-menuid="@mi.MenuId"
+                                            data-parentid="@(mi.ParentId?.ToString() ?? "")"
+                                            data-label="@mi.Label"
+                                            data-pageid="@(mi.PageId?.ToString() ?? "")"
+                                            data-url="@mi.Url"
+                                            data-newtab="@(mi.OpenInNewTab ? "1" : "0")">
+
+                                            <td class="text-muted" title="Drag to reorder">
+                                                <span class="drag-handle" style="cursor: grab;">☰</span>
+                                            </td>
+                                            <td>@menuName</td>
+                                            <td>@(mi.ParentId?.ToString() ?? "-")</td>
+                                            <td>@mi.SortOrder</td>
+                                            <td class="fw-semibold">@mi.Label</td>
+                                            <td>@(mi.PageId?.ToString() ?? "-")</td>
+                                            <td>@(mi.OpenInNewTab ? "Yes" : "No")</td>
+                                            <td>
+                                                <button type="button" class="btn btn-outline-primary btn-sm btnEditMenuItem">Edit</button>
+                                                <button type="button" class="btn btn-outline-danger btn-sm btnDeleteMenuItem">Delete</button>
+                                            </td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="card-footer text-muted small">
+                        Reordering comes in Step 3 (drag &amp; drop).
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<!-- Add/Edit Modal -->
 <div class="modal fade" id="menuItemModal" tabindex="-1" aria-hidden="true">
-    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-dialog modal-lg">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title" id="menuItemModalTitle">Menu Item</h5>
+                <h5 class="modal-title" id="menuItemModalTitle">Add Menu Item</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
 
@@ -191,14 +164,14 @@
                     <div class="col-12 col-md-6">
                         <label class="form-label">Parent (optional)</label>
                         <select class="form-select" id="miParentId">
-                            <option value="">(No parent)</option>
+                            <option value="">(none)</option>
                         </select>
-                        <div class="form-text">Only items within the selected menu can be parents.</div>
+                        <div class="text-muted small mt-1">Only items within the selected menu can be parents.</div>
                     </div>
 
                     <div class="col-12">
                         <label class="form-label">Label</label>
-                        <input class="form-control" id="miLabel" maxlength="200" />
+                        <input class="form-control" id="miLabel" maxlength="100" />
                     </div>
 
                     <div class="col-12 col-md-6">
@@ -211,7 +184,7 @@
 
                     <div class="col-12 col-md-6 d-flex align-items-end">
                         <div class="form-check form-switch">
-                            <input class="form-check-input" type="checkbox" id="miNewTab">
+                            <input class="form-check-input" type="checkbox" id="miNewTab" />
                             <label class="form-check-label" for="miNewTab">Open in new tab</label>
                         </div>
                     </div>
@@ -219,67 +192,251 @@
                     <div class="col-12" id="miInternalWrap">
                         <label class="form-label">Published page</label>
                         <select class="form-select" id="miPageId">
-                            <option value="">Select a page...</option>
+                            <option value="">(select)</option>
                             @foreach (var p in Model.PublishedPages)
                             {
-                                <option value="@p.Id">@p.Title (@("/" + (p.Slug ?? "").Trim('/')))</option>
+                                <option value="@p.Id">@p.Title (@(string.IsNullOrWhiteSpace(p.Slug) ? "-" : "/" + p.Slug))</option>
                             }
                         </select>
                     </div>
 
                     <div class="col-12 d-none" id="miExternalWrap">
-                        <label class="form-label">External URL</label>
-                        <input class="form-control" id="miUrl" maxlength="500" placeholder="https://example.com" />
+                        <label class="form-label">URL</label>
+                        <input class="form-control" id="miUrl" placeholder="https://example.com or /contact" />
                     </div>
-
                 </div>
             </div>
 
             <div class="modal-footer">
-                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
-                <button type="button" class="btn btn-primary" id="btnSaveMenuItem">Save</button>
+                <button class="btn btn-outline-secondary" type="button" data-bs-dismiss="modal">Cancel</button>
+                <button class="btn btn-primary" type="button" id="btnSaveMenuItem">Save</button>
             </div>
         </div>
     </div>
 </div>
 
+@section Scripts {
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+
+    <script>
+        (function () {
+            const modalEl = document.getElementById('menuItemModal');
+            const modal = new bootstrap.Modal(modalEl);
+
+            const errBox = document.getElementById('menuItemError');
+
+            const miId = document.getElementById('miId');
+            const miMenuId = document.getElementById('miMenuId');
+            const miParentId = document.getElementById('miParentId');
+            const miLabel = document.getElementById('miLabel');
+            const miLinkType = document.getElementById('miLinkType');
+            const miNewTab = document.getElementById('miNewTab');
+            const miPageId = document.getElementById('miPageId');
+            const miUrl = document.getElementById('miUrl');
+
+            const internalWrap = document.getElementById('miInternalWrap');
+            const externalWrap = document.getElementById('miExternalWrap');
+
+            function showError(msg) {
+                errBox.textContent = msg || '';
+                errBox.classList.toggle('d-none', !msg);
+            }
+
+            function setLinkTypeUi() {
+                const v = (miLinkType.value || '').toLowerCase();
+                internalWrap.classList.toggle('d-none', v !== 'internal');
+                externalWrap.classList.toggle('d-none', v !== 'external');
+            }
+
+            function collectParentsForMenu(menuId, excludeId) {
+                const rows = Array.from(document.querySelectorAll('#menuItemsTable tbody tr'));
+                const items = rows
+                    .map(r => ({
+                        id: parseInt(r.dataset.id, 10),
+                        menuId: parseInt(r.dataset.menuid, 10),
+                        label: r.dataset.label || '',
+                    }))
+                    .filter(x => x.menuId === menuId && x.id !== excludeId);
+
+                miParentId.innerHTML = '<option value="">(none)</option>';
+                for (const it of items) {
+                    const opt = document.createElement('option');
+                    opt.value = String(it.id);
+                    opt.textContent = it.label + ` (Id: ${it.id})`;
+                    miParentId.appendChild(opt);
+                }
+            }
+
+            function openAdd() {
+                document.getElementById('menuItemModalTitle').textContent = 'Add Menu Item';
+                showError('');
+
+                miId.value = '';
+                miMenuId.value = '1';
+                miLabel.value = '';
+                miLinkType.value = 'internal';
+                miNewTab.checked = false;
+                miPageId.value = '';
+                miUrl.value = '';
+                collectParentsForMenu(1, -1);
+                miParentId.value = '';
+                setLinkTypeUi();
+
+                modal.show();
+            }
+
+            function openEdit(row) {
+                document.getElementById('menuItemModalTitle').textContent = 'Edit Menu Item';
+                showError('');
+
+                const id = parseInt(row.dataset.id, 10);
+
+                miId.value = String(id);
+                miMenuId.value = row.dataset.menuid || '1';
+                miLabel.value = row.dataset.label || '';
+                miNewTab.checked = (row.dataset.newtab === '1');
+
+                const hasPage = !!row.dataset.pageid;
+                miLinkType.value = hasPage ? 'internal' : 'external';
+
+                miPageId.value = row.dataset.pageid || '';
+                miUrl.value = row.dataset.url || '';
+
+                const menuId = parseInt(miMenuId.value, 10);
+                collectParentsForMenu(menuId, id);
+                miParentId.value = row.dataset.parentid || '';
+
+                setLinkTypeUi();
+                modal.show();
+            }
+
+            async function postJson(url, payload) {
+                const res = await fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'RequestVerificationToken': document.querySelector('input[name="__RequestVerificationToken"]')?.value ?? ''
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                const data = await res.json().catch(() => null);
+                return { ok: res.ok, data };
+            }
+
+            async function saveItem() {
+                showError('');
+
+                const payload = {
+                    id: miId.value ? parseInt(miId.value, 10) : null,
+                    menuId: parseInt(miMenuId.value, 10),
+                    parentId: miParentId.value ? parseInt(miParentId.value, 10) : null,
+                    label: miLabel.value,
+                    linkType: miLinkType.value,
+                    pageId: miLinkType.value === 'internal' ? (miPageId.value ? parseInt(miPageId.value, 10) : null) : null,
+                    url: miLinkType.value === 'external' ? miUrl.value : null,
+                    openInNewTab: !!miNewTab.checked
+                };
+
+                const r = await postJson('?handler=UpsertMenuItem', payload);
+                if (!r.ok || !r.data?.ok) {
+                    showError(r.data?.message || 'Save failed.');
+                    return;
+                }
+
+                location.reload();
+            }
+
+            async function deleteItem(id) {
+                if (!confirm('Delete this menu item?')) return;
+
+                const r = await postJson('?handler=DeleteMenuItem', { id: id });
+                if (!r.ok || !r.data?.ok) {
+                    alert(r.data?.message || 'Delete failed.');
+                    return;
+                }
+                location.reload();
+            }
+
+            // Wire UI
+            document.getElementById('btnAddMenuItem').addEventListener('click', openAdd);
+            document.getElementById('btnSaveMenuItem').addEventListener('click', saveItem);
+
+            miLinkType.addEventListener('change', setLinkTypeUi);
+            miMenuId.addEventListener('change', function () {
+                const id = miId.value ? parseInt(miId.value, 10) : -1;
+                const menuId = parseInt(miMenuId.value, 10);
+                collectParentsForMenu(menuId, id);
+            });
+
+            document.querySelectorAll('.btnEditMenuItem').forEach(btn => {
+                btn.addEventListener('click', function () {
+                    openEdit(btn.closest('tr'));
+                });
+            });
+
+            document.querySelectorAll('.btnDeleteMenuItem').forEach(btn => {
+                btn.addEventListener('click', function () {
+                    const row = btn.closest('tr');
+                    const id = parseInt(row.dataset.id, 10);
+                    deleteItem(id);
+                });
+            });
+
+            // Step 3: drag & drop reorder (flat list)
+            const tableBody = document.querySelector('#menuItemsTable tbody');
+            if (tableBody && window.Sortable) {
+                Sortable.create(tableBody, {
+                    handle: '.drag-handle',
+                    animation: 150,
+                    onEnd: async function () {
+                        // build ordered list per menu+parent grouping
+                        const rows = Array.from(tableBody.querySelectorAll('tr'));
+                        const items = rows.map((r, index) => ({
+                            id: parseInt(r.dataset.id, 10),
+                            menuId: parseInt(r.dataset.menuid, 10),
+                            parentId: r.dataset.parentid ? parseInt(r.dataset.parentid, 10) : null,
+                            sortOrder: index + 1
+                        }));
+
+                        const r = await postJson('?handler=ReorderMenuItems', { items });
+                        if (!r.ok || !r.data?.ok) {
+                            alert(r.data?.message || 'Reorder failed.');
+                            return;
+                        }
+
+                        location.reload();
+                    }
+                });
+            }
+        })();
+    </script>
+}
+
 @functions {
-    private IHtmlContent RenderNodes(IEnumerable<WebsiteBuilder.IRF.Pages.Admin.Navigation.IndexModel.NavNode> nodes)
+    IHtmlContent RenderNodes(IEnumerable<WebsiteBuilder.IRF.Pages.Admin.Navigation.IndexModel.NavNode> nodes, int menuId, int depth)
     {
         var ul = new TagBuilder("ul");
-        ul.AddCssClass("list-unstyled mb-0");
+        ul.AddCssClass(depth == 0 ? "list-unstyled mb-0" : "list-unstyled ms-4 mb-0");
 
         foreach (var n in nodes)
         {
             var li = new TagBuilder("li");
             li.AddCssClass("mb-2");
 
-            var header = new TagBuilder("div");
-            header.AddCssClass("d-flex align-items-start gap-2");
-
             var badge = new TagBuilder("span");
-            badge.AddCssClass("badge bg-light text-dark");
-            badge.InnerHtml.Append($"M{n.Item.MenuId} · S{n.Item.SortOrder}");
+            badge.AddCssClass("badge bg-light text-dark border me-2");
+            badge.InnerHtml.Append($"M{menuId} · S{n.Item.SortOrder}");
 
-            var text = new TagBuilder("div");
-            text.AddCssClass("flex-grow-1");
+            var label = new TagBuilder("span");
+            label.InnerHtml.Append(n.Item.Label ?? "");
 
-            var line1 = new TagBuilder("div");
-            line1.InnerHtml.Append(n.Item.Label);
+            li.InnerHtml.AppendHtml(badge);
+            li.InnerHtml.AppendHtml(label);
 
-            text.InnerHtml.AppendHtml(line1);
-
-            header.InnerHtml.AppendHtml(badge);
-            header.InnerHtml.AppendHtml(text);
-
-            li.InnerHtml.AppendHtml(header);
-
-            if (n.Children.Count > 0)
+            if (n.Children != null && n.Children.Any())
             {
-                var childWrap = new TagBuilder("div");
-                childWrap.AddCssClass("ms-4 mt-2");
-                childWrap.InnerHtml.AppendHtml(RenderNodes(n.Children));
-                li.InnerHtml.AppendHtml(childWrap);
+                li.InnerHtml.AppendHtml(RenderNodes(n.Children, menuId, depth + 1));
             }
 
             ul.InnerHtml.AppendHtml(li);
@@ -287,250 +444,4 @@
 
         return ul;
     }
-}
-
-@section Scripts
-{
-    @Html.AntiForgeryToken()
-
-    <script>
-        (function () {
-            const tokenEl = document.querySelector('input[name="__RequestVerificationToken"]');
-            const token = tokenEl ? tokenEl.value : null;
-
-            const modalEl = document.getElementById("menuItemModal");
-            const modal = modalEl ? new bootstrap.Modal(modalEl) : null;
-
-            const errBox = document.getElementById("menuItemError");
-
-            const miId = document.getElementById("miId");
-            const miMenuId = document.getElementById("miMenuId");
-            const miParentId = document.getElementById("miParentId");
-            const miLabel = document.getElementById("miLabel");
-            const miLinkType = document.getElementById("miLinkType");
-            const miPageId = document.getElementById("miPageId");
-            const miUrl = document.getElementById("miUrl");
-            const miNewTab = document.getElementById("miNewTab");
-
-            const wrapInternal = document.getElementById("miInternalWrap");
-            const wrapExternal = document.getElementById("miExternalWrap");
-
-            function showError(msg) {
-                if (!errBox) return;
-                if (!msg) {
-                    errBox.classList.add("d-none");
-                    errBox.textContent = "";
-                    return;
-                }
-                errBox.classList.remove("d-none");
-                errBox.textContent = msg;
-            }
-
-            function setLinkTypeUI() {
-                const t = (miLinkType.value || "").toLowerCase();
-                if (t === "external") {
-                    wrapExternal.classList.remove("d-none");
-                    wrapInternal.classList.add("d-none");
-                } else {
-                    wrapInternal.classList.remove("d-none");
-                    wrapExternal.classList.add("d-none");
-                }
-            }
-
-            function rebuildParentOptions(selectedMenuId, excludeId) {
-                // Parents are limited to items in the same menu
-                const rows = document.querySelectorAll("#menuItemsTable tbody tr");
-                miParentId.innerHTML = '<option value="">(No parent)</option>';
-
-                rows.forEach(r => {
-                    const id = r.getAttribute("data-id");
-                    const menuId = r.getAttribute("data-menuid");
-                    const label = r.getAttribute("data-label") || "";
-
-                    if (menuId !== String(selectedMenuId)) return;
-                    if (excludeId && id === String(excludeId)) return;
-
-                    const opt = document.createElement("option");
-                    opt.value = id;
-                    opt.textContent = `${label} (Id: ${id})`;
-                    miParentId.appendChild(opt);
-                });
-            }
-
-            async function postJson(url, payload) {
-                const res = await fetch(url, {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                        ...(token ? { "RequestVerificationToken": token } : {})
-                    },
-                    body: JSON.stringify(payload)
-                });
-                return await res.json();
-            }
-
-            function openForCreate() {
-                showError(null);
-                document.getElementById("menuItemModalTitle").textContent = "Add Menu Item";
-
-                miId.value = "";
-                miMenuId.value = "1";
-                miLabel.value = "";
-                miLinkType.value = "internal";
-                miPageId.value = "";
-                miUrl.value = "";
-                miNewTab.checked = false;
-
-                rebuildParentOptions(1, null);
-                miParentId.value = "";
-
-                setLinkTypeUI();
-                modal.show();
-            }
-
-            function openForEdit(row) {
-                showError(null);
-                document.getElementById("menuItemModalTitle").textContent = "Edit Menu Item";
-
-                const id = row.getAttribute("data-id");
-                const menuId = row.getAttribute("data-menuid") || "1";
-                const parentId = row.getAttribute("data-parentid") || "";
-                const label = row.getAttribute("data-label") || "";
-                const pageId = row.getAttribute("data-pageid") || "";
-                const url = row.getAttribute("data-url") || "";
-                const newtab = row.getAttribute("data-newtab") === "1";
-
-                miId.value = id;
-                miMenuId.value = menuId;
-                miLabel.value = label;
-                miNewTab.checked = newtab;
-
-                // Determine link type: internal if PageId set, otherwise external
-                if (pageId) {
-                    miLinkType.value = "internal";
-                    miPageId.value = pageId;
-                    miUrl.value = "";
-                } else {
-                    miLinkType.value = "external";
-                    miUrl.value = url;
-                    miPageId.value = "";
-                }
-
-                rebuildParentOptions(menuId, id);
-                miParentId.value = parentId;
-
-                setLinkTypeUI();
-                modal.show();
-            }
-
-            async function saveMenuItem() {
-                showError(null);
-
-                const payload = {
-                    id: miId.value ? parseInt(miId.value, 10) : null,
-                    menuId: parseInt(miMenuId.value, 10),
-                    parentId: miParentId.value ? parseInt(miParentId.value, 10) : null,
-                    label: miLabel.value || "",
-                    linkType: miLinkType.value || "",
-                    pageId: miPageId.value ? parseInt(miPageId.value, 10) : null,
-                    url: miUrl.value || "",
-                    openInNewTab: !!miNewTab.checked
-                };
-
-                const result = await postJson("?handler=UpsertMenuItem", payload);
-                if (!result.ok) {
-                    showError(result.message || "Save failed.");
-                    return;
-                }
-
-                // simplest approach: reload so tree/flat refresh
-                window.location.reload();
-            }
-
-            async function deleteMenuItem(row) {
-                const id = parseInt(row.getAttribute("data-id"), 10);
-                if (!id) return;
-
-                if (!confirm("Delete this menu item?")) return;
-
-                const result = await postJson("?handler=DeleteMenuItem", { id });
-                if (!result.ok) {
-                    alert(result.message || "Delete failed.");
-                    return;
-                }
-
-                window.location.reload();
-            }
-
-            // Events
-            document.getElementById("btnAddMenuItem")?.addEventListener("click", openForCreate);
-            document.getElementById("btnSaveMenuItem")?.addEventListener("click", saveMenuItem);
-
-            miLinkType?.addEventListener("change", setLinkTypeUI);
-
-            miMenuId?.addEventListener("change", function () {
-                const id = miId.value ? parseInt(miId.value, 10) : null;
-                rebuildParentOptions(parseInt(miMenuId.value, 10), id);
-                miParentId.value = "";
-            });
-
-            document.querySelectorAll(".btnEditMenuItem").forEach(btn => {
-                btn.addEventListener("click", function () {
-                    const row = btn.closest("tr");
-                    if (row) openForEdit(row);
-                });
-            });
-
-            document.querySelectorAll(".btnDeleteMenuItem").forEach(btn => {
-                btn.addEventListener("click", function () {
-                    const row = btn.closest("tr");
-                    if (row) deleteMenuItem(row);
-                });
-            });
-
-            setLinkTypeUI();
-        })();
-
-        (function () {
-            const tableBody = document.querySelector("#menuItemsTable tbody");
-            if (!tableBody) return;
-
-            new Sortable(tableBody, {
-                handle: ".drag-handle",
-                animation: 150,
-                ghostClass: "bg-light",
-                onEnd: function (evt) {
-                    const row = evt.item;
-                    const prev = row.previousElementSibling;
-
-                    const moved = {
-                        id: parseInt(row.dataset.id),
-                        menuId: parseInt(row.dataset.menuid),
-                        parentId: row.dataset.parentid ? parseInt(row.dataset.parentid) : null,
-                        afterId: prev ? parseInt(prev.dataset.id) : null
-                    };
-
-                    saveReorder(moved);
-                }
-            });
-
-            async function saveReorder(payload) {
-                const res = await fetch("?handler=ReorderMenuItem", {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                        "RequestVerificationToken": document.querySelector('input[name="__RequestVerificationToken"]').value
-                    },
-                    body: JSON.stringify(payload)
-                });
-
-                const result = await res.json();
-                if (!result.ok) {
-                    alert(result.message || "Reorder failed.");
-                    window.location.reload();
-                }
-            }
-        })();
-
-    </script>
 }

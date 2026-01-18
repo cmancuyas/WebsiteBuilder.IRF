@@ -1,0 +1,68 @@
+﻿@using WebsiteBuilder.IRF.Infrastructure.Tenancy
+@inject ITenantNavigationService Nav
+
+@{
+    var items = await Nav.GetNavAsync();
+}
+
+@if (items.Count > 0)
+{
+    <nav class="navbar navbar-expand-lg navbar-light bg-white border-bottom mb-3">
+        <div class="container">
+            <a class="navbar-brand" href="/">@ViewData["TenantName"]</a>
+
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#tenantNavbar"
+                    aria-controls="tenantNavbar" aria-expanded="false" aria-label="Toggle navigation">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+
+            <div class="collapse navbar-collapse" id="tenantNavbar">
+                <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+                    @foreach (var item in items)
+                    {
+                        var hasChildren = item.Children is { Count: > 0 };
+
+                        if (!hasChildren)
+                        {
+                            <li class="nav-item">
+                                <a class="nav-link"
+                                   href="@item.Url"
+                                   target="@(item.OpenInNewTab ? "_blank" : null)"
+                                   rel="@(item.OpenInNewTab ? "noopener noreferrer" : null)">
+                                    @item.Title
+                                </a>
+                            </li>
+                        }
+                        else
+                        {
+                            var dropdownId = $"navdd_{item.Title.GetHashCode()}_{item.Order}";
+                            <li class="nav-item dropdown">
+                                <a class="nav-link dropdown-toggle"
+                                   href="#"
+                                   id="@dropdownId"
+                                   role="button"
+                                   data-bs-toggle="dropdown"
+                                   aria-expanded="false">
+                                    @item.Title
+                                </a>
+                                <ul class="dropdown-menu" aria-labelledby="@dropdownId">
+                                    @foreach (var child in item.Children!)
+                                    {
+                                        <li>
+                                            <a class="dropdown-item"
+                                               href="@child.Url"
+                                               target="@(child.OpenInNewTab ? "_blank" : null)"
+                                               rel="@(child.OpenInNewTab ? "noopener noreferrer" : null)">
+                                                @child.Title
+                                            </a>
+                                        </li>
+                                    }
+                                </ul>
+                            </li>
+                        }
+                    }
+                </ul>
+            </div>
+        </div>
+    </nav>
+}
