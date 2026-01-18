@@ -1,7 +1,9 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
+using System.Security.Claims;
 using WebsiteBuilder.IRF.DataAccess;
+using WebsiteBuilder.IRF.Infrastructure.Auth;
 using WebsiteBuilder.IRF.Infrastructure.Tenancy;
 
 namespace WebsiteBuilder.IRF.Pages.Admin.Media
@@ -34,7 +36,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
             public int Skip { get; set; }
             public int Take { get; set; } = 24;
 
-            // NEW: Trash toggle
+            // Trash toggle
             public bool IncludeDeleted { get; set; } = false;
         }
 
@@ -56,6 +58,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
             public int Id { get; set; }
             public string? AltText { get; set; }
         }
+
         public sealed class LookupRequest
         {
             public int[] Ids { get; set; } = Array.Empty<int>();
@@ -72,6 +75,18 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
             public bool IsDeleted { get; set; }
         }
 
+        private Guid GetUserIdOrThrow()
+        {
+            var id = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrWhiteSpace(id) || !Guid.TryParse(id, out var guid))
+                throw new InvalidOperationException("UserId claim is missing/invalid.");
+            return guid;
+        }
+
+        private bool CanSeeAllTenantMedia()
+        {
+            return User.IsInRole(AppRoles.SuperAdmin) || User.IsInRole(AppRoles.Admin);
+        }
 
         public async Task<IActionResult> OnPostLookupAsync([FromBody] LookupRequest request, CancellationToken ct = default)
         {
@@ -82,16 +97,24 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
             if (ids.Length == 0)
                 return new JsonResult(new { ok = true, items = Array.Empty<LookupItemVm>() });
 
-            var items = await _db.MediaAssets
+            var q = _db.MediaAssets
                 .AsNoTracking()
                 .Where(m => m.TenantId == _tenant.TenantId)
-                .Where(m => ids.Contains(m.Id))
+                .Where(m => ids.Contains(m.Id));
+
+            if (!CanSeeAllTenantMedia())
+            {
+                var userId = GetUserIdOrThrow();
+                q = q.Where(m => m.OwnerUserId == userId);
+            }
+
+            var items = await q
                 .Select(m => new LookupItemVm
                 {
                     Id = m.Id,
                     FileName = m.FileName,
                     ContentType = m.ContentType,
-                    AltText = m.AltText!,
+                    AltText = m.AltText ?? "",
                     Url = m.StorageKey,
                     ThumbUrl = m.ThumbStorageKey,
                     IsDeleted = m.IsDeleted
@@ -100,7 +123,6 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
 
             return new JsonResult(new { ok = true, items });
         }
-
 
         public IActionResult OnGet()
         {
@@ -129,11 +151,17 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
                 .Where(m => m.IsActive)
                 .Where(m => m.ContentType.StartsWith("image/"));
 
+            if (!CanSeeAllTenantMedia())
+            {
+                var userId = GetUserIdOrThrow();
+                q = q.Where(m => m.OwnerUserId == userId);
+            }
+
             q = includeDeleted ? q.Where(m => m.IsDeleted) : q.Where(m => !m.IsDeleted);
 
             if (!string.IsNullOrWhiteSpace(term))
             {
-                q = q.Where(m => m.FileName.Contains(term) || m.AltText!.Contains(term));
+                q = q.Where(m => m.FileName.Contains(term) || (m.AltText ?? "").Contains(term));
             }
 
             var total = await q.CountAsync(ct);
@@ -147,9 +175,9 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
                     Id = m.Id,
                     FileName = m.FileName,
                     ContentType = m.ContentType,
-                    AltText = m.AltText!,
+                    AltText = m.AltText ?? "",
                     Url = m.StorageKey,
-                    ThumbUrl = m.ThumbStorageKey // if your model has it; otherwise remove this line
+                    ThumbUrl = m.ThumbStorageKey
                 })
                 .ToListAsync(ct);
 
@@ -171,11 +199,23 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
             if (request == null || request.Id <= 0)
                 return new JsonResult(new { ok = false, message = "Invalid request." });
 
-            var asset = await _db.MediaAssets
-                .FirstOrDefaultAsync(m =>
-                    m.TenantId == _tenant.TenantId &&
-                    m.Id == request.Id &&
-                    !m.IsDeleted, ct);
+            var q = _db.MediaAssets.Where(m =>
+                m.TenantId == _tenant.TenantId &&
+                m.Id == request.Id &&
+                !m.IsDeleted);
+
+            Guid? actorUserId = null;
+            if (!CanSeeAllTenantMedia())
+            {
+                actorUserId = GetUserIdOrThrow();
+                q = q.Where(m => m.OwnerUserId == actorUserId.Value);
+            }
+            else
+            {
+                actorUserId = GetUserIdOrThrow();
+            }
+
+            var asset = await q.FirstOrDefaultAsync(ct);
 
             if (asset == null)
                 return new JsonResult(new { ok = false, message = "Media not found." });
@@ -184,6 +224,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
 
             asset.IsDeleted = true;
             asset.DeletedAt = now;
+            asset.DeletedBy = actorUserId;
             asset.UpdatedAt = now;
 
             await _db.SaveChangesAsync(ct);
@@ -200,11 +241,18 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
             if (request == null || request.Id <= 0)
                 return new JsonResult(new { ok = false, message = "Invalid request." });
 
-            var asset = await _db.MediaAssets
-                .FirstOrDefaultAsync(m =>
-                    m.TenantId == _tenant.TenantId &&
-                    m.Id == request.Id &&
-                    m.IsDeleted, ct);
+            var q = _db.MediaAssets.Where(m =>
+                m.TenantId == _tenant.TenantId &&
+                m.Id == request.Id &&
+                m.IsDeleted);
+
+            if (!CanSeeAllTenantMedia())
+            {
+                var userId = GetUserIdOrThrow();
+                q = q.Where(m => m.OwnerUserId == userId);
+            }
+
+            var asset = await q.FirstOrDefaultAsync(ct);
 
             if (asset == null)
                 return new JsonResult(new { ok = false, message = "Media not found." });
@@ -231,12 +279,23 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
             if (ids.Length == 0)
                 return new JsonResult(new { ok = false, message = "No items selected." });
 
-            var assets = await _db.MediaAssets
-                .Where(m =>
-                    m.TenantId == _tenant.TenantId &&
-                    ids.Contains(m.Id) &&
-                    !m.IsDeleted)
-                .ToListAsync(ct);
+            var q = _db.MediaAssets.Where(m =>
+                m.TenantId == _tenant.TenantId &&
+                ids.Contains(m.Id) &&
+                !m.IsDeleted);
+
+            Guid? actorUserId = null;
+            if (!CanSeeAllTenantMedia())
+            {
+                actorUserId = GetUserIdOrThrow();
+                q = q.Where(m => m.OwnerUserId == actorUserId.Value);
+            }
+            else
+            {
+                actorUserId = GetUserIdOrThrow();
+            }
+
+            var assets = await q.ToListAsync(ct);
 
             if (assets.Count == 0)
                 return new JsonResult(new { ok = false, message = "No matching media found." });
@@ -247,6 +306,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
             {
                 a.IsDeleted = true;
                 a.DeletedAt = now;
+                a.DeletedBy = actorUserId;
                 a.UpdatedAt = now;
             }
 
@@ -265,12 +325,18 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
             if (ids.Length == 0)
                 return new JsonResult(new { ok = false, message = "No items selected." });
 
-            var assets = await _db.MediaAssets
-                .Where(m =>
-                    m.TenantId == _tenant.TenantId &&
-                    ids.Contains(m.Id) &&
-                    m.IsDeleted)
-                .ToListAsync(ct);
+            var q = _db.MediaAssets.Where(m =>
+                m.TenantId == _tenant.TenantId &&
+                ids.Contains(m.Id) &&
+                m.IsDeleted);
+
+            if (!CanSeeAllTenantMedia())
+            {
+                var userId = GetUserIdOrThrow();
+                q = q.Where(m => m.OwnerUserId == userId);
+            }
+
+            var assets = await q.ToListAsync(ct);
 
             if (assets.Count == 0)
                 return new JsonResult(new { ok = false, message = "No matching media found." });
@@ -299,11 +365,18 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Media
             if (request == null || request.Id <= 0)
                 return new JsonResult(new { ok = false, message = "Invalid request." });
 
-            var asset = await _db.MediaAssets
-                .FirstOrDefaultAsync(m =>
-                    m.TenantId == _tenant.TenantId &&
-                    m.Id == request.Id &&
-                    !m.IsDeleted, ct);
+            var q = _db.MediaAssets.Where(m =>
+                m.TenantId == _tenant.TenantId &&
+                m.Id == request.Id &&
+                !m.IsDeleted);
+
+            if (!CanSeeAllTenantMedia())
+            {
+                var userId = GetUserIdOrThrow();
+                q = q.Where(m => m.OwnerUserId == userId);
+            }
+
+            var asset = await q.FirstOrDefaultAsync(ct);
 
             if (asset == null)
                 return new JsonResult(new { ok = false, message = "Media not found." });
