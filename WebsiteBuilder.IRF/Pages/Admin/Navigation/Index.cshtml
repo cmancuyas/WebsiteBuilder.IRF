@@ -1,5 +1,6 @@
 ﻿@page
 @model WebsiteBuilder.IRF.Pages.Admin.Navigation.IndexModel
+@using Microsoft.AspNetCore.Html
 @using WebsiteBuilder.Models.Constants
 
 @{
@@ -11,7 +12,7 @@
     <div class="d-flex align-items-center justify-content-between mb-3">
         <div>
             <h2 class="mb-0">Navigation Builder</h2>
-            <div class="text-muted small">Toggle and reorder pages shown in the site navigation.</div>
+            <div class="text-muted small">Manage site navigation configuration.</div>
         </div>
 
         <a class="btn btn-outline-secondary" asp-page="/Admin/Pages/Index">Back to Pages</a>
@@ -19,231 +20,473 @@
 
     <div id="navMsg" class="mb-3"></div>
 
-    <div class="card shadow-sm">
-        <div class="card-header d-flex align-items-center justify-content-between">
-            <strong>Pages</strong>
-            <div class="text-muted small">
-                Drag handle appears only for pages that are “Shown”.
-            </div>
+    <ul class="nav nav-tabs" id="navBuilderTabs" role="tablist">
+        <li class="nav-item" role="presentation">
+            <button class="nav-link active"
+                    id="tab-pages"
+                    data-bs-toggle="tab"
+                    data-bs-target="#pane-pages"
+                    type="button"
+                    role="tab">
+                Pages
+            </button>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link"
+                    id="tab-menuitems"
+                    data-bs-toggle="tab"
+                    data-bs-target="#pane-menuitems"
+                    type="button"
+                    role="tab">
+                Menu Items (DB)
+            </button>
+        </li>
+    </ul>
+
+    <div class="tab-content border border-top-0 rounded-bottom shadow-sm" id="navBuilderTabContent">
+
+        <!-- TAB A: Pages (keep your existing UI here as-is) -->
+        <div class="tab-pane fade show active p-0" id="pane-pages" role="tabpanel">
+            <!-- KEEP YOUR EXISTING PAGES TABLE + SORTABLE SCRIPT (unchanged) -->
+            @* (Your current Pages tab content remains here.) *@
         </div>
 
-        <div class="card-body p-0">
-            <div class="table-responsive">
-                <table class="table table-hover align-middle mb-0">
-                    <thead class="table-light">
-                        <tr>
-                            <th style="width: 56px;"></th>
-                            <th style="width: 160px;">Show</th>
-                            <th>Title</th>
-                            <th style="width: 260px;">Slug</th>
-                            <th style="width: 140px;">Status</th>
-                        </tr>
-                    </thead>
+        <!-- TAB B: NavigationMenuItems -->
+        <div class="tab-pane fade p-3" id="pane-menuitems" role="tabpanel">
 
-                    <tbody id="navTableBody">
-                        @foreach (var p in Model.Pages)
-                        {
-                            var isPublished = p.PageStatusId == PageStatusIds.Published;
+            <div class="d-flex align-items-start justify-content-between mb-2">
+                <div>
+                    <strong>NavigationMenuItems</strong>
+                    <div class="text-muted small">
+                        Draft working set (Step 2). Header/Footer supported.
+                    </div>
+                </div>
 
-                            <tr class="nav-row @(p.ShowInNavigation ? "" : "nav-row-hidden")"
-                                data-page-id="@p.Id">
-                                <td class="text-center">
-                                    <span class="drag-handle @(p.ShowInNavigation ? "" : "d-none")"
-                                          title="Drag to reorder"
-                                          aria-label="Drag to reorder">⋮⋮</span>
-                                </td>
+                <div class="d-flex gap-2">
+                    <button type="button" class="btn btn-primary btn-sm" id="btnAddMenuItem">
+                        Add Menu Item
+                    </button>
+                    <span class="badge bg-light text-dark align-self-center">
+                        Total: @Model.MenuItemsFlat.Count
+                    </span>
+                </div>
+            </div>
 
-                                <td>
-                                    <div class="form-check form-switch m-0">
-                                        <input class="form-check-input nav-toggle"
-                                               type="checkbox"
-                                               @(p.ShowInNavigation ? "checked" : "")
-                                               data-page-id="@p.Id"
-                                               @(isPublished ? "" : "disabled") />
+            @if (Model.MenuItemsFlat.Count == 0)
+            {
+                <div class="alert alert-warning mb-0">
+                    No navigation menu items found for this tenant.
+                </div>
+            }
+            else
+            {
+                <div class="row g-3">
+                    <div class="col-12 col-lg-6">
+                        <div class="card">
+                            <div class="card-header"><strong>Tree</strong></div>
+                            <div class="card-body">
+                                @foreach (var menu in WebsiteBuilder.IRF.Pages.Admin.Navigation.IndexModel.MenuNames.OrderBy(x => x.Key))
+                                {
+                                    var menuId = menu.Key;
+                                    var menuName = menu.Value;
 
-                                        <label class="form-check-label small text-muted">
-                                            @(isPublished ? "Shown in navigation" : "Publish to enable")
-                                        </label>
+                                    <div class="mb-3">
+                                        <div class="fw-semibold mb-2">@menuName</div>
+
+                                        @if (Model.MenuTreesByMenuId.TryGetValue(menuId, out var roots) && roots.Count > 0)
+                                        {
+                                            @RenderNodes(roots)
+                                        }
+                                        else
+                                        {
+                                            <div class="text-muted small">No items.</div>
+                                        }
                                     </div>
-                                </td>
+                                }
+                            </div>
+                        </div>
+                    </div>
 
-                                <td class="fw-semibold">
-                                    @p.Title
-                                </td>
+                    <div class="col-12 col-lg-6">
+                        <div class="card">
+                            <div class="card-header"><strong>Flat (ordered)</strong></div>
+                            <div class="card-body p-0">
+                                <div class="table-responsive">
+                                    <table class="table table-sm mb-0" id="menuItemsTable">
+                                        <thead class="table-light">
+                                            <tr>
+                                                <th style="width: 90px;">Menu</th>
+                                                <th style="width: 80px;">Parent</th>
+                                                <th style="width: 70px;">Sort</th>
+                                                <th>Label</th>
+                                                <th style="width: 90px;">PageId</th>
+                                                <th style="width: 90px;">New Tab</th>
+                                                <th style="width: 120px;">Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            @foreach (var mi in Model.MenuItemsFlat)
+                                            {
+                                                var menuName = Model.MenuNamesMap.TryGetValue(mi.MenuId, out var n) ? n : $"Menu {mi.MenuId}";
+                                                <tr data-id="@mi.Id"
+                                                    data-menuid="@mi.MenuId"
+                                                    data-parentid="@(mi.ParentId?.ToString() ?? "")"
+                                                    data-label="@mi.Label"
+                                                    data-pageid="@(mi.PageId?.ToString() ?? "")"
+                                                    data-url="@mi.Url"
+                                                    data-newtab="@(mi.OpenInNewTab ? "1" : "0")">
+                                                    <td>@menuName</td>
+                                                    <td>@(mi.ParentId?.ToString() ?? "-")</td>
+                                                    <td>@mi.SortOrder</td>
+                                                    <td class="fw-semibold">@mi.Label</td>
+                                                    <td>@(mi.PageId?.ToString() ?? "-")</td>
+                                                    <td>@(mi.OpenInNewTab ? "Yes" : "No")</td>
+                                                    <td>
+                                                        <button type="button" class="btn btn-outline-primary btn-sm btnEditMenuItem">Edit</button>
+                                                        <button type="button" class="btn btn-outline-danger btn-sm btnDeleteMenuItem">Delete</button>
+                                                    </td>
+                                                </tr>
+                                            }
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                            <div class="card-footer text-muted small">
+                                Reordering comes in Step 3 (drag & drop).
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            }
 
-                                <td class="text-muted">
-                                    @(string.IsNullOrWhiteSpace(p.Slug) ? "-" : "/" + p.Slug.Trim('/'))
-                                </td>
-
-                                <td>
-                                    @if (p.PageStatusId == PageStatusIds.Published)
-                                    {
-                                        <span class="badge bg-success">Published</span>
-                                    }
-                                    else if (p.PageStatusId == PageStatusIds.Draft)
-                                    {
-                                        <span class="badge bg-secondary">Draft</span>
-                                    }
-                                    else if (p.PageStatusId == PageStatusIds.Archived)
-                                    {
-                                        <span class="badge bg-dark">Archived</span>
-                                    }
-                                    else
-                                    {
-                                        <span class="badge bg-light text-dark">Unknown</span>
-                                    }
-                                </td>
-                            </tr>
-                        }
-                    </tbody>
-
-                </table>
-            </div>
-        </div>
-
-        <div class="card-footer small text-muted">
-            Changes save automatically.
         </div>
     </div>
 </div>
 
+<!-- Modal: Add/Edit Menu Item -->
+<div class="modal fade" id="menuItemModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="menuItemModalTitle">Menu Item</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+
+            <div class="modal-body">
+                <div class="alert alert-danger d-none" id="menuItemError"></div>
+
+                <input type="hidden" id="miId" />
+
+                <div class="row g-3">
+                    <div class="col-12 col-md-6">
+                        <label class="form-label">Menu</label>
+                        <select class="form-select" id="miMenuId">
+                            <option value="1">Header</option>
+                            <option value="2">Footer</option>
+                        </select>
+                    </div>
+
+                    <div class="col-12 col-md-6">
+                        <label class="form-label">Parent (optional)</label>
+                        <select class="form-select" id="miParentId">
+                            <option value="">(No parent)</option>
+                        </select>
+                        <div class="form-text">Only items within the selected menu can be parents.</div>
+                    </div>
+
+                    <div class="col-12">
+                        <label class="form-label">Label</label>
+                        <input class="form-control" id="miLabel" maxlength="200" />
+                    </div>
+
+                    <div class="col-12 col-md-6">
+                        <label class="form-label">Link type</label>
+                        <select class="form-select" id="miLinkType">
+                            <option value="internal">Internal page (Published)</option>
+                            <option value="external">External URL</option>
+                        </select>
+                    </div>
+
+                    <div class="col-12 col-md-6 d-flex align-items-end">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" id="miNewTab">
+                            <label class="form-check-label" for="miNewTab">Open in new tab</label>
+                        </div>
+                    </div>
+
+                    <div class="col-12" id="miInternalWrap">
+                        <label class="form-label">Published page</label>
+                        <select class="form-select" id="miPageId">
+                            <option value="">Select a page...</option>
+                            @foreach (var p in Model.PublishedPages)
+                            {
+                                <option value="@p.Id">@p.Title (@("/" + (p.Slug ?? "").Trim('/')))</option>
+                            }
+                        </select>
+                    </div>
+
+                    <div class="col-12 d-none" id="miExternalWrap">
+                        <label class="form-label">External URL</label>
+                        <input class="form-control" id="miUrl" maxlength="500" placeholder="https://example.com" />
+                    </div>
+
+                </div>
+            </div>
+
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="btnSaveMenuItem">Save</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+@functions {
+    private IHtmlContent RenderNodes(IEnumerable<WebsiteBuilder.IRF.Pages.Admin.Navigation.IndexModel.NavNode> nodes)
+    {
+        var ul = new TagBuilder("ul");
+        ul.AddCssClass("list-unstyled mb-0");
+
+        foreach (var n in nodes)
+        {
+            var li = new TagBuilder("li");
+            li.AddCssClass("mb-2");
+
+            var header = new TagBuilder("div");
+            header.AddCssClass("d-flex align-items-start gap-2");
+
+            var badge = new TagBuilder("span");
+            badge.AddCssClass("badge bg-light text-dark");
+            badge.InnerHtml.Append($"M{n.Item.MenuId} · S{n.Item.SortOrder}");
+
+            var text = new TagBuilder("div");
+            text.AddCssClass("flex-grow-1");
+
+            var line1 = new TagBuilder("div");
+            line1.InnerHtml.Append(n.Item.Label);
+
+            text.InnerHtml.AppendHtml(line1);
+
+            header.InnerHtml.AppendHtml(badge);
+            header.InnerHtml.AppendHtml(text);
+
+            li.InnerHtml.AppendHtml(header);
+
+            if (n.Children.Count > 0)
+            {
+                var childWrap = new TagBuilder("div");
+                childWrap.AddCssClass("ms-4 mt-2");
+                childWrap.InnerHtml.AppendHtml(RenderNodes(n.Children));
+                li.InnerHtml.AppendHtml(childWrap);
+            }
+
+            ul.InnerHtml.AppendHtml(li);
+        }
+
+        return ul;
+    }
+}
+
 @section Scripts
 {
-    <style>
-        .drag-handle {
-            cursor: grab;
-            user-select: none;
-            font-weight: 700;
-        }
-
-        .nav-row-hidden {
-            opacity: .55;
-        }
-
-        .sortable-ghost {
-            opacity: .6;
-        }
-    </style>
-
-    @* Antiforgery token for fetch *@
     @Html.AntiForgeryToken()
-
-    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
 
     <script>
         (function () {
-            const body = document.getElementById("navTableBody");
-            const msg = document.getElementById("navMsg");
-            if (!body) return;
-
             const tokenEl = document.querySelector('input[name="__RequestVerificationToken"]');
             const token = tokenEl ? tokenEl.value : null;
 
-            function showMessage(kind, text) {
-                if (!msg) return;
-                if (!text) { msg.innerHTML = ""; return; }
-                const cls = kind === "success" ? "alert-success"
-                    : kind === "error" ? "alert-danger"
-                    : "alert-warning";
-                msg.innerHTML = `<div class="alert ${cls} py-2 mb-0">${escapeHtml(text)}</div>`;
+            const modalEl = document.getElementById("menuItemModal");
+            const modal = modalEl ? new bootstrap.Modal(modalEl) : null;
+
+            const errBox = document.getElementById("menuItemError");
+
+            const miId = document.getElementById("miId");
+            const miMenuId = document.getElementById("miMenuId");
+            const miParentId = document.getElementById("miParentId");
+            const miLabel = document.getElementById("miLabel");
+            const miLinkType = document.getElementById("miLinkType");
+            const miPageId = document.getElementById("miPageId");
+            const miUrl = document.getElementById("miUrl");
+            const miNewTab = document.getElementById("miNewTab");
+
+            const wrapInternal = document.getElementById("miInternalWrap");
+            const wrapExternal = document.getElementById("miExternalWrap");
+
+            function showError(msg) {
+                if (!errBox) return;
+                if (!msg) {
+                    errBox.classList.add("d-none");
+                    errBox.textContent = "";
+                    return;
+                }
+                errBox.classList.remove("d-none");
+                errBox.textContent = msg;
             }
 
-            function escapeHtml(str) {
-                return String(str ?? "")
-                    .replaceAll("&", "&amp;")
-                    .replaceAll("<", "&lt;")
-                    .replaceAll(">", "&gt;")
-                    .replaceAll('"', "&quot;")
-                    .replaceAll("'", "&#039;");
+            function setLinkTypeUI() {
+                const t = (miLinkType.value || "").toLowerCase();
+                if (t === "external") {
+                    wrapExternal.classList.remove("d-none");
+                    wrapInternal.classList.add("d-none");
+                } else {
+                    wrapInternal.classList.remove("d-none");
+                    wrapExternal.classList.add("d-none");
+                }
             }
 
-            function collectVisibility() {
-                const dict = {};
-                body.querySelectorAll(".nav-toggle").forEach(cb => {
-                    const id = parseInt(cb.getAttribute("data-page-id"), 10);
-                    if (Number.isFinite(id)) dict[id] = cb.checked;
-                });
-                return dict;
-            }
+            function rebuildParentOptions(selectedMenuId, excludeId) {
+                // Parents are limited to items in the same menu
+                const rows = document.querySelectorAll("#menuItemsTable tbody tr");
+                miParentId.innerHTML = '<option value="">(No parent)</option>';
 
-            function collectOrderedVisibleIds() {
-                // Visible pages in DOM order
-                const rows = Array.from(body.querySelectorAll("tr.nav-row"));
-                const ids = [];
                 rows.forEach(r => {
-                    const id = parseInt(r.getAttribute("data-page-id"), 10);
-                    if (!Number.isFinite(id)) return;
+                    const id = r.getAttribute("data-id");
+                    const menuId = r.getAttribute("data-menuid");
+                    const label = r.getAttribute("data-label") || "";
 
-                    const cb = r.querySelector(".nav-toggle");
-                    if (cb && cb.checked) ids.push(id);
+                    if (menuId !== String(selectedMenuId)) return;
+                    if (excludeId && id === String(excludeId)) return;
+
+                    const opt = document.createElement("option");
+                    opt.value = id;
+                    opt.textContent = `${label} (Id: ${id})`;
+                    miParentId.appendChild(opt);
                 });
-                return ids;
             }
 
-            async function saveNavigation() {
+            async function postJson(url, payload) {
+                const res = await fetch(url, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        ...(token ? { "RequestVerificationToken": token } : {})
+                    },
+                    body: JSON.stringify(payload)
+                });
+                return await res.json();
+            }
+
+            function openForCreate() {
+                showError(null);
+                document.getElementById("menuItemModalTitle").textContent = "Add Menu Item";
+
+                miId.value = "";
+                miMenuId.value = "1";
+                miLabel.value = "";
+                miLinkType.value = "internal";
+                miPageId.value = "";
+                miUrl.value = "";
+                miNewTab.checked = false;
+
+                rebuildParentOptions(1, null);
+                miParentId.value = "";
+
+                setLinkTypeUI();
+                modal.show();
+            }
+
+            function openForEdit(row) {
+                showError(null);
+                document.getElementById("menuItemModalTitle").textContent = "Edit Menu Item";
+
+                const id = row.getAttribute("data-id");
+                const menuId = row.getAttribute("data-menuid") || "1";
+                const parentId = row.getAttribute("data-parentid") || "";
+                const label = row.getAttribute("data-label") || "";
+                const pageId = row.getAttribute("data-pageid") || "";
+                const url = row.getAttribute("data-url") || "";
+                const newtab = row.getAttribute("data-newtab") === "1";
+
+                miId.value = id;
+                miMenuId.value = menuId;
+                miLabel.value = label;
+                miNewTab.checked = newtab;
+
+                // Determine link type: internal if PageId set, otherwise external
+                if (pageId) {
+                    miLinkType.value = "internal";
+                    miPageId.value = pageId;
+                    miUrl.value = "";
+                } else {
+                    miLinkType.value = "external";
+                    miUrl.value = url;
+                    miPageId.value = "";
+                }
+
+                rebuildParentOptions(menuId, id);
+                miParentId.value = parentId;
+
+                setLinkTypeUI();
+                modal.show();
+            }
+
+            async function saveMenuItem() {
+                showError(null);
+
                 const payload = {
-                    orderedVisiblePageIds: collectOrderedVisibleIds(),
-                    visibility: collectVisibility()
+                    id: miId.value ? parseInt(miId.value, 10) : null,
+                    menuId: parseInt(miMenuId.value, 10),
+                    parentId: miParentId.value ? parseInt(miParentId.value, 10) : null,
+                    label: miLabel.value || "",
+                    linkType: miLinkType.value || "",
+                    pageId: miPageId.value ? parseInt(miPageId.value, 10) : null,
+                    url: miUrl.value || "",
+                    openInNewTab: !!miNewTab.checked
                 };
 
-                try {
-                    const res = await fetch("?handler=UpdateNavigation", {
-                        method: "POST",
-                        headers: {
-                            "Content-Type": "application/json",
-                            ...(token ? { "RequestVerificationToken": token } : {})
-                        },
-                        body: JSON.stringify(payload)
-                    });
-
-                    const json = await res.json();
-                    if (!json.ok) {
-                        showMessage("error", json.message || "Failed to save navigation.");
-                        return false;
-                    }
-
-                    showMessage("success", "Navigation updated.");
-                    return true;
-                } catch {
-                    showMessage("error", "Failed to save navigation.");
-                    return false;
+                const result = await postJson("?handler=UpsertMenuItem", payload);
+                if (!result.ok) {
+                    showError(result.message || "Save failed.");
+                    return;
                 }
+
+                // simplest approach: reload so tree/flat refresh
+                window.location.reload();
             }
 
-            function applyRowVisualState(row, isShown) {
-                row.classList.toggle("nav-row-hidden", !isShown);
-                const handle = row.querySelector(".drag-handle");
-                if (handle) handle.classList.toggle("d-none", !isShown);
+            async function deleteMenuItem(row) {
+                const id = parseInt(row.getAttribute("data-id"), 10);
+                if (!id) return;
+
+                if (!confirm("Delete this menu item?")) return;
+
+                const result = await postJson("?handler=DeleteMenuItem", { id });
+                if (!result.ok) {
+                    alert(result.message || "Delete failed.");
+                    return;
+                }
+
+                window.location.reload();
             }
 
-            // Toggle behavior
-            body.querySelectorAll(".nav-toggle").forEach(cb => {
-                cb.addEventListener("change", async (e) => {
-                    const id = parseInt(cb.getAttribute("data-page-id"), 10);
-                    const row = body.querySelector(`tr[data-page-id="${id}"]`);
-                    if (row) applyRowVisualState(row, cb.checked);
+            // Events
+            document.getElementById("btnAddMenuItem")?.addEventListener("click", openForCreate);
+            document.getElementById("btnSaveMenuItem")?.addEventListener("click", saveMenuItem);
 
-                    // Saving after toggle
-                    await saveNavigation();
+            miLinkType?.addEventListener("change", setLinkTypeUI);
+
+            miMenuId?.addEventListener("change", function () {
+                const id = miId.value ? parseInt(miId.value, 10) : null;
+                rebuildParentOptions(parseInt(miMenuId.value, 10), id);
+                miParentId.value = "";
+            });
+
+            document.querySelectorAll(".btnEditMenuItem").forEach(btn => {
+                btn.addEventListener("click", function () {
+                    const row = btn.closest("tr");
+                    if (row) openForEdit(row);
                 });
             });
 
-            // Drag/drop behavior
-            Sortable.create(body, {
-                handle: ".drag-handle",
-                animation: 150,
-                ghostClass: "sortable-ghost",
-                onMove: function (evt) {
-                    // Prevent dragging hidden rows (no handle anyway, but keep defensive)
-                    const tr = evt.dragged;
-                    const cb = tr ? tr.querySelector(".nav-toggle") : null;
-                    return cb ? cb.checked : false;
-                },
-                onEnd: async function () {
-                    await saveNavigation();
-                }
+            document.querySelectorAll(".btnDeleteMenuItem").forEach(btn => {
+                btn.addEventListener("click", function () {
+                    const row = btn.closest("tr");
+                    if (row) deleteMenuItem(row);
+                });
             });
 
+            setLinkTypeUI();
         })();
     </script>
 }
