@@ -1,74 +1,98 @@
-﻿@using WebsiteBuilder.IRF.Infrastructure.Tenancy
-@model IReadOnlyList<NavItem>
+﻿@model IReadOnlyList<NavItem>
+@using Microsoft.AspNetCore.Http
+@using WebsiteBuilder.IRF.Infrastructure.Tenancy
 
-<nav class="navbar navbar-expand-sm navbar-light bg-white border-bottom box-shadow mb-3">
-    <div class="container">
+@{
+    int idx = 0;
 
-        <a class="navbar-brand" href="/">WebsiteBuilder.IRF</a>
+    static string NormalizePath(string? urlOrPath)
+    {
+        if (string.IsNullOrWhiteSpace(urlOrPath))
+            return "/";
 
-        <button class="navbar-toggler" type="button"
-                data-bs-toggle="collapse"
-                data-bs-target="#mainNavbar"
-                aria-controls="mainNavbar"
-                aria-expanded="false"
-                aria-label="Toggle navigation">
-            <span class="navbar-toggler-icon"></span>
-        </button>
+        // If absolute URL, extract path
+        if (Uri.TryCreate(urlOrPath, UriKind.Absolute, out var abs))
+            urlOrPath = abs.AbsolutePath;
 
-        <div class="collapse navbar-collapse d-sm-inline-flex justify-content-between" id="mainNavbar">
-            <ul class="navbar-nav flex-grow-1">
-                @{
-                    var idx = 0;
-                }
+        var p = urlOrPath!.Trim();
 
-                @foreach (var item in Model)
-                {
-                    var isActive = Context.Request.Path.Equals(item.Url, StringComparison.OrdinalIgnoreCase);
-                    var hasChildren = item.Children is not null && item.Children.Count > 0;
+        if (!p.StartsWith("/"))
+            p = "/" + p;
 
-                    if (!hasChildren)
+        // Strip query if present
+        var q = p.IndexOf("?", StringComparison.Ordinal);
+        if (q >= 0)
+            p = p.Substring(0, q);
+
+        if (p.Length > 1 && p.EndsWith("/"))
+            p = p.TrimEnd('/');
+
+        return p;
+    }
+
+    bool IsActive(string? itemUrl)
+    {
+        var current = NormalizePath(Context.Request.Path.Value);
+        var target = NormalizePath(itemUrl);
+
+        if (target == "/")
+            return current == "/";
+
+        return current.Equals(target, StringComparison.OrdinalIgnoreCase)
+               || current.StartsWith(target + "/", StringComparison.OrdinalIgnoreCase);
+    }
+}
+
+<ul class="navbar-nav me-auto mb-2 mb-lg-0">
+    @foreach (var item in Model)
+    {
+        var hasChildren = item.Children != null && item.Children.Count > 0;
+
+        // Parent is active if it matches OR any child matches
+        var isActive = IsActive(item.Url) ||
+        (hasChildren && item.Children!.Any(c => IsActive(c.Url)));
+
+        if (!hasChildren)
+        {
+            <li class="nav-item">
+                <a class="nav-link text-dark @(isActive ? "active" : "")"
+                   href="@item.Url"
+                   target="@(item.OpenInNewTab ? "_blank" : null)"
+                   rel="@(item.OpenInNewTab ? "noopener noreferrer" : null)">
+                    @item.Title
+                </a>
+            </li>
+        }
+        else
+        {
+            var ddId = $"tenant-nav-dd-{idx++}";
+
+            <li class="nav-item dropdown">
+                <a class="nav-link dropdown-toggle text-dark @(isActive ? "active" : "")"
+                   href="@item.Url"
+                   id="@ddId"
+                   role="button"
+                   data-bs-toggle="dropdown"
+                   aria-expanded="false">
+                    @item.Title
+                </a>
+
+                <ul class="dropdown-menu" aria-labelledby="@ddId">
+                    @foreach (var child in item.Children!)
                     {
-                        <li class="nav-item">
-                            <a class="nav-link text-dark @(isActive ? "active" : "")"
-                               href="@item.Url"
-                               target="@(item.OpenInNewTab ? "_blank" : null)"
-                               rel="@(item.OpenInNewTab ? "noopener noreferrer" : null)">
-                                @item.Title
+                        var childActive = IsActive(child.Url);
+
+                        <li>
+                            <a class="dropdown-item @(childActive ? "active" : "")"
+                               href="@child.Url"
+                               target="@(child.OpenInNewTab ? "_blank" : null)"
+                               rel="@(child.OpenInNewTab ? "noopener noreferrer" : null)">
+                                @child.Title
                             </a>
                         </li>
                     }
-                    else
-                    {
-                        var ddId = $"nav-dd-{idx++}";
-
-                        <li class="nav-item dropdown">
-                            <a class="nav-link dropdown-toggle text-dark @(isActive ? "active" : "")"
-                               href="@item.Url"
-                               id="@ddId"
-                               role="button"
-                               data-bs-toggle="dropdown"
-                               aria-expanded="false">
-                                @item.Title
-                            </a>
-
-                            <ul class="dropdown-menu" aria-labelledby="@ddId">
-                                @foreach (var child in item.Children)
-                                {
-                                    <li>
-                                        <a class="dropdown-item"
-                                           href="@child.Url"
-                                           target="@(child.OpenInNewTab ? "_blank" : null)"
-                                           rel="@(child.OpenInNewTab ? "noopener noreferrer" : null)">
-                                            @child.Title
-                                        </a>
-                                    </li>
-                                }
-                            </ul>
-                        </li>
-                    }
-                }
-            </ul>
-        </div>
-
-    </div>
-</nav>
+                </ul>
+            </li>
+        }
+    }
+</ul>
