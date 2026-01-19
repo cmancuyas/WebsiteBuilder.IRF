@@ -415,7 +415,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
             entity.ParentId = parentId;
             entity.Label = label;
             entity.PageId = pageId;
-            entity.Url = url;
+            entity.Url = url!;
             entity.OpenInNewTab = req.OpenInNewTab;
 
             entity.UpdatedAt = now;

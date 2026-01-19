@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
@@ -56,7 +56,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
             return Page();
         }
 
-        public async Task<IActionResult> OnPostSaveAsync([FromBody] NavSaveRequest request)
+        public async Task<IActionResult> OnPostSaveAsync([FromBody] NavSaveRequestVm request)
         {
             if (request == null) return BadRequest(new { success = false, error = "Invalid payload." });
             if (request.MenuId != MenuId && MenuId != 0) { /* no-op, MenuId comes from route */ }
@@ -94,7 +94,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
             // We'll assign ParentId after we have the full temp->real map.
             var idMap = new Dictionary<int, int>(); // tempId -> realId
 
-            foreach (var dto in request.Items.Where(x => x.Id <= 0 && !x.IsDeleted))
+            foreach (var vm in request.Items.Where(x => x.Id <= 0 && !x.IsDeleted))
             {
                 var entity = new NavigationMenuItem
                 {
@@ -103,14 +103,14 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
 
                     // temporary, resolved later
                     ParentId = null,
-                    SortOrder = dto.SortOrder,
+                    SortOrder = vm.SortOrder,
 
-                    Label = dto.Label.Trim(),
-                    PageId = dto.PageId,
-                    Url = dto.PageId.HasValue ? string.Empty : (dto.Url ?? string.Empty).Trim(),
-                    OpenInNewTab = dto.OpenInNewTab,
+                    Label = vm.Label.Trim(),
+                    PageId = vm.PageId,
+                    Url = vm.PageId.HasValue ? string.Empty : (vm.Url ?? string.Empty).Trim(),
+                    OpenInNewTab = vm.OpenInNewTab,
 
-                    IsActive = dto.IsActive,
+                    IsActive = vm.IsActive,
                     IsDeleted = false,
 
                     CreatedAt = now,
@@ -119,7 +119,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
 
                 _db.NavigationMenuItems.Add(entity);
                 await _db.SaveChangesAsync(); // to get Id
-                idMap[dto.Id] = entity.Id;
+                idMap[vm.Id] = entity.Id;
             }
 
             // Helper to resolve parent IDs that may be temp
@@ -138,27 +138,27 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
             }
 
             // 2) Update existing + newly created entities with final ParentId/sort + fields
-            foreach (var dto in request.Items)
+            foreach (var vm in request.Items)
             {
-                if (dto.Id <= 0)
+                if (vm.Id <= 0)
                 {
-                    if (!idMap.TryGetValue(dto.Id, out var realId))
+                    if (!idMap.TryGetValue(vm.Id, out var realId))
                         continue;
 
                     var created = await _db.NavigationMenuItems
                         .FirstAsync(x => x.TenantId == _tenant.TenantId && x.Id == realId);
 
-                    ApplyDto(created, dto, ResolveParent(dto.ParentId), userId, now);
+                    ApplyVm(created, vm, ResolveParent(vm.ParentId), userId, now);
                     continue;
                 }
 
-                if (!existingById.TryGetValue(dto.Id, out var entity))
+                if (!existingById.TryGetValue(vm.Id, out var entity))
                 {
                     // ignore unknown IDs (tenant isolation / stale client)
                     continue;
                 }
 
-                ApplyDto(entity, dto, ResolveParent(dto.ParentId), userId, now);
+                ApplyVm(entity, vm, ResolveParent(vm.ParentId), userId, now);
             }
 
             await _db.SaveChangesAsync();
@@ -173,33 +173,52 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
             });
         }
 
-        private void ApplyDto(NavigationMenuItem entity, NavSaveItemDto dto, int? resolvedParentId, Guid userId, DateTime now)
+        private void ApplyVm(
+            NavigationMenuItem entity,
+            NavSaveItemVm vm,
+            int? resolvedParentId,
+            Guid userId,
+            DateTime now)
         {
             entity.ParentId = resolvedParentId;
-            entity.SortOrder = dto.SortOrder;
+            entity.SortOrder = vm.SortOrder;
 
-            entity.Label = (dto.Label ?? string.Empty).Trim();
+            entity.Label = (vm.Label ?? string.Empty).Trim();
 
-            entity.PageId = dto.PageId;
-            entity.Url = dto.PageId.HasValue ? string.Empty : (dto.Url ?? string.Empty).Trim();
+            entity.PageId = vm.PageId;
+            entity.Url = vm.PageId.HasValue
+                ? string.Empty
+                : (vm.Url ?? string.Empty).Trim();
 
-            entity.OpenInNewTab = dto.OpenInNewTab;
+            entity.OpenInNewTab = vm.OpenInNewTab;
+            entity.IsActive = vm.IsActive;
 
-            entity.IsActive = dto.IsActive;
+            // ✅ EXPLICIT RESTORE (Undo delete)
+            if (vm.Restore)
+            {
+                entity.IsDeleted = false;
+                entity.DeletedAt = null;
+                entity.DeletedBy = null;
 
-            if (dto.IsDeleted)
+                entity.UpdatedAt = now;
+                entity.UpdatedBy = userId;
+                return;
+            }
+
+            // ✅ Explicit delete
+            if (vm.IsDeleted)
             {
                 entity.IsDeleted = true;
                 entity.DeletedAt = now;
                 entity.DeletedBy = userId;
+                return;
             }
-            else
-            {
-                // do not auto-undelete without explicit UX
-                entity.UpdatedAt = now;
-                entity.UpdatedBy = userId;
-            }
+
+            // Normal update (no auto-undelete)
+            entity.UpdatedAt = now;
+            entity.UpdatedBy = userId;
         }
+
 
         private List<NavNodeVm> BuildTree(List<NavigationMenuItem> items, List<PageOptionVm> pages)
         {

@@ -1,20 +1,24 @@
-﻿@page "{menuId:int}"
+﻿@page
 @model WebsiteBuilder.IRF.Pages.Admin.Navigation.EditModel
+
 @{
-    ViewData["Title"] = "Edit Navigation Menu";
+    ViewData["Title"] = "Edit Navigation";
 }
 
-<form id="antiForgeryForm" method="post">
+<form id="antiForgeryForm" method="post" class="d-none">
     @Html.AntiForgeryToken()
 </form>
 
 <div class="d-flex align-items-center justify-content-between mb-3">
     <div>
-        <h2 class="mb-0">Navigation Builder</h2>
-        <div class="text-muted">Menu ID: @Model.MenuId</div>
+        <h2 class="mb-0">Edit Navigation</h2>
+        <div class="text-muted small">MenuId: @Model.MenuId</div>
     </div>
 
     <div class="d-flex gap-2">
+        <a asp-page="/Admin/Navigation/Index" class="btn btn-outline-secondary">
+            Back
+        </a>
         <button id="addRootBtn" type="button" class="btn btn-outline-primary">
             Add Item
         </button>
@@ -64,11 +68,17 @@
                 </ul>
                 <hr />
                 <div class="small text-muted">
-                    Tip: If PageId is selected, Url will be ignored on save.
+                    Rule: If a Page is selected, Url is disabled and cleared. If you type a Url, Page is cleared.
                 </div>
             </div>
         </div>
     </div>
+</div>
+
+@* Non-blocking save toast *@
+<div id="navToast"
+     class="position-fixed bottom-0 end-0 m-3 px-3 py-2 rounded shadow-sm d-none"
+     style="background:#222;color:#fff;z-index:1050;font-size:0.875rem;max-width:360px;">
 </div>
 
 @section Scripts {
@@ -80,6 +90,23 @@
     <script>
         (function () {
             const menuId = @Model.MenuId;
+            const sortableGroupName = `nav-menu-${menuId}`;
+
+            // ---------- UI Feedback ----------
+            const toastEl = document.getElementById("navToast");
+
+            function showToast(text, state) {
+                if (!toastEl) return;
+
+                toastEl.textContent = text;
+                toastEl.classList.remove("d-none", "bg-success", "bg-danger", "bg-secondary");
+
+                if (state === "ok") toastEl.classList.add("bg-success");
+                else if (state === "error") toastEl.classList.add("bg-danger");
+                else toastEl.classList.add("bg-secondary");
+
+                setTimeout(() => toastEl.classList.add("d-none"), 1400);
+            }
 
             function getToken() {
                 const el = document.querySelector('#antiForgeryForm input[name="__RequestVerificationToken"]');
@@ -87,15 +114,130 @@
             }
 
             function showMsg(text, kind) {
+                // Keep your existing inline alert for detailed errors,
+                // but prefer toast for routine save UX.
                 const box = document.getElementById('statusMsg');
+                if (!box) return;
+
                 box.classList.remove('d-none', 'alert-info', 'alert-success', 'alert-danger');
                 box.classList.add(kind === 'success' ? 'alert-success' : kind === 'error' ? 'alert-danger' : 'alert-info');
                 box.textContent = text;
             }
 
+            function debounce(fn, ms) {
+                let t = null;
+                return function (...args) {
+                    clearTimeout(t);
+                    t = setTimeout(() => fn.apply(this, args), ms);
+                };
+            }
+
+            // ---------- ID + Node creation ----------
             function uniqueTempId() {
                 // negative IDs for new client-side items
                 return -Math.floor(Math.random() * 1000000000) - 1;
+            }
+
+            function escapeHtml(s) {
+                return String(s)
+                    .replaceAll('&', '&amp;')
+                    .replaceAll('<', '&lt;')
+                    .replaceAll('>', '&gt;')
+                    .replaceAll('"', '&quot;')
+                    .replaceAll("'", '&#039;');
+            }
+
+            const pages = @Html.Raw(Model.PagesJson);
+
+            function renderPageOptions(selectedId) {
+                const sel = selectedId ? String(selectedId) : '';
+                return pages.map(p => {
+                    const selected = sel && sel === String(p.id) ? 'selected' : '';
+                    return `<option value="${p.id}" ${selected}>${escapeHtml(p.title)} (${escapeHtml(p.slug)})</option>`;
+                }).join('');
+            }
+
+            function hasChildren(li) {
+                const ul = li.querySelector(':scope > .nav-children');
+                if (!ul) return false;
+                return Array.from(ul.children).some(x => x.classList && x.classList.contains('nav-node') && x.dataset.deleted !== 'true');
+            }
+
+            function collapseKeyFor(li) {
+                return `nav-collapse-${menuId}-${li.dataset.id}`;
+            }
+
+            function applyCollapseState(li) {
+                const ul = li.querySelector(':scope > .nav-children');
+                const btn = li.querySelector(':scope .toggle-children');
+                if (!ul || !btn) return;
+
+                // Only show toggle when there are children
+                const any = hasChildren(li);
+                btn.classList.toggle('d-none', !any);
+
+                const key = collapseKeyFor(li);
+                const collapsed = localStorage.getItem(key) === 'true';
+
+                if (any && collapsed) {
+                    ul.classList.add('d-none');
+                    btn.textContent = '▶';
+                } else {
+                    ul.classList.remove('d-none');
+                    btn.textContent = any ? '▼' : '▼';
+                }
+            }
+
+            function setLinkType(li, type) {
+                const linkType = li.querySelector('.node-linktype');
+                const pageWrap = li.querySelector('.node-pagewrap');
+                const urlWrap = li.querySelector('.node-urlwrap');
+
+                const pageSelect = li.querySelector('.node-pageid');
+                const urlInput = li.querySelector('.node-url');
+
+                linkType.value = type;
+
+                if (type === 'page') {
+                    pageWrap.classList.remove('d-none');
+                    urlWrap.classList.add('d-none');
+
+                    // UX guardrails
+                    if (urlInput) {
+                        urlInput.value = '';
+                        urlInput.disabled = true;
+                    }
+                    if (pageSelect) pageSelect.disabled = false;
+                } else {
+                    urlWrap.classList.remove('d-none');
+                    pageWrap.classList.add('d-none');
+
+                    // UX guardrails
+                    if (pageSelect) {
+                        pageSelect.value = '';
+                        pageSelect.disabled = true;
+                    }
+                    if (urlInput) urlInput.disabled = false;
+                }
+            }
+
+            function normalizeLinkInputs(li) {
+                const pageSelect = li.querySelector('.node-pageid');
+                const urlInput = li.querySelector('.node-url');
+
+                const pageIdRaw = pageSelect?.value || '';
+                const urlVal = (urlInput?.value || '').trim();
+
+                if (pageIdRaw) {
+                    // page wins
+                    setLinkType(li, 'page');
+                } else if (urlVal) {
+                    // url wins
+                    setLinkType(li, 'url');
+                } else {
+                    // default
+                    setLinkType(li, 'page');
+                }
             }
 
             function createNodeLi(dto) {
@@ -109,6 +251,13 @@
                             <div class="drag-handle text-muted" title="Drag to reorder" style="cursor: grab; user-select: none;">
                                 &#x2630;
                             </div>
+
+                            <button type="button"
+                                    class="btn btn-sm btn-link toggle-children px-1 d-none"
+                                    aria-label="Toggle children"
+                                    style="text-decoration:none;">
+                                ▼
+                            </button>
 
                             <div class="flex-grow-1">
                                 <div class="row g-2">
@@ -166,83 +315,38 @@
                 initSortable(li.querySelector('.nav-children'));
 
                 // initial link type selection
-                setLinkType(li, dto.pageId ? 'page' : 'url');
+                normalizeLinkInputs(li);
+
+                // collapse UI state
+                applyCollapseState(li);
 
                 return li;
             }
 
-            function escapeHtml(s) {
-                return String(s)
-                    .replaceAll('&', '&amp;')
-                    .replaceAll('<', '&lt;')
-                    .replaceAll('>', '&gt;')
-                    .replaceAll('"', '&quot;')
-                    .replaceAll("'", '&#039;');
-            }
-
-            const pages = @Html.Raw(Model.PagesJson);
-
-            function renderPageOptions(selectedId) {
-                const sel = selectedId ? String(selectedId) : '';
-                return pages.map(p => {
-                    const selected = sel && sel === String(p.id) ? 'selected' : '';
-                    return `<option value="${p.id}" ${selected}>${escapeHtml(p.title)} (${escapeHtml(p.slug)})</option>`;
-                }).join('');
-            }
-
-            function setLinkType(li, type) {
-                const linkType = li.querySelector('.node-linktype');
-                const pageWrap = li.querySelector('.node-pagewrap');
-                const urlWrap = li.querySelector('.node-urlwrap');
-
-                linkType.value = type;
-
-                if (type === 'page') {
-                    pageWrap.classList.remove('d-none');
-                    urlWrap.classList.add('d-none');
-                } else {
-                    urlWrap.classList.remove('d-none');
-                    pageWrap.classList.add('d-none');
-                    // Clear page selection if switching to URL
-                    li.querySelector('.node-pageid').value = '';
-                }
-            }
-
-            function wireNodeUi(li) {
-                li.querySelector('.node-linktype').addEventListener('change', (e) => {
-                    setLinkType(li, e.target.value);
+            // ---------- Sortable ----------
+            const autoSaveDebounced = debounce(() => {
+                save().catch(err => {
+                    showToast(err.message || 'Save failed', 'error');
+                    showMsg(err.message || 'Save failed', 'error');
                 });
-
-                li.querySelector('.add-child').addEventListener('click', () => {
-                    const child = createNodeLi({
-                        id: uniqueTempId(),
-                        label: 'New Item',
-                        pageId: null,
-                        url: '',
-                        openInNewTab: false,
-                        isActive: true
-                    });
-                    li.querySelector('.nav-children').appendChild(child);
-                });
-
-                li.querySelector('.delete-node').addEventListener('click', () => {
-                    // soft delete in UI: mark as deleted + hide
-                    li.dataset.deleted = 'true';
-                    li.style.opacity = '0.5';
-                    li.style.display = 'none';
-                });
-            }
+            }, 700);
 
             function initSortable(ul) {
                 if (!ul) return;
 
                 Sortable.create(ul, {
-                    group: 'nav',
+                    group: { name: sortableGroupName, pull: true, put: true },
                     animation: 150,
                     handle: '.drag-handle',
                     draggable: '.nav-node',
                     fallbackOnBody: true,
-                    swapThreshold: 0.65
+                    swapThreshold: 0.65,
+                    onEnd: function () {
+                        // after any reorder/nest, refresh toggles + autosave
+                        refreshAllToggles();
+                        showToast('Saving…', 'info');
+                        autoSaveDebounced();
+                    }
                 });
             }
 
@@ -251,8 +355,10 @@
                 document.querySelectorAll('.nav-children').forEach(initSortable);
             }
 
+            // ---------- Build payload ----------
             function buildFlatList(rootUl) {
                 const items = [];
+
                 function walk(ul, parentId) {
                     const children = Array.from(ul.children).filter(x => x.classList.contains('nav-node'));
                     children.forEach((li, idx) => {
@@ -261,8 +367,10 @@
 
                         const label = li.querySelector('.node-label')?.value?.trim() || '';
                         const linkType = li.querySelector('.node-linktype')?.value || 'page';
+
                         const pageIdRaw = li.querySelector('.node-pageid')?.value || '';
                         const pageId = pageIdRaw ? Number(pageIdRaw) : null;
+
                         const url = li.querySelector('.node-url')?.value?.trim() || '';
                         const openInNewTab = !!li.querySelector('.node-newtab')?.checked;
                         const isActive = !!li.querySelector('.node-active')?.checked;
@@ -270,10 +378,10 @@
                         items.push({
                             id,
                             parentId: parentId,
-                            sortOrder: idx,
+                            sortOrder: idx + 1, // 1-based is clearer
                             label,
                             pageId: (linkType === 'page') ? pageId : null,
-                            url: (linkType === 'url') ? url : (pageId ? '' : url), // keep safe
+                            url: (linkType === 'url') ? url : (pageId ? '' : url),
                             openInNewTab,
                             isActive,
                             isDeleted: deleted
@@ -283,13 +391,24 @@
                         if (childUl) walk(childUl, id);
                     });
                 }
+
                 walk(rootUl, null);
                 return items;
             }
 
+            // ---------- Save (same endpoint contract) ----------
+            let saveInFlight = false;
+            let saveQueued = false;
+
             async function save() {
+                if (saveInFlight) {
+                    saveQueued = true;
+                    return;
+                }
+
                 const token = getToken();
                 if (!token) {
+                    showToast('Missing antiforgery token.', 'error');
                     showMsg('Missing antiforgery token.', 'error');
                     return;
                 }
@@ -302,11 +421,14 @@
                 // basic validation
                 const invalid = payload.items.find(x => !x.isDeleted && (!x.label || x.label.length === 0));
                 if (invalid) {
+                    showToast('Validation failed: Label is required.', 'error');
                     showMsg('Validation failed: all non-deleted items must have a Label.', 'error');
                     return;
                 }
 
-                showMsg('Saving...', 'info');
+                saveInFlight = true;
+
+                showToast('Saving…', 'info');
 
                 const res = await fetch(`?handler=Save`, {
                     method: 'POST',
@@ -318,24 +440,150 @@
                 });
 
                 const data = await res.json().catch(() => null);
+
                 if (!res.ok || !data || !data.success) {
                     const err = data && data.error ? data.error : ('Save failed (HTTP ' + res.status + ')');
+                    showToast(err, 'error');
                     showMsg(err, 'error');
+                    saveInFlight = false;
                     return;
                 }
 
-                // map temp IDs to real IDs (if returned)
+                // map temp IDs to real IDs (if returned) + preserve collapse state keys when possible
                 if (data.idMap) {
                     for (const [tempIdStr, realId] of Object.entries(data.idMap)) {
                         const li = document.querySelector(`.nav-node[data-id="${tempIdStr}"]`);
-                        if (li) li.dataset.id = String(realId);
+                        if (!li) continue;
+
+                        const oldKey = `nav-collapse-${menuId}-${tempIdStr}`;
+                        const newKey = `nav-collapse-${menuId}-${realId}`;
+
+                        const oldState = localStorage.getItem(oldKey);
+                        if (oldState !== null && localStorage.getItem(newKey) === null) {
+                            localStorage.setItem(newKey, oldState);
+                        }
+                        localStorage.removeItem(oldKey);
+
+                        li.dataset.id = String(realId);
                     }
                 }
 
+                showToast('Saved', 'ok');
                 showMsg('Saved successfully.', 'success');
+
+                saveInFlight = false;
+
+                // If something queued during the save, run one more save
+                if (saveQueued) {
+                    saveQueued = false;
+                    autoSaveDebounced();
+                }
             }
 
-            document.getElementById('addRootBtn').addEventListener('click', () => {
+            // ---------- Node wiring ----------
+            function refreshAllToggles() {
+                document.querySelectorAll('.nav-node').forEach(li => applyCollapseState(li));
+            }
+
+            function wireAutosaveOnFieldChange(li) {
+                // Any edit should auto-save (debounced). Save button still exists.
+                const inputs = li.querySelectorAll('input, select');
+                inputs.forEach(el => {
+                    el.addEventListener('input', () => {
+                        // Keep link rules consistent while user types/selects
+                        if (el.classList.contains('node-url') || el.classList.contains('node-pageid')) {
+                            normalizeLinkInputs(li);
+                        }
+                        showToast('Saving…', 'info');
+                        autoSaveDebounced();
+                    });
+                    el.addEventListener('change', () => {
+                        if (el.classList.contains('node-linktype')) {
+                            setLinkType(li, el.value);
+                        }
+                        if (el.classList.contains('node-pageid') || el.classList.contains('node-url')) {
+                            normalizeLinkInputs(li);
+                        }
+                        showToast('Saving…', 'info');
+                        autoSaveDebounced();
+                    });
+                });
+            }
+
+            function wireNodeUi(li) {
+                // Collapse/expand
+                const toggleBtn = li.querySelector('.toggle-children');
+                if (toggleBtn) {
+                    toggleBtn.addEventListener('click', () => {
+                        const ul = li.querySelector(':scope > .nav-children');
+                        if (!ul) return;
+
+                        ul.classList.toggle('d-none');
+                        const collapsed = ul.classList.contains('d-none');
+                        toggleBtn.textContent = collapsed ? '▶' : '▼';
+                        localStorage.setItem(collapseKeyFor(li), collapsed ? 'true' : 'false');
+                    });
+                }
+
+                // LinkType explicit change still supported
+                li.querySelector('.node-linktype')?.addEventListener('change', (e) => {
+                    setLinkType(li, e.target.value);
+                    showToast('Saving…', 'info');
+                    autoSaveDebounced();
+                });
+
+                // Page selection guardrail
+                li.querySelector('.node-pageid')?.addEventListener('change', () => {
+                    normalizeLinkInputs(li);
+                    showToast('Saving…', 'info');
+                    autoSaveDebounced();
+                });
+
+                // Url typing guardrail
+                li.querySelector('.node-url')?.addEventListener('input', () => {
+                    normalizeLinkInputs(li);
+                });
+
+                // Add child
+                li.querySelector('.add-child')?.addEventListener('click', () => {
+                    const child = createNodeLi({
+                        id: uniqueTempId(),
+                        label: 'New Item',
+                        pageId: null,
+                        url: '',
+                        openInNewTab: false,
+                        isActive: true
+                    });
+
+                    li.querySelector('.nav-children').appendChild(child);
+
+                    // ensure parent shows toggle now
+                    applyCollapseState(li);
+
+                    showToast('Saving…', 'info');
+                    autoSaveDebounced();
+                });
+
+                // Delete node (soft delete in UI)
+                li.querySelector('.delete-node')?.addEventListener('click', () => {
+                    li.dataset.deleted = 'true';
+                    li.style.opacity = '0.5';
+                    li.style.display = 'none';
+
+                    // parent may lose toggle if last child deleted
+                    const parentLi = li.closest('ul')?.closest('li.nav-node');
+                    if (parentLi) applyCollapseState(parentLi);
+
+                    showToast('Saving…', 'info');
+                    autoSaveDebounced();
+                });
+
+                // Autosave on edits
+                wireAutosaveOnFieldChange(li);
+            }
+
+            // ---------- Root actions ----------
+            document.getElementById('addRootBtn')?.addEventListener('click', () => {
                 const li = createNodeLi({
                     id: uniqueTempId(),
                     label: 'New Item',
@@ -345,25 +593,37 @@
                     isActive: true
                 });
                 document.getElementById('navRoot').appendChild(li);
+
+                showToast('Saving…', 'info');
+                autoSaveDebounced();
             });
 
-            document.getElementById('saveBtn').addEventListener('click', () => {
-                save().catch(err => showMsg(err.message || 'Unexpected error', 'error'));
+            document.getElementById('saveBtn')?.addEventListener('click', () => {
+                save().catch(err => {
+                    showToast(err.message || 'Unexpected error', 'error');
+                    showMsg(err.message || 'Unexpected error', 'error');
+                });
             });
 
-            // Initialize SortableJS
+            // ---------- Initialize ----------
             initAllSortables();
 
             // Wire server-rendered nodes (partial view)
             document.querySelectorAll('.nav-node').forEach(li => {
                 wireNodeUi(li);
+
                 const childrenUl = li.querySelector(':scope > .nav-children');
                 initSortable(childrenUl);
 
-                // set initial link type
-                const pageIdVal = li.querySelector('.node-pageid')?.value;
-                setLinkType(li, pageIdVal ? 'page' : 'url');
+                // Initial link mode based on values
+                normalizeLinkInputs(li);
+
+                // Collapse toggle visibility/state
+                applyCollapseState(li);
             });
+
+            // Ensure initial toggle visibility is correct
+            refreshAllToggles();
 
         })();
     </script>
@@ -379,6 +639,11 @@
 
         .drag-handle {
             width: 20px;
+            text-align: center;
+        }
+
+        .toggle-children {
+            width: 28px;
             text-align: center;
         }
     </style>
