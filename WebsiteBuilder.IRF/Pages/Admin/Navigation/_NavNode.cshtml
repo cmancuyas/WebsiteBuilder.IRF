@@ -1,56 +1,106 @@
 ﻿@model WebsiteBuilder.IRF.ViewModels.Admin.Navigation.NavNodeVm
 
+@{
+    var hasChildren = Model.Children != null && Model.Children.Count > 0;
+
+    var hasPage = Model.PageId.HasValue && Model.PageId.Value > 0;
+    var hasUrl = !string.IsNullOrWhiteSpace(Model.Url);
+
+    // Initial link type: page wins if PageId exists, else url if Url exists, else page default
+    var linkType = hasPage ? "page" : (hasUrl ? "url" : "page");
+
+    // Initial wrappers (prevents flicker before JS normalizes)
+    var pageWrapClass = linkType == "page" ? "" : "d-none";
+    var urlWrapClass = linkType == "url" ? "" : "d-none";
+}
+
 <li class="nav-node mb-2" data-id="@Model.Id">
     <div class="node-row border rounded p-2 bg-white">
         <div class="d-flex align-items-start gap-2">
-            <div class="drag-handle text-muted" title="Drag to reorder" style="cursor: grab; user-select: none;">
+
+            <div class="drag-handle text-muted"
+                 title="Drag to reorder"
+                 style="cursor: grab; user-select: none;">
                 &#x2630;
             </div>
 
+            <button type="button"
+                    class="btn btn-sm btn-link toggle-children px-1 @(hasChildren ? "" : "d-none")"
+                    aria-label="Toggle children"
+                    style="text-decoration:none;">
+                ▼
+            </button>
+
+            <span class="badge bg-secondary sort-badge">S?</span>
+
             <div class="flex-grow-1">
                 <div class="row g-2">
+
                     <div class="col-12">
                         <label class="form-label mb-1 small">Label</label>
-                        <input class="form-control form-control-sm node-label" value="@Model.Label" maxlength="200" />
+                        <input class="form-control form-control-sm node-label"
+                               value="@Model.Label"
+                               maxlength="200" />
                     </div>
 
                     <div class="col-12">
                         <label class="form-label mb-1 small">Link Type</label>
                         <select class="form-select form-select-sm node-linktype">
-                            <option value="page">Internal Page</option>
-                            <option value="url">External URL</option>
+                            @if (linkType == "page")
+                            {
+                                <option value="page" selected>Internal Page</option>
+                                <option value="url">External URL</option>
+                            }
+                            else
+                            {
+                                <option value="page">Internal Page</option>
+                                <option value="url" selected>External URL</option>
+                            }
                         </select>
                     </div>
 
-                    <div class="col-12 node-pagewrap">
+                    <div class="col-12 node-pagewrap @pageWrapClass">
                         <label class="form-label mb-1 small">Page</label>
                         <select class="form-select form-select-sm node-pageid">
                             <option value="">-- Select page --</option>
                             @foreach (var p in Model.PageOptions)
                             {
-                                <option value="@p.Id" selected="@(Model.PageId == p.Id)">
-                                    @p.Title (@p.Slug)
-                                </option>
+                                if (Model.PageId == p.Id)
+                                {
+                                    <option value="@p.Id" selected>@p.Title (@p.Slug)</option>
+                                }
+                                else
+                                {
+                                    <option value="@p.Id">@p.Title (@p.Slug)</option>
+                                }
                             }
                         </select>
                     </div>
 
-                    <div class="col-12 node-urlwrap d-none">
+                    <div class="col-12 node-urlwrap @urlWrapClass">
                         <label class="form-label mb-1 small">URL</label>
-                        <input class="form-control form-control-sm node-url" value="@Model.Url" maxlength="500" placeholder="https://..." />
+                        <input class="form-control form-control-sm node-url"
+                               value="@Model.Url"
+                               maxlength="500"
+                               placeholder="https://..." />
                     </div>
 
                     <div class="col-12 d-flex gap-3 align-items-center">
                         <div class="form-check form-switch">
-                            <input class="form-check-input node-newtab" type="checkbox" checked="@(Model.OpenInNewTab)">
+                            <input class="form-check-input node-newtab"
+                                   type="checkbox"
+                                   @(Model.OpenInNewTab ? "checked" : null) />
                             <label class="form-check-label small">Open in new tab</label>
                         </div>
 
                         <div class="form-check form-switch">
-                            <input class="form-check-input node-active" type="checkbox" checked="@(Model.IsActive)">
+                            <input class="form-check-input node-active"
+                                   type="checkbox"
+                                   @(Model.IsActive ? "checked" : null) />
                             <label class="form-check-label small">Active</label>
                         </div>
                     </div>
+
                 </div>
             </div>
 
@@ -62,9 +112,9 @@
     </div>
 
     <ul class="nav-children list-unstyled ms-4 mt-2 mb-0">
-        @foreach (var child in Model.Children)
+        @foreach (var child in Model.Children!)
         {
-            @Html.Partial("_NavNode", child)
+            <partial name="_NavNode" model="child" />
         }
     </ul>
 </li>

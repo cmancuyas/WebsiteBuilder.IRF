@@ -1,13 +1,66 @@
 ﻿@using Microsoft.AspNetCore.Html
 @using Microsoft.AspNetCore.Mvc.Rendering
 @using WebsiteBuilder.IRF.Infrastructure.Tenancy
-@inject WebsiteBuilder.IRF.Infrastructure.Tenancy.ITenantNavigationService NavService
-@inject WebsiteBuilder.IRF.Infrastructure.Tenancy.ITenantContext TenantContext
+@inject ITenantNavigationService NavService
+@inject ITenantContext TenantContext
 
 @functions {
-    private IHtmlContent RenderNavItems(
-        IReadOnlyList<NavItem> items,
-        bool isDropdown = false)
+
+    private static string NormalizePath(string? path)
+    {
+        var p = (path ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(p))
+            return "/";
+
+        if (!p.StartsWith("/", StringComparison.Ordinal))
+            return p;
+
+        var q = p.IndexOfAny(new[] { '?', '#' });
+        if (q >= 0) p = p.Substring(0, q);
+
+        p = p.TrimEnd('/');
+        if (p.Length == 0) p = "/";
+
+        if (p.Equals("/home", StringComparison.OrdinalIgnoreCase))
+            p = "/";
+
+        return p;
+    }
+
+    private static bool IsAbsoluteUrl(string? url)
+        => !string.IsNullOrWhiteSpace(url) &&
+           (url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+            url.StartsWith("https://", StringComparison.OrdinalIgnoreCase));
+
+    private static bool IsActiveExact(string currentPath, string itemUrl)
+    {
+        if (IsAbsoluteUrl(itemUrl))
+            return false;
+
+        return string.Equals(
+            NormalizePath(currentPath),
+            NormalizePath(itemUrl),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool HasActiveDescendant(string currentPath, IReadOnlyList<NavItem>? children)
+    {
+        if (children == null || children.Count == 0)
+            return false;
+
+        foreach (var c in children)
+        {
+            if (IsActiveExact(currentPath, c.Url))
+                return true;
+
+            if (HasActiveDescendant(currentPath, c.Children))
+                return true;
+        }
+
+        return false;
+    }
+
+    private IHtmlContent RenderNavItems(IReadOnlyList<NavItem> items, string currentPath, bool isDropdown = false)
     {
         var ul = new TagBuilder("ul");
         ul.AddCssClass(isDropdown ? "dropdown-menu" : "navbar-nav me-auto mb-2 mb-lg-0");
@@ -16,21 +69,17 @@
         {
             var hasChildren = item.Children?.Count > 0;
 
+            var href = string.IsNullOrWhiteSpace(item.Url) ? "/" : item.Url.Trim();
+            if (string.Equals(href, "/home", StringComparison.OrdinalIgnoreCase))
+                href = "/";
+
+            var isActive = IsActiveExact(currentPath, href);
+            var isActiveParent = !isActive && hasChildren && HasActiveDescendant(currentPath, item.Children);
+
             var li = new TagBuilder("li");
-            li.AddCssClass(hasChildren && !isDropdown ? "nav-item dropdown" : "nav-item");
+            li.AddCssClass(!isDropdown && hasChildren ? "nav-item dropdown" : "nav-item");
 
             var a = new TagBuilder("a");
-
-            // -------------------------------
-            // NORMALIZE HOME URL
-            // -------------------------------
-            var href = string.IsNullOrWhiteSpace(item.Url) ? "/" : item.Url.Trim();
-
-            if (string.Equals(href, "/home", StringComparison.OrdinalIgnoreCase))
-            {
-                href = "/";
-            }
-
             a.Attributes["href"] = href;
 
             if (item.OpenInNewTab)
@@ -43,25 +92,29 @@
             {
                 a.AddCssClass(hasChildren ? "nav-link dropdown-toggle" : "nav-link");
 
+                if (isActive || isActiveParent)
+                    a.AddCssClass("active");
+
                 if (hasChildren)
                 {
                     a.Attributes["role"] = "button";
                     a.Attributes["data-bs-toggle"] = "dropdown";
-                    a.Attributes["aria-expanded"] = "false";
+                    a.Attributes["aria-expanded"] = isActiveParent ? "true" : "false";
                 }
             }
             else
             {
                 a.AddCssClass("dropdown-item");
+
+                if (isActive)
+                    a.AddCssClass("active");
             }
 
             a.InnerHtml.Append(item.Title);
             li.InnerHtml.AppendHtml(a);
 
             if (hasChildren)
-            {
-                li.InnerHtml.AppendHtml(RenderNavItems(item.Children!, true));
-            }
+                li.InnerHtml.AppendHtml(RenderNavItems(item.Children!, currentPath, true));
 
             ul.InnerHtml.AppendHtml(li);
         }
@@ -72,10 +125,55 @@
 
 @if (TenantContext.IsResolved)
 {
+    var currentPath = Context?.Request?.Path.Value ?? "/";
     var headerItems = await NavService.GetHeaderAsync();
 
-    if (headerItems.Count > 0)
-    {
-        @RenderNavItems(headerItems)
-    }
+    <header>
+        <nav class="navbar navbar-expand-lg navbar-light bg-white border-bottom mb-3">
+            <div class="container">
+                <a class="navbar-brand" href="/">@TenantContext.Host</a>
+
+                <button class="navbar-toggler" type="button"
+                        data-bs-toggle="collapse"
+                        data-bs-target="#tenantNavbar"
+                        aria-controls="tenantNavbar"
+                        aria-expanded="false"
+                        aria-label="Toggle navigation">
+                    <span class="navbar-toggler-icon"></span>
+                </button>
+
+                <div class="collapse navbar-collapse" id="tenantNavbar">
+                    @if (headerItems.Count > 0)
+                    {
+                        @RenderNavItems(headerItems, currentPath)
+                    }
+                </div>
+            </div>
+        </nav>
+    </header>
+
+    <script>
+        (function () {
+            function run() {
+                const activeDropdownToggle =
+                    document.querySelector('.navbar .dropdown-toggle.active');
+                if (!activeDropdownToggle) return;
+
+                const dropdown = bootstrap.Dropdown.getOrCreateInstance(activeDropdownToggle);
+                dropdown.show();
+
+                const navbarCollapse = document.getElementById('tenantNavbar');
+                if (navbarCollapse && !navbarCollapse.classList.contains('show')) {
+                    const collapse = bootstrap.Collapse.getOrCreateInstance(navbarCollapse);
+                    collapse.show();
+                }
+            }
+
+            if (document.readyState === "loading") {
+                document.addEventListener("DOMContentLoaded", run);
+            } else {
+                run();
+            }
+        })();
+    </script>
 }

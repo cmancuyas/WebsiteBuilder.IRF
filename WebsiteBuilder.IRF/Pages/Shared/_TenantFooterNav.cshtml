@@ -1,0 +1,69 @@
+﻿@using WebsiteBuilder.IRF.Infrastructure.Tenancy
+@inject ITenantNavigationService NavService
+@inject ITenantContext TenantContext
+
+@functions {
+    private static string NormalizePath(string? path)
+    {
+        var p = (path ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(p))
+            return "/";
+
+        if (!p.StartsWith("/", StringComparison.Ordinal))
+            return p;
+
+        var q = p.IndexOfAny(new[] { '?', '#' });
+        if (q >= 0) p = p.Substring(0, q);
+
+        p = p.TrimEnd('/');
+        if (p.Length == 0) p = "/";
+
+        if (p.Equals("/home", StringComparison.OrdinalIgnoreCase))
+            p = "/";
+
+        return p;
+    }
+
+    private static bool IsAbsoluteUrl(string? url)
+        => !string.IsNullOrWhiteSpace(url) &&
+           (url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+            url.StartsWith("https://", StringComparison.OrdinalIgnoreCase));
+
+    private static bool IsActiveExact(string currentPath, string itemUrl)
+    {
+        if (IsAbsoluteUrl(itemUrl))
+            return false;
+
+        return string.Equals(
+            NormalizePath(currentPath),
+            NormalizePath(itemUrl),
+            StringComparison.OrdinalIgnoreCase);
+    }
+}
+
+@if (TenantContext.IsResolved)
+{
+    var footerItems = await NavService.GetFooterAsync();
+    var currentPath = Context?.Request?.Path.Value ?? "/";
+
+    if (footerItems.Count > 0)
+    {
+        <div class="d-flex flex-wrap gap-3">
+            @foreach (var item in footerItems)
+            {
+                var href = string.IsNullOrWhiteSpace(item.Url) ? "/" : item.Url.Trim();
+                if (string.Equals(href, "/home", StringComparison.OrdinalIgnoreCase))
+                    href = "/";
+
+                var isActive = IsActiveExact(currentPath, href);
+
+                <a class="text-decoration-none @(isActive ? "fw-semibold text-dark" : "text-muted")"
+                   href="@href"
+                   target="@(item.OpenInNewTab ? "_blank" : null)"
+                   rel="@(item.OpenInNewTab ? "noopener" : null)">
+                    @item.Title
+                </a>
+            }
+        </div>
+    }
+}
