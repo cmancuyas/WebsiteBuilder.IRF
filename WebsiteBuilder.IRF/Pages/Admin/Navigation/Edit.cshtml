@@ -361,6 +361,7 @@
 
                 function walk(ul, parentId) {
                     const children = Array.from(ul.children).filter(x => x.classList.contains('nav-node'));
+
                     children.forEach((li, idx) => {
                         const id = Number(li.dataset.id);
                         const deleted = li.dataset.deleted === 'true';
@@ -375,15 +376,24 @@
                         const openInNewTab = !!li.querySelector('.node-newtab')?.checked;
                         const isActive = !!li.querySelector('.node-active')?.checked;
 
+                        // ✅ Published flag
+                        const isPublished = !!li.querySelector('.node-published')?.checked;
+
+                        // ✅ Roles CSV (blank => null)
+                        const rolesCsv = li.querySelector('.node-roles')?.value?.trim() || '';
+                        const allowedRolesCsv = rolesCsv.length ? rolesCsv : null;
+
                         items.push({
                             id,
                             parentId: parentId,
-                            sortOrder: idx + 1, // 1-based is clearer
+                            sortOrder: idx + 1,
                             label,
                             pageId: (linkType === 'page') ? pageId : null,
                             url: (linkType === 'url') ? url : (pageId ? '' : url),
+                            allowedRolesCsv,
                             openInNewTab,
                             isActive,
+                            isPublished,
                             isDeleted: deleted
                         });
 
@@ -395,6 +405,7 @@
                 walk(rootUl, null);
                 return items;
             }
+
 
             // ---------- Save (same endpoint contract) ----------
             let saveInFlight = false;

@@ -192,7 +192,8 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
 
             entity.OpenInNewTab = vm.OpenInNewTab;
             entity.IsActive = vm.IsActive;
-
+            entity.IsPublished = vm.IsPublished;
+            entity.AllowedRolesCsv = NormalizeRolesCsv(vm.AllowedRolesCsv);
             // ✅ EXPLICIT RESTORE (Undo delete)
             if (vm.Restore)
             {
@@ -219,6 +220,19 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
             entity.UpdatedBy = userId;
         }
 
+        private static string? NormalizeRolesCsv(string? csv)
+        {
+            if (string.IsNullOrWhiteSpace(csv)) return null;
+
+            var roles = csv
+                .Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(r => r.Trim())
+                .Where(r => r.Length > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            return roles.Count == 0 ? null : string.Join(",", roles);
+        }
 
         private List<NavNodeVm> BuildTree(List<NavigationMenuItem> items, List<PageOptionVm> pages)
         {
@@ -241,6 +255,8 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
                     Url = x.Url,
                     OpenInNewTab = x.OpenInNewTab,
                     IsActive = x.IsActive,
+                    IsPublished = x.IsPublished,
+                    AllowedRolesCsv = x.AllowedRolesCsv,
                     PageOptions = pages,
                     Children = build(x.Id)
                 }).ToList();

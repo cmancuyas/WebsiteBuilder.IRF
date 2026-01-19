@@ -1,5 +1,6 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
+using System.Security.Claims;
 using WebsiteBuilder.IRF.DataAccess;
 using WebsiteBuilder.Models.Constants;
 
@@ -16,19 +17,20 @@ namespace WebsiteBuilder.IRF.Infrastructure.Tenancy
 
     public sealed class TenantNavigationService : ITenantNavigationService
     {
-        // If you have a constants class for these, you can replace these literals.
         private const int HeaderMenuId = 1;
         private const int FooterMenuId = 2;
 
         private readonly DataContext _db;
         private readonly ITenantContext _tenant;
         private readonly IMemoryCache _cache;
+        private readonly IHttpContextAccessor _http;
 
-        public TenantNavigationService(DataContext db, ITenantContext tenant, IMemoryCache cache)
+        public TenantNavigationService(DataContext db, ITenantContext tenant, IMemoryCache cache, IHttpContextAccessor http)
         {
             _db = db;
             _tenant = tenant;
             _cache = cache;
+            _http = http;
         }
 
         // Backward compatible: existing callers get Header
@@ -46,43 +48,67 @@ namespace WebsiteBuilder.IRF.Infrastructure.Tenancy
 
         private string CacheKey(int menuId) => $"tenant-nav:{_tenant.TenantId}:menu:{menuId}";
 
-        private async Task<IReadOnlyList<NavItem>> GetMenuInternalAsync(int menuId, CancellationToken ct = default)
+        // Cache raw rows (user-agnostic). Then filter per request.
+        private async Task<List<NavRow>> GetRawRowsAsync(int menuId, CancellationToken ct)
         {
-            if (!_tenant.IsResolved)
-                return Array.Empty<NavItem>();
+            var cacheKey = CacheKey(menuId) + ":raw";
 
-            var cacheKey = CacheKey(menuId);
-
-            if (_cache.TryGetValue(cacheKey, out IReadOnlyList<NavItem>? cached) && cached is not null)
+            if (_cache.TryGetValue(cacheKey, out List<NavRow>? cached) && cached is not null)
                 return cached;
 
-            // 1) Load menu items for this menuId
-            var items = await _db.NavigationMenuItems
+            var rows = await _db.NavigationMenuItems
                 .AsNoTracking()
                 .Where(x =>
                     x.TenantId == _tenant.TenantId &&
                     !x.IsDeleted &&
                     x.IsActive &&
+                    x.IsPublished &&
                     x.MenuId == menuId)
                 .OrderBy(x => x.ParentId)
                 .ThenBy(x => x.SortOrder)
                 .ThenBy(x => x.Id)
-                .Select(x => new
+                .Select(x => new NavRow
                 {
-                    x.Id,
-                    x.ParentId,
-                    x.SortOrder,
-                    x.Label,
-                    x.PageId,
-                    x.Url,
-                    x.OpenInNewTab
+                    Id = x.Id,
+                    ParentId = x.ParentId,
+                    SortOrder = x.SortOrder,
+                    Label = x.Label,
+                    PageId = x.PageId,
+                    Url = x.Url,
+                    OpenInNewTab = x.OpenInNewTab,
+                    AllowedRolesCsv = x.AllowedRolesCsv
                 })
                 .ToListAsync(ct);
+
+            _cache.Set(cacheKey, rows, new MemoryCacheEntryOptions
+            {
+                AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(5)
+            });
+
+            return rows;
+        }
+
+        private async Task<IReadOnlyList<NavItem>> GetMenuInternalAsync(int menuId, CancellationToken ct = default)
+        {
+            if (!_tenant.IsResolved)
+                return Array.Empty<NavItem>();
+
+            // 1) Load raw menu rows (cached, user-agnostic)
+            var rawItems = await GetRawRowsAsync(menuId, ct);
+            if (rawItems.Count == 0)
+                return Array.Empty<NavItem>();
+
+            // 2) Role-based visibility filter (per request)
+            var user = _http.HttpContext?.User;
+
+            var items = rawItems
+                .Where(x => IsVisibleToUser(x.AllowedRolesCsv, user))
+                .ToList();
 
             if (items.Count == 0)
                 return Array.Empty<NavItem>();
 
-            // 2) Build PageId -> Published slug map (only for PageIds referenced by menu items)
+            // 3) Build PageId -> Published slug map (only for visible PageIds referenced by menu items)
             var pageIds = items
                 .Where(x => x.PageId.HasValue)
                 .Select(x => x.PageId!.Value)
@@ -102,7 +128,7 @@ namespace WebsiteBuilder.IRF.Infrastructure.Tenancy
                     .Select(p => new { p.Id, p.Slug })
                     .ToDictionaryAsync(x => x.Id, x => x.Slug, ct);
 
-            // 3) ParentId -> children lookup (ParentId is nullable int)
+            // 4) ParentId -> children lookup (ParentId is nullable int)
             const int RootKey = 0;
 
             var byParent = items
@@ -138,7 +164,10 @@ namespace WebsiteBuilder.IRF.Infrastructure.Tenancy
             static string SafeTitle(string? label)
                 => string.IsNullOrWhiteSpace(label) ? "Untitled" : label.Trim();
 
-            // 4) Build tree (cycle-safe)
+            // Build a dictionary for O(1) lookups (avoid items.First(...) repeatedly)
+            var byId = items.ToDictionary(x => x.Id);
+
+            // 5) Build tree (cycle-safe)
             NavItem MapItem(int id, HashSet<int> visiting, int depth)
             {
                 // depth guard (prevents runaway in case of bad data)
@@ -148,7 +177,7 @@ namespace WebsiteBuilder.IRF.Infrastructure.Tenancy
                 if (!visiting.Add(id))
                 {
                     // cycle detected; drop children
-                    var cyc = items.First(x => x.Id == id);
+                    var cyc = byId[id];
                     return new NavItem(
                         SafeTitle(cyc.Label),
                         ResolveUrl(cyc.PageId, cyc.Url),
@@ -158,7 +187,7 @@ namespace WebsiteBuilder.IRF.Infrastructure.Tenancy
                     );
                 }
 
-                var current = items.First(x => x.Id == id);
+                var current = byId[id];
 
                 var kids = byParent.TryGetValue(id, out var childRows)
                     ? childRows
@@ -190,11 +219,6 @@ namespace WebsiteBuilder.IRF.Infrastructure.Tenancy
                     .AsReadOnly()
                 : (IReadOnlyList<NavItem>)Array.Empty<NavItem>();
 
-            _cache.Set(cacheKey, roots, new MemoryCacheEntryOptions
-            {
-                AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(5)
-            });
-
             return roots;
         }
 
@@ -203,8 +227,8 @@ namespace WebsiteBuilder.IRF.Infrastructure.Tenancy
             if (!_tenant.IsResolved)
                 return;
 
-            _cache.Remove(CacheKey(HeaderMenuId));
-            _cache.Remove(CacheKey(FooterMenuId));
+            _cache.Remove(CacheKey(HeaderMenuId) + ":raw");
+            _cache.Remove(CacheKey(FooterMenuId) + ":raw");
         }
 
         public void InvalidateMenu(int menuId)
@@ -212,7 +236,7 @@ namespace WebsiteBuilder.IRF.Infrastructure.Tenancy
             if (!_tenant.IsResolved)
                 return;
 
-            _cache.Remove(CacheKey(menuId));
+            _cache.Remove(CacheKey(menuId) + ":raw");
         }
 
         private static string ToUrl(string? slug)
@@ -224,6 +248,34 @@ namespace WebsiteBuilder.IRF.Infrastructure.Tenancy
                 return "/";
 
             return "/" + s;
+        }
+
+        private static bool IsVisibleToUser(string? allowedRolesCsv, ClaimsPrincipal? user)
+        {
+            if (string.IsNullOrWhiteSpace(allowedRolesCsv))
+                return true;
+
+            if (user == null || user.Identity == null || !user.Identity.IsAuthenticated)
+                return false;
+
+            var roles = allowedRolesCsv
+                .Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(r => r.Trim())
+                .Where(r => r.Length > 0);
+
+            return roles.Any(user.IsInRole);
+        }
+
+        private sealed class NavRow
+        {
+            public int Id { get; set; }
+            public int? ParentId { get; set; }
+            public int SortOrder { get; set; }
+            public string? Label { get; set; }
+            public int? PageId { get; set; }
+            public string? Url { get; set; }
+            public bool OpenInNewTab { get; set; }
+            public string? AllowedRolesCsv { get; set; }
         }
     }
 }
