@@ -99,6 +99,20 @@
                                    @(Model.IsActive ? "checked" : null) />
                             <label class="form-check-label small">Active</label>
                         </div>
+                        <div class="form-check form-switch">
+                            <input class="form-check-input node-published"
+                                   type="checkbox"
+                                   @(Model.IsPublished ? "checked" : null) />
+                            <label class="form-check-label small">Published</label>
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label mb-1 small">Visible to Roles (CSV)</label>
+                            <input class="form-control form-control-sm node-roles"
+                                   value="@Model.AllowedRolesCsv"
+                                   maxlength="400"
+                                   placeholder="e.g. Admin,Agent (leave blank for everyone)" />
+                        </div>
+
                     </div>
 
                 </div>

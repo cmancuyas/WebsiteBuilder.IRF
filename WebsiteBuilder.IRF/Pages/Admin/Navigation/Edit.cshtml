@@ -360,6 +360,8 @@
                 const items = [];
 
                 function walk(ul, parentId) {
+                    const allowedRolesCsv = li.querySelector('.node-roles')?.value?.trim() || '';
+
                     const children = Array.from(ul.children).filter(x => x.classList.contains('nav-node'));
                     children.forEach((li, idx) => {
                         const id = Number(li.dataset.id);
@@ -375,15 +377,20 @@
                         const openInNewTab = !!li.querySelector('.node-newtab')?.checked;
                         const isActive = !!li.querySelector('.node-active')?.checked;
 
+                        // ✅ NEW
+                        const isPublished = !!li.querySelector('.node-published')?.checked;
+
                         items.push({
                             id,
                             parentId: parentId,
-                            sortOrder: idx + 1, // 1-based is clearer
+                            sortOrder: idx + 1,
                             label,
                             pageId: (linkType === 'page') ? pageId : null,
                             url: (linkType === 'url') ? url : (pageId ? '' : url),
+                            allowedRolesCsv: allowedRolesCsv || null,
                             openInNewTab,
                             isActive,
+                            isPublished,     // ✅ NEW
                             isDeleted: deleted
                         });
 
@@ -395,6 +402,7 @@
                 walk(rootUl, null);
                 return items;
             }
+
 
             // ---------- Save (same endpoint contract) ----------
             let saveInFlight = false;

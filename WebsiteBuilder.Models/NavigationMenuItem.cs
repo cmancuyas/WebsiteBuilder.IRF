@@ -16,8 +16,8 @@ namespace WebsiteBuilder.Models
         public int MenuId { get; set; }
         public int? ParentId { get; set; }
         public int SortOrder { get; set; }      
-        public int? PageId { get; set; }     
-
+        public int? PageId { get; set; }
+        public bool IsPublished { get; set; } = true;
         [MaxLength(200)]
         public string Label { get; set; } = string.Empty;
 
@@ -25,5 +25,7 @@ namespace WebsiteBuilder.Models
         public string Url { get; set; } = string.Empty;
 
         public bool OpenInNewTab { get; set; }
+        public string? AllowedRolesCsv { get; set; } // null/empty => visible to everyone
+
     }
 }
