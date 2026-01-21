@@ -133,6 +133,84 @@
         </div>
     }
 
+    @if (!isEditable &&
+        Model.PageEntity.PublishedRevisionId.HasValue &&
+        Model.PublishedRevisions?.Any() == true)
+    {
+        <div class="alert alert-info d-flex justify-content-between align-items-center">
+            <div>
+                This page is published. Editing is disabled.
+                Restore a draft from the current published version to continue editing.
+            </div>
+
+            <form method="post" asp-page-handler="RestoreDraft" class="ms-3">
+                <input type="hidden" name="id" value="@Model.PageEntity.Id" />
+                <input type="hidden" name="revisionId" value="@Model.PageEntity.PublishedRevisionId.Value" />
+                <button type="submit"
+                        class="btn btn-sm btn-outline-primary"
+                        onclick="return confirm('Restore draft from the current published version?');">
+                    Restore Draft
+                </button>
+            </form>
+        </div>
+    }
+
+    @if (Model.PublishedRevisions != null && Model.PublishedRevisions.Count > 0)
+    {
+        <div class="card mt-3">
+            <div class="card-header d-flex align-items-center justify-content-between">
+                <div>
+                    <strong>Revision History</strong>
+                    <div class="text-muted small">Rollback changes the live published revision.</div>
+                </div>
+            </div>
+
+            <div class="card-body p-0">
+                <table class="table mb-0">
+                    <thead>
+                        <tr>
+                            <th style="width:120px;">Revision</th>
+                            <th style="width:120px;">Version</th>
+                            <th>Published At</th>
+                            <th style="width:180px;">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var r in Model.PublishedRevisions)
+                        {
+                            var isCurrent = Model.PageEntity.PublishedRevisionId == r.Id;
+                            <tr>
+                                <td>#@r.Id</td>
+                                <td>v@r.VersionNumber</td>
+                                <td>@(r.PublishedAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? r.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm"))</td>
+                                <td>
+                                    @if (isCurrent)
+                                    {
+                                        <span class="badge bg-success">Current</span>
+                                    }
+                                    else
+                                    {
+                                        <form method="post" asp-page-handler="Rollback" class="d-inline">
+                                            <input type="hidden" name="id" value="@Model.PageEntity.Id" />
+                                            <input type="hidden" name="revisionId" value="@r.Id" />
+                                            <button type="submit"
+                                                    class="btn btn-sm btn-outline-danger"
+                                                    onclick="return confirm('Rollback to version v@r.VersionNumber? This will change the live site.');">
+                                                Rollback
+                                            </button>
+                                        </form>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    }
+
+
+
     @* Feedback *@
     @if (Model.SaveSuccess)
     {

@@ -74,6 +74,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
         public bool CanUnpublish => IsPublished;
         public bool CanArchive => !IsArchived;
         public bool CanRestore => IsArchived;
+        public List<PageRevision> PublishedRevisions { get; private set; } = new();
 
         public List<SelectListItem> SectionTypeOptions { get; private set; } = new();
 
@@ -110,7 +111,10 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                 if (string.IsNullOrWhiteSpace(slug))
                     slug = "home";
 
-                return $"/{slug}?preview=true";
+                return slug.Equals("home", StringComparison.OrdinalIgnoreCase)
+                    ? "/?preview=true"
+                    : $"/{slug}?preview=true";
+
             }
         }
 
@@ -175,7 +179,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             await LoadTrashCountAsync(PageEntity.Id, ct);
             await LoadSectionsAsync(PageEntity.Id, ct);
             await LoadTrashedSectionsAsync(PageEntity.Id, ct);
-
+            await LoadPublishedRevisionsAsync(PageEntity.Id, ct);
             return Page();
         }
 
@@ -243,6 +247,22 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                 .Where(p => p.Id == id)
                 .Select(p => p.DraftRevisionId)
                 .FirstOrDefaultAsync(ct);
+
+            var draftExists = await _db.PageRevisions
+                .AsNoTracking()
+                .AnyAsync(r =>
+                    r.Id == draftRevisionId &&
+                    r.PageId == id &&
+                    r.TenantId == _tenant.TenantId &&
+                    !r.IsDeleted,
+                    ct);
+
+            if (!draftExists)
+            {
+                TempData["Error"] = "Publish blocked. Draft revision is missing or invalid.";
+                return RedirectToPage(new { id });
+            }
+
 
             if (draftRevisionId == null)
             {
@@ -718,6 +738,155 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
 
             return new JsonResult(new { ok = true });
         }
+        public async Task<IActionResult> OnPostRollbackAsync(int id, int revisionId, CancellationToken ct = default)
+        {
+            if (!_tenant.IsResolved)
+                return NotFound("Tenant not resolved.");
+
+            var page = await PagesForCurrentUser()
+                .FirstOrDefaultAsync(p => p.Id == id, ct);
+
+            if (page == null)
+                return NotFound();
+
+            if (page.PageStatusId != PageStatusIds.Published)
+            {
+                TempData["Error"] = "Rollback is only available for published pages.";
+                return RedirectToPage(new { id });
+            }
+
+            var target = await _db.PageRevisions
+                .AsNoTracking()
+                .FirstOrDefaultAsync(r =>
+                    r.Id == revisionId &&
+                    r.TenantId == _tenant.TenantId &&
+                    r.PageId == page.Id &&
+                    !r.IsDeleted &&
+                    r.IsPublishedSnapshot, ct);
+
+            if (target == null)
+            {
+                TempData["Error"] = "Invalid revision selected for rollback.";
+                return RedirectToPage(new { id });
+            }
+
+            if (page.PublishedRevisionId == revisionId)
+            {
+                TempData["Success"] = "That revision is already the current published revision.";
+                return RedirectToPage(new { id });
+            }
+
+            var userGuid = GetUserIdOrEmpty();
+            var now = DateTime.UtcNow;
+
+            page.PublishedRevisionId = revisionId;
+            page.UpdatedAt = now;
+            page.UpdatedBy = userGuid;
+
+            await _db.SaveChangesAsync(ct);
+
+            _nav.Invalidate();
+            TempData["Success"] = $"Rolled back to revision #{revisionId} (v{target.VersionNumber}).";
+            return RedirectToPage(new { id });
+        }
+        public async Task<IActionResult> OnPostRestoreDraftAsync(int id, int revisionId, CancellationToken ct = default)
+        {
+            if (!_tenant.IsResolved)
+                return NotFound("Tenant not resolved.");
+
+            var page = await PagesForCurrentUser()
+                .FirstOrDefaultAsync(p => p.Id == id, ct);
+
+            if (page == null)
+                return NotFound();
+
+            // Validate the selected revision belongs to this tenant+page and is a published snapshot
+            var source = await _db.PageRevisions
+                .AsNoTracking()
+                .Include(r => r.Sections)
+                .FirstOrDefaultAsync(r =>
+                    r.Id == revisionId &&
+                    r.TenantId == _tenant.TenantId &&
+                    r.PageId == page.Id &&
+                    r.IsPublishedSnapshot &&
+                    !r.IsDeleted, ct);
+
+            if (source == null)
+            {
+                TempData["Error"] = "Invalid published revision selected.";
+                return RedirectToPage(new { id });
+            }
+
+            // Create a new draft revision cloned from the snapshot
+            var now = DateTime.UtcNow;
+            var userId = GetUserIdOrEmpty();
+
+            // Determine next version number (monotonic)
+            var nextVersion =
+                (await _db.PageRevisions
+                    .Where(r => r.TenantId == _tenant.TenantId && r.PageId == page.Id && !r.IsDeleted)
+                    .MaxAsync(r => (int?)r.VersionNumber, ct) ?? 0) + 1;
+
+            // Use execution strategy for SQL retry + transaction safety (matches your PublishAsync pattern)
+            var strategy = _db.Database.CreateExecutionStrategy();
+
+            return await strategy.ExecuteAsync(async () =>
+            {
+                await using var tx = await _db.Database.BeginTransactionAsync(ct);
+
+                var newDraft = new PageRevision
+                {
+                    TenantId = _tenant.TenantId,
+                    PageId = page.Id,
+                    VersionNumber = nextVersion,
+                    IsPublishedSnapshot = false,
+
+                    Title = source.Title,
+                    Slug = source.Slug,
+                    LayoutKey = source.LayoutKey ?? string.Empty,
+                    MetaTitle = source.MetaTitle ?? string.Empty,
+                    MetaDescription = source.MetaDescription ?? string.Empty,
+                    OgImageAssetId = source.OgImageAssetId,
+
+                    IsActive = true,
+                    IsDeleted = false,
+                    CreatedAt = now,
+                    CreatedBy = userId
+                };
+
+                foreach (var s in source.Sections.OrderBy(x => x.SortOrder).ThenBy(x => x.Id))
+                {
+                    newDraft.Sections.Add(new PageRevisionSection
+                    {
+                        TenantId = _tenant.TenantId,
+                        SourcePageSectionId = s.SourcePageSectionId,
+
+                        SectionTypeId = s.SectionTypeId,
+                        SortOrder = s.SortOrder,
+                        SettingsJson = string.IsNullOrWhiteSpace(s.SettingsJson) ? "{}" : s.SettingsJson.Trim(),
+
+                        IsActive = true,
+                        IsDeleted = false,
+                        CreatedAt = now,
+                        CreatedBy = userId
+                    });
+                }
+
+                _db.PageRevisions.Add(newDraft);
+                await _db.SaveChangesAsync(ct);
+
+                page.DraftRevisionId = newDraft.Id;
+                page.UpdatedAt = now;
+                page.UpdatedBy = userId;
+
+                await _db.SaveChangesAsync(ct);
+                await tx.CommitAsync(ct);
+
+                TempData["Success"] = $"Draft restored from version v{source.VersionNumber}.";
+                return RedirectToPage(new { id });
+            });
+        }
+
 
         // =======================
         // LOAD HELPERS
@@ -738,6 +907,8 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             Input ??= new PageEditVm();
             Input.Id = page.Id;
             Input.PageStatusId = page.PageStatusId;
+
+            await LoadPublishedRevisionsAsync(PageEntity.Id, ct);
 
             return true;
         }
@@ -763,6 +934,19 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                     s.PageRevisionId == draftRevisionId &&
                     !s.IsDeleted &&
                     s.IsActive, ct);
+        }
+        private async Task LoadPublishedRevisionsAsync(int pageId, CancellationToken ct)
+        {
+            PublishedRevisions = await _db.PageRevisions
+                .AsNoTracking()
+                .Where(r =>
+                    r.TenantId == _tenant.TenantId &&
+                    r.PageId == pageId &&
+                    !r.IsDeleted &&
+                    r.IsPublishedSnapshot)
+                .OrderByDescending(r => r.VersionNumber)
+                .ThenByDescending(r => r.Id)
+                .ToListAsync(ct);
         }
 
         private async Task LoadSectionsAsync(int pageId, CancellationToken ct)
