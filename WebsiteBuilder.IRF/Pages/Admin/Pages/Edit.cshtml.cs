@@ -789,6 +789,103 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             TempData["Success"] = $"Rolled back to revision #{revisionId} (v{target.VersionNumber}).";
             return RedirectToPage(new { id });
         }
+        public async Task<IActionResult> OnPostRestoreDraftAsync(int id, int revisionId, CancellationToken ct = default)
+        {
+            if (!_tenant.IsResolved)
+                return NotFound("Tenant not resolved.");
+
+            var page = await PagesForCurrentUser()
+                .FirstOrDefaultAsync(p => p.Id == id, ct);
+
+            if (page == null)
+                return NotFound();
+
+            // Validate the selected revision belongs to this tenant+page and is a published snapshot
+            var source = await _db.PageRevisions
+                .AsNoTracking()
+                .Include(r => r.Sections)
+                .FirstOrDefaultAsync(r =>
+                    r.Id == revisionId &&
+                    r.TenantId == _tenant.TenantId &&
+                    r.PageId == page.Id &&
+                    r.IsPublishedSnapshot &&
+                    !r.IsDeleted, ct);
+
+            if (source == null)
+            {
+                TempData["Error"] = "Invalid published revision selected.";
+                return RedirectToPage(new { id });
+            }
+
+            // Create a new draft revision cloned from the snapshot
+            var now = DateTime.UtcNow;
+            var userId = GetUserIdOrEmpty();
+
+            // Determine next version number (monotonic)
+            var nextVersion =
+                (await _db.PageRevisions
+                    .Where(r => r.TenantId == _tenant.TenantId && r.PageId == page.Id && !r.IsDeleted)
+                    .MaxAsync(r => (int?)r.VersionNumber, ct) ?? 0) + 1;
+
+            // Use execution strategy for SQL retry + transaction safety (matches your PublishAsync pattern)
+            var strategy = _db.Database.CreateExecutionStrategy();
+
+            return await strategy.ExecuteAsync(async () =>
+            {
+                await using var tx = await _db.Database.BeginTransactionAsync(ct);
+
+                var newDraft = new PageRevision
+                {
+                    TenantId = _tenant.TenantId,
+                    PageId = page.Id,
+                    VersionNumber = nextVersion,
+                    IsPublishedSnapshot = false,
+
+                    Title = source.Title,
+                    Slug = source.Slug,
+                    LayoutKey = source.LayoutKey ?? string.Empty,
+                    MetaTitle = source.MetaTitle ?? string.Empty,
+                    MetaDescription = source.MetaDescription ?? string.Empty,
+                    OgImageAssetId = source.OgImageAssetId,
+
+                    IsActive = true,
+                    IsDeleted = false,
+                    CreatedAt = now,
+                    CreatedBy = userId
+                };
+
+                foreach (var s in source.Sections.OrderBy(x => x.SortOrder).ThenBy(x => x.Id))
+                {
+                    newDraft.Sections.Add(new PageRevisionSection
+                    {
+                        TenantId = _tenant.TenantId,
+                        SourcePageSectionId = s.SourcePageSectionId,
+
+                        SectionTypeId = s.SectionTypeId,
+                        SortOrder = s.SortOrder,
+                        SettingsJson = string.IsNullOrWhiteSpace(s.SettingsJson) ? "{}" : s.SettingsJson.Trim(),
+
+                        IsActive = true,
+                        IsDeleted = false,
+                        CreatedAt = now,
+                        CreatedBy = userId
+                    });
+                }
+
+                _db.PageRevisions.Add(newDraft);
+                await _db.SaveChangesAsync(ct);
+
+                page.DraftRevisionId = newDraft.Id;
+                page.UpdatedAt = now;
+                page.UpdatedBy = userId;
+
+                await _db.SaveChangesAsync(ct);
+                await tx.CommitAsync(ct);
+
+                TempData["Success"] = $"Draft restored from version v{source.VersionNumber}.";
+                return RedirectToPage(new { id });
+            });
+        }
 
 
         // =======================

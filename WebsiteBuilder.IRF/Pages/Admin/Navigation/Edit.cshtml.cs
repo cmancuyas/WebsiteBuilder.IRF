@@ -43,7 +43,11 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
                 .Select(p => new PageOptionVm { Id = p.Id, Title = p.Title, Slug = p.Slug })
                 .ToListAsync();
 
-            PagesJson = JsonSerializer.Serialize(pages);
+            PagesJson = JsonSerializer.Serialize(
+                pages,
+                new JsonSerializerOptions(JsonSerializerDefaults.Web) // camelCase
+            );
+
 
             var items = await _db.NavigationMenuItems
                 .AsNoTracking()
@@ -236,34 +240,34 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
 
         private List<NavNodeVm> BuildTree(List<NavigationMenuItem> items, List<PageOptionVm> pages)
         {
-            var byParent = items
-                .GroupBy(x => x.ParentId)
-                .ToDictionary(g => g.Key, g => g.OrderBy(x => x.SortOrder).ToList());
+            // Lookup supports null keys (root ParentId == null) safely
+            var byParent = items.ToLookup(x => x.ParentId);
 
             List<NavNodeVm> build(int? parentId)
             {
-                if (!byParent.TryGetValue(parentId, out var children))
-                    return new();
-
-                return children.Select(x => new NavNodeVm
-                {
-                    Id = x.Id,
-                    ParentId = x.ParentId,
-                    SortOrder = x.SortOrder,
-                    Label = x.Label,
-                    PageId = x.PageId,
-                    Url = x.Url,
-                    OpenInNewTab = x.OpenInNewTab,
-                    IsActive = x.IsActive,
-                    IsPublished = x.IsPublished,
-                    AllowedRolesCsv = x.AllowedRolesCsv,
-                    PageOptions = pages,
-                    Children = build(x.Id)
-                }).ToList();
+                return byParent[parentId]
+                    .OrderBy(x => x.SortOrder)
+                    .Select(x => new NavNodeVm
+                    {
+                        Id = x.Id,
+                        ParentId = x.ParentId,
+                        SortOrder = x.SortOrder,
+                        Label = x.Label,
+                        PageId = x.PageId,
+                        Url = x.Url,
+                        OpenInNewTab = x.OpenInNewTab,
+                        IsActive = x.IsActive,
+                        IsPublished = x.IsPublished,
+                        AllowedRolesCsv = x.AllowedRolesCsv,
+                        PageOptions = pages,
+                        Children = build(x.Id)
+                    })
+                    .ToList();
             }
 
-            return build(null);
+            return build(parentId: null);
         }
+
 
         private Guid GetUserIdOrEmpty()
         {

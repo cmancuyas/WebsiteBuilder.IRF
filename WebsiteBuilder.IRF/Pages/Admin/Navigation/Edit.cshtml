@@ -89,6 +89,41 @@
 
     <script>
         (function () {
+
+            let isDirty = false;
+
+            function setDirty(on = true) {
+                isDirty = !!on;
+
+                const btn = document.getElementById('saveBtn');
+                if (!btn) return;
+
+                if (isDirty) {
+                    btn.classList.add('btn-warning');
+                    btn.classList.remove('btn-primary');
+                    btn.textContent = 'Save Changes*';
+                } else {
+                    btn.classList.add('btn-primary');
+                    btn.classList.remove('btn-warning');
+                    btn.textContent = 'Save Changes';
+                }
+            }
+
+            window.addEventListener('beforeunload', (e) => {
+                if (!isDirty) return;
+                e.preventDefault();
+                e.returnValue = '';
+            });
+
+            document.addEventListener('DOMContentLoaded', () => {
+                const root = document.getElementById('navRoot');
+
+                root?.addEventListener('input', () => setDirty(true), true);
+                root?.addEventListener('change', () => setDirty(true), true);
+
+                document.getElementById('addRootBtn')?.addEventListener('click', () => setDirty(true));
+            });
+
             const menuId = @Model.MenuId;
             const sortableGroupName = `nav-menu-${menuId}`;
 
@@ -152,10 +187,19 @@
             function renderPageOptions(selectedId) {
                 const sel = selectedId ? String(selectedId) : '';
                 return pages.map(p => {
-                    const selected = sel && sel === String(p.id) ? 'selected' : '';
-                    return `<option value="${p.id}" ${selected}>${escapeHtml(p.title)} (${escapeHtml(p.slug)})</option>`;
+                    const id = p.id ?? p.Id;
+                    const title = p.title ?? p.Title ?? '';
+                    const slug = p.slug ?? p.Slug ?? '';
+
+                    if (!id) return '';
+
+                    const selected = sel && sel === String(id) ? 'selected' : '';
+                    return `<option value="${id}" ${selected}>
+                        ${escapeHtml(title)} (${escapeHtml(slug)})
+                    </option>`;
                 }).join('');
             }
+
 
             function hasChildren(li) {
                 const ul = li.querySelector(':scope > .nav-children');
@@ -342,6 +386,7 @@
                     fallbackOnBody: true,
                     swapThreshold: 0.65,
                     onEnd: function () {
+                        setDirty(true);
                         // after any reorder/nest, refresh toggles + autosave
                         refreshAllToggles();
                         showToast('Saving…', 'info');
@@ -405,6 +450,70 @@
                 walk(rootUl, null);
                 return items;
             }
+                    function normalizeUrlInput(u) {
+            return (u || '').trim();
+        }
+
+        function isValidUrlForNav(u) {
+            // allow /relative, http://, https://
+            if (!u) return false;
+            return u.startsWith('/') || u.startsWith('http://') || u.startsWith('https://');
+        }
+
+        function validatePayload(items) {
+            const errors = [];
+
+            // Track duplicates: optional but helpful
+            // (Label duplicates are allowed, but URL duplicates may be suspicious)
+            // const urlSet = new Map();
+
+            items.forEach((x, i) => {
+                const row = i + 1;
+                const label = (x.label || '').trim();
+
+                if (!label) {
+                    errors.push(`Row ${row}: Label is required.`);
+                }
+
+                // Link rules:
+                // - internal page: pageId required, url should be empty or ignored
+                // - url: url required
+                const pageId = x.pageId;
+                const url = normalizeUrlInput(x.url);
+
+                // Detect the user intent from payload (since payload already normalized)
+                const isInternal = pageId != null && Number.isFinite(Number(pageId));
+                const isExternal = !isInternal; // for our payload rule
+
+                if (isInternal) {
+                    // When internal, pageId must be > 0
+                    if (!(Number(pageId) > 0)) {
+                        errors.push(`Row ${row} (“${label || 'Unnamed'}”): Please select an internal page.`);
+                    }
+                    // URL can be empty; if user typed something, we tolerate because backend clears when pageId is set
+                } else {
+                    // External URL: require URL and validate
+                    if (!url) {
+                        errors.push(`Row ${row} (“${label || 'Unnamed'}”): URL is required when Link Type is External URL.`);
+                    } else if (!isValidUrlForNav(url)) {
+                        errors.push(`Row ${row} (“${label || 'Unnamed'}”): URL must start with “/” or “http(s)://”.`);
+                    }
+                }
+
+                // Optional: Published items should not be inactive (depends on your rules)
+                // if (x.isPublished && !x.isActive) {
+                //     errors.push(`Row ${row} (“${label || 'Unnamed'}”): Item cannot be Published if it is not Active.`);
+                // }
+            });
+
+            return errors;
+        }
+
+        function showValidationErrors(errors) {
+            // Uses a simple alert by default; replace with your toast/toastr/SweetAlert if you prefer
+            const msg = "Please fix the following before saving:\n\n" + errors.map(e => `• ${e}`).join('\n');
+            alert(msg);
+        }
 
 
             // ---------- Save (same endpoint contract) ----------
@@ -424,24 +533,27 @@
                     return;
                 }
 
+                const root = document.getElementById('navRoot');
+                if (!root) return;
+
                 const payload = {
                     menuId,
-                    items: buildFlatList(document.getElementById('navRoot'))
+                    items: buildFlatList(root)
                 };
 
-                // basic validation
-                const invalid = payload.items.find(x => !x.isDeleted && (!x.label || x.label.length === 0));
-                if (invalid) {
-                    showToast('Validation failed: Label is required.', 'error');
-                    showMsg('Validation failed: all non-deleted items must have a Label.', 'error');
+                // ✅ FULL VALIDATION (replaces basic validation)
+                const errors = validatePayload(payload.items);
+                if (errors.length) {
+                    showValidationErrors(errors);
+                    showToast('Validation failed.', 'error');
+                    showMsg('Validation failed. Please fix the errors and try again.', 'error');
                     return;
                 }
 
                 saveInFlight = true;
-
                 showToast('Saving…', 'info');
 
-                const res = await fetch(`?handler=Save`, {
+                const res = await fetch('?handler=Save', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -453,14 +565,14 @@
                 const data = await res.json().catch(() => null);
 
                 if (!res.ok || !data || !data.success) {
-                    const err = data && data.error ? data.error : ('Save failed (HTTP ' + res.status + ')');
+                    const err = data?.error ?? `Save failed (HTTP ${res.status})`;
                     showToast(err, 'error');
                     showMsg(err, 'error');
                     saveInFlight = false;
                     return;
                 }
 
-                // map temp IDs to real IDs (if returned) + preserve collapse state keys when possible
+                // map temp IDs → real IDs (your existing logic)
                 if (data.idMap) {
                     for (const [tempIdStr, realId] of Object.entries(data.idMap)) {
                         const li = document.querySelector(`.nav-node[data-id="${tempIdStr}"]`);
@@ -481,15 +593,16 @@
 
                 showToast('Saved', 'ok');
                 showMsg('Saved successfully.', 'success');
+                setDirty(false);
 
                 saveInFlight = false;
 
-                // If something queued during the save, run one more save
                 if (saveQueued) {
                     saveQueued = false;
                     autoSaveDebounced();
                 }
             }
+
 
             // ---------- Node wiring ----------
             function refreshAllToggles() {
