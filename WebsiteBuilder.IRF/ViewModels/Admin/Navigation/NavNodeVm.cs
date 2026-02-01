@@ -16,7 +16,8 @@
 
         public bool IsPublished { get; set; } = true;
         public string? AllowedRolesCsv { get; set; }
-
+        // ✅ Add this (used by UI: delete/restore + visibility badge)
+        public bool IsDeleted { get; set; }
         public List<PageOptionVm> PageOptions { get; set; } = new();
         public List<NavNodeVm> Children { get; set; } = new();
     }
