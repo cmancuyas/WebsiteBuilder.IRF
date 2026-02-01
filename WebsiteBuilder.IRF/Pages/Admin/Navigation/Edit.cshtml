@@ -95,22 +95,39 @@
 
             let isDirty = false;
 
-            function setDirty(on = true) {
-                isDirty = !!on;
-
+            function updateSaveButtonUi() {
                 const btn = document.getElementById('saveBtn');
                 if (!btn) return;
 
-                if (isDirty) {
-                    btn.classList.add('btn-warning');
-                    btn.classList.remove('btn-primary');
-                    btn.textContent = 'Save Changes*';
-                } else {
-                    btn.classList.add('btn-primary');
-                    btn.classList.remove('btn-warning');
-                    btn.textContent = 'Save Changes';
+                // Enable only when dirty AND not saving
+                btn.disabled = !isDirty || isSaving;
+
+                // Keep button color consistent; use warning only when dirty
+                btn.classList.toggle('btn-warning', isDirty && !isSaving);
+                btn.classList.toggle('btn-primary', !isDirty && !isSaving);
+
+                if (isSaving) {
+                    btn.textContent = 'Saving…';
+                    return;
                 }
+
+                if (!isDirty && lastSavedAt) {
+                    btn.textContent = 'Saved ✓';
+                    return;
+                }
+
+                btn.textContent = isDirty ? 'Save Changes*' : 'Save Changes';
             }
+
+            function setDirty(on = true) {
+                isDirty = !!on;
+
+                // If user edits after a successful save, revert “Saved ✓” back to normal
+                if (isDirty) lastSavedAt = null;
+
+                updateSaveButtonUi();
+            }
+
 
             window.addEventListener('beforeunload', (e) => {
                 if (!isDirty) return;
@@ -446,11 +463,15 @@
 
             // ---------- Sortable ----------
             const autoSaveDebounced = debounce(() => {
+                // Don’t autosave if nothing changed or if a save is already running
+                if (!isDirty || isSaving) return;
+
                 save().catch(err => {
                     showToast(err.message || 'Save failed', 'error');
                     showMsg(err.message || 'Save failed', 'error');
                 });
             }, 700);
+
 
             function initSortable(ul) {
                 if (!ul) return;
@@ -628,83 +649,118 @@
 
             async function save() {
 
+                // If nothing changed, don’t call backend
+                if (!isDirty) {
+                    updateSaveButtonUi();
+                    return true;
+                }
+
+                // Prevent double-click saves
+                if (isSaving) return false;
+
+                // If an actual request is already running, queue one and exit cleanly
                 if (saveInFlight) {
                     saveQueued = true;
                     return false;
                 }
 
-                const token = getToken();
-                if (!token) {
-                    showToast('Missing antiforgery token.', 'error');
-                    showMsg('Missing antiforgery token.', 'error');
-                    return false;
-                }
+                isSaving = true;
+                updateSaveButtonUi();
 
-                const root = document.getElementById('navRoot');
-                if (!root) return false;
-
-                const payload = { menuId, items: buildFlatList(root) };
-
-                const errors = validatePayload(payload.items);
-                if (errors.length) {
-                    showValidationErrors(errors);
-                    showToast('Validation failed.', 'error');
-                    showMsg('Validation failed. Please fix the errors and try again.', 'error');
-                    return false;
-                }
-
-                saveInFlight = true;
-                showToast('Saving…', 'info');
-
-                const res = await fetch('?handler=Save', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'RequestVerificationToken': token
-                    },
-                    body: JSON.stringify(payload)
-                });
-
-                const data = await res.json().catch(() => null);
-
-                if (!res.ok || !data || !data.success) {
-                    const err = data?.error ?? `Save failed (HTTP ${res.status})`;
-                    showToast(err, 'error');
-                    showMsg(err, 'error');
-                    saveInFlight = false;
-                    return false;
-                }
-                // map temp IDs → real IDs (your existing logic)
-                if (data.idMap) {
-                    for (const [tempIdStr, realId] of Object.entries(data.idMap)) {
-                        const li = document.querySelector(`.nav-node[data-id="${tempIdStr}"]`);
-                        if (!li) continue;
-
-                        const oldKey = `nav-collapse-${menuId}-${tempIdStr}`;
-                        const newKey = `nav-collapse-${menuId}-${realId}`;
-
-                        const oldState = localStorage.getItem(oldKey);
-                        if (oldState !== null && localStorage.getItem(newKey) === null) {
-                            localStorage.setItem(newKey, oldState);
-                        }
-                        localStorage.removeItem(oldKey);
-
-                        li.dataset.id = String(realId);
+                try {
+                    const token = getToken();
+                    if (!token) {
+                        showToast('Missing antiforgery token.', 'error');
+                        showMsg('Missing antiforgery token.', 'error');
+                        return false;
                     }
+
+                    const root = document.getElementById('navRoot');
+                    if (!root) return false;
+
+                    const payload = { menuId, items: buildFlatList(root) };
+
+                    const errors = validatePayload(payload.items);
+                    if (errors.length) {
+                        showValidationErrors(errors);
+                        showToast('Validation failed.', 'error');
+                        showMsg('Validation failed. Please fix the errors and try again.', 'error');
+                        return false;
+                    }
+
+                    saveInFlight = true;
+                    showToast('Saving…', 'info');
+
+                    let res, data;
+                    try {
+                        res = await fetch('?handler=Save', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'RequestVerificationToken': token
+                            },
+                            body: JSON.stringify(payload)
+                        });
+
+                        data = await res.json().catch(() => null);
+                    } finally {
+                        saveInFlight = false;
+                    }
+
+                    if (!res.ok || !data || !data.success) {
+                        const err = data?.error ?? `Save failed (HTTP ${res.status})`;
+                        showToast(err, 'error');
+                        showMsg(err, 'error');
+                        return false;
+                    }
+
+                    // map temp IDs → real IDs
+                    if (data.idMap) {
+                        for (const [tempIdStr, realId] of Object.entries(data.idMap)) {
+                            const li = document.querySelector(`.nav-node[data-id="${tempIdStr}"]`);
+                            if (!li) continue;
+
+                            const oldKey = `nav-collapse-${menuId}-${tempIdStr}`;
+                            const newKey = `nav-collapse-${menuId}-${realId}`;
+
+                            const oldState = localStorage.getItem(oldKey);
+                            if (oldState !== null && localStorage.getItem(newKey) === null) {
+                                localStorage.setItem(newKey, oldState);
+                            }
+                            localStorage.removeItem(oldKey);
+
+                            li.dataset.id = String(realId);
+                        }
+                    }
+
+                    showToast('Saved', 'ok');
+                    showMsg('Saved successfully.', 'success');
+
+                    // ✅ mark clean first
+                    setDirty(false);
+
+                    // ✅ show “Saved ✓”
+                    lastSavedAt = new Date();
+                    updateSaveButtonUi();
+
+                    // ✅ run queued autosave if user edited during save
+                    if (saveQueued) {
+                        saveQueued = false;
+                        autoSaveDebounced();
+                    }
+
+                    return true;
                 }
-
-                showToast('Saved', 'ok');
-                showMsg('Saved successfully.', 'success');
-                setDirty(false);
-
-                saveInFlight = false;
-
-                if (saveQueued) {
-                    saveQueued = false;
-                    autoSaveDebounced();
+                catch (err) {
+                    const msg = err?.message || 'Unexpected error';
+                    showToast(msg, 'error');
+                    showMsg(msg, 'error');
+                    return false;
                 }
-
-                return true;
+                finally {
+                    isSaving = false;
+                    updateSaveButtonUi();
+                }
             }
 
 
@@ -865,33 +921,45 @@
                 const li = createNodeLi({
                     id: uniqueTempId(),
                     label: 'New Item',
+                    linkType: 'page',   // ✅ important default
                     pageId: null,
                     url: '',
                     openInNewTab: false,
                     isActive: true
                 });
+
                 document.getElementById('navRoot').appendChild(li);
 
-                showToast('Saving…', 'info');
+                setDirty(true);
                 autoSaveDebounced();
             });
 
+
             document.addEventListener('DOMContentLoaded', () => {
+                updateSaveButtonUi(); // ✅ initialize
 
                 document.getElementById('saveBtn')?.addEventListener('click', async (e) => {
                     e.preventDefault();
+                    if (isSaving) return;
                     await save();
                 });
 
                 document.getElementById('saveViewBtn')?.addEventListener('click', async (e) => {
                     e.preventDefault();
+                    if (isSaving) return;
 
                     const ok = await save();
                     if (!ok) return;
 
-                    // Open tenant homepage in a new tab (recommended for admin workflow)
                     window.open('/', '_blank');
                 });
+            });
+
+            window.addEventListener('beforeunload', (e) => {
+                if (!isDirty) return;
+                if (isSaving) return; // optional: don’t block if actively saving
+                e.preventDefault();
+                e.returnValue = '';
             });
 
 
