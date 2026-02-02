@@ -1,4 +1,4 @@
-using System.Security.Claims;
+﻿using System.Security.Claims;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
@@ -52,29 +52,30 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
             [1] = "Header",
             [2] = "Footer"
         };
+
         // ============================
         // System-route blocking helpers
         // ============================
 
         private static readonly HashSet<string> BlockedSlugs = new(StringComparer.OrdinalIgnoreCase)
-{
-    // Admin/system
-    "admin",
-    "navigation",
-    "pages",
-    "media",
-    "account",
-    "login",
-    "logout",
-    "register",
-    "accessdenied",
-    "error",
-    "health",
-    "swagger",
+        {
+            // Admin/system
+            "admin",
+            "navigation",
+            "pages",
+            "media",
+            "account",
+            "login",
+            "logout",
+            "register",
+            "accessdenied",
+            "error",
+            "health",
+            "swagger",
 
-    // internal-only platform areas (adjust to your app)
-    "platform"
-};
+            // internal-only platform areas (adjust to your app)
+            "platform"
+        };
 
         private static bool IsBlockedSlug(string? slug)
         {
@@ -229,7 +230,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
         }
 
         // =========================
-        // AJAX Handlers (Step 2/3)
+        // AJAX Handlers
         // =========================
 
         public sealed class UpsertMenuItemRequest
@@ -268,11 +269,6 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
             // ======================================================
             // Server-side rule: Block system pages / system routes
             // ======================================================
-
-           
-           
-
-           
 
             if (linkType == "internal")
             {
@@ -415,15 +411,16 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
             entity.ParentId = parentId;
             entity.Label = label;
             entity.PageId = pageId;
-            entity.Url = url!;
+            entity.Url = url ?? "#"; // ✅ never store null
             entity.OpenInNewTab = req.OpenInNewTab;
 
             entity.UpdatedAt = now;
             entity.UpdatedBy = userGuid == Guid.Empty ? Guid.Empty : userGuid;
 
             await _db.SaveChangesAsync(ct);
-            _nav.Invalidate(req.MenuId);
 
+            // ✅ Phase 5.3: invalidate only the affected menu
+            _nav.Invalidate(req.MenuId);
 
             return new JsonResult(new { ok = true });
         }
@@ -442,13 +439,19 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
             if (entity == null)
                 return new JsonResult(new { ok = false, message = "Menu item not found." });
 
+            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            Guid.TryParse(userId, out var userGuid);
+
             entity.IsDeleted = true;
             entity.UpdatedAt = DateTime.UtcNow;
+            entity.UpdatedBy = userGuid == Guid.Empty ? Guid.Empty : userGuid;
 
             await _db.SaveChangesAsync(ct);
-            _nav.Invalidate(entity.MenuId);
-            return new JsonResult(new { ok = true });
 
+            // ✅ Phase 5.3
+            _nav.Invalidate(entity.MenuId);
+
+            return new JsonResult(new { ok = true });
         }
 
         public sealed class ReorderMenuItemsRequest
@@ -468,6 +471,13 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
             if (!_tenant.IsResolved)
                 return new JsonResult(new { ok = false, message = "Tenant not resolved." });
 
+            if (req.Items == null || req.Items.Count == 0)
+                return new JsonResult(new { ok = false, message = "No items to reorder." });
+
+            // Ensure menu IDs are valid (only 1/2 currently)
+            if (req.Items.Any(x => !MenuNames.ContainsKey(x.MenuId)))
+                return new JsonResult(new { ok = false, message = "Invalid menu id in reorder payload." });
+
             var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
             Guid.TryParse(userId, out var userGuid);
 
@@ -476,6 +486,10 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
             var entities = await _db.NavigationMenuItems
                 .Where(x => x.TenantId == _tenant.TenantId && !x.IsDeleted && ids.Contains(x.Id))
                 .ToListAsync(ct);
+
+            // Basic integrity: all ids must belong to this tenant
+            if (entities.Count != ids.Count)
+                return new JsonResult(new { ok = false, message = "One or more items were not found." });
 
             var map = req.Items.ToDictionary(x => x.Id, x => x);
 
@@ -495,11 +509,11 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
 
             await _db.SaveChangesAsync(ct);
 
+            // ✅ Phase 5.3: invalidate affected menus
             foreach (var menuId in req.Items.Select(x => x.MenuId).Distinct())
                 _nav.Invalidate(menuId);
 
             return new JsonResult(new { ok = true });
         }
-
     }
 }
