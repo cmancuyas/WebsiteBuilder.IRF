@@ -83,17 +83,23 @@
      class="position-fixed bottom-0 end-0 m-3 px-3 py-2 rounded shadow-sm d-none"
      style="background:#222;color:#fff;z-index:1050;font-size:0.875rem;max-width:360px;">
 </div>
+<style>
+    .node-visibility-badge {
+        font-weight: 600;
+    }
+</style>
 
 @section Scripts {
     @* SortableJS (CDN) *@
-    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"
-            integrity="sha384-6c7m2Q1J1gWqNwX5d6q5K8g8mH0p8OQ6l8qgZ7x6wQw8bqYwz8rJ8GmQx5jPqGmE"
-            crossorigin="anonymous"></script>
+
+    <script src="~/lib/jquery-sortablejs/jquery-sortable.min.js"></script>
 
     <script>
         (function () {
 
             let isDirty = false;
+            let isSaving = false;
+            let lastSavedAt = new Date();
 
             function updateSaveButtonUi() {
                 const btn = document.getElementById('saveBtn');
@@ -574,67 +580,63 @@
             return u.startsWith('/') || u.startsWith('http://') || u.startsWith('https://');
         }
 
+        /* ==========================================================
+         * validatePayload(items)
+         * PURPOSE:
+         *   Client-side guardrails before calling ?handler=Save.
+         *   Ensures each non-deleted item has:
+         *     - Label
+         *     - Valid link target based on LinkType:
+         *         page => PageId required
+         *         url  => Url required and must be /relative or http(s)
+         *
+         * NOTES:
+         *   - Skips validation for items marked as deleted (IsDeleted=true)
+         *   - Does NOT duplicate errors (single source of truth)
+         * ========================================================== */
         function validatePayload(items) {
             const errors = [];
 
-            // Track duplicates: optional but helpful
-            // (Label duplicates are allowed, but URL duplicates may be suspicious)
-            // const urlSet = new Map();
-
             items.forEach((x, i) => {
                 const row = i + 1;
+
+                // Skip deleted items (they can be incomplete; they won't be saved as active)
+                if (x.isDeleted === true) return;
+
                 const label = (x.label || '').trim();
 
                 if (!label) {
                     errors.push(`Row ${row}: Label is required.`);
+                    return; // label missing; still continue? up to you, but this keeps message clean
                 }
 
-                // Link rules:
-                // - internal page: pageId required, url should be empty or ignored
-                // - url: url required
-                const pageId = x.pageId;
+                const linkType = (x.linkType || 'page').toLowerCase();
+                const pageId = Number(x.pageId || 0);
                 const url = normalizeUrlInput(x.url);
 
-                // Detect the user intent from payload (since payload already normalized)
-                const isInternal = x.linkType === 'page';
-                const isExternal = x.linkType === 'url';
-
-                if (isInternal) {
-                    if (!(Number(x.pageId) > 0)) {
-                        errors.push(`Row ${row} (“${label || 'Unnamed'}”): Please select an internal page.`);
+                if (linkType === 'page') {
+                    if (!(pageId > 0)) {
+                        errors.push(`Row ${row} (“${label}”): Please select an internal page.`);
                     }
-                } else if (isExternal) {
-                    const url = normalizeUrlInput(x.url);
-                    if (!url) {
-                        errors.push(`Row ${row} (“${label || 'Unnamed'}”): URL is required when Link Type is External URL.`);
-                    } else if (!isValidUrlForNav(url)) {
-                        errors.push(`Row ${row} (“${label || 'Unnamed'}”): URL must start with “/” or “http(s)://”.`);
-                    }
+                    return;
                 }
 
-                if (isInternal) {
-                    // When internal, pageId must be > 0
-                    if (!(Number(pageId) > 0)) {
-                        errors.push(`Row ${row} (“${label || 'Unnamed'}”): Please select an internal page.`);
-                    }
-                    // URL can be empty; if user typed something, we tolerate because backend clears when pageId is set
-                } else {
-                    // External URL: require URL and validate
+                if (linkType === 'url') {
                     if (!url) {
-                        errors.push(`Row ${row} (“${label || 'Unnamed'}”): URL is required when Link Type is External URL.`);
+                        errors.push(`Row ${row} (“${label}”): URL is required when Link Type is External URL.`);
                     } else if (!isValidUrlForNav(url)) {
-                        errors.push(`Row ${row} (“${label || 'Unnamed'}”): URL must start with “/” or “http(s)://”.`);
+                        errors.push(`Row ${row} (“${label}”): URL must start with “/” or “http(s)://”.`);
                     }
+                    return;
                 }
 
-                // Optional: Published items should not be inactive (depends on your rules)
-                // if (x.isPublished && !x.isActive) {
-                //     errors.push(`Row ${row} (“${label || 'Unnamed'}”): Item cannot be Published if it is not Active.`);
-                // }
+                // Unknown link types => fail safe
+                errors.push(`Row ${row} (“${label}”): Invalid Link Type.`);
             });
 
             return errors;
         }
+
 
         function showValidationErrors(errors) {
             // Uses a simple alert by default; replace with your toast/toastr/SweetAlert if you prefer

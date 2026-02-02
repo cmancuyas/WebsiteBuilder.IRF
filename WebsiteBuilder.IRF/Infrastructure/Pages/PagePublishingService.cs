@@ -34,12 +34,16 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
             {
                 return await strategy.ExecuteAsync(async () =>
                 {
+                    if (!_tenant.IsResolved)
+                        return PublishResult.Fail("Tenant not resolved.");
+
                     // Load page + draft pointer (tracked)
                     var page = await _db.Pages
                         .FirstOrDefaultAsync(p =>
                             p.Id == pageId &&
                             p.TenantId == _tenant.TenantId &&
-                            !p.IsDeleted, ct);
+                            !p.IsDeleted &&
+                            p.IsActive, ct);
 
                     if (page == null)
                         return PublishResult.Fail("Page not found.");
@@ -47,25 +51,24 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
                     if (page.DraftRevisionId == null)
                         return PublishResult.Fail("Cannot publish: no draft revision found.");
 
-                    // Load draft revision (AsNoTracking OK)
+                    // Load draft revision (no tracking ok; we only read it)
                     var draft = await _db.PageRevisions
                         .AsNoTracking()
                         .FirstOrDefaultAsync(r =>
                             r.Id == page.DraftRevisionId &&
                             r.TenantId == _tenant.TenantId &&
                             r.PageId == pageId &&
-                            !r.IsDeleted, ct);
+                            !r.IsDeleted &&
+                            r.IsActive, ct);
 
                     if (draft == null)
                         return PublishResult.Fail("Cannot publish: draft revision not found.");
 
-                    await using var tx = await _db.Database.BeginTransactionAsync(ct);
-
-                    // Load draft sections (TRACKED: we may persist gallery migrations)
+                    // Load draft sections (TRACKED: we may mutate SettingsJson during gallery migration)
                     var draftSections = await _db.PageRevisionSections
                         .Where(s =>
                             s.TenantId == _tenant.TenantId &&
-                            s.PageRevisionId == draft.Id &&
+                            s.PageRevisionId == page.DraftRevisionId.Value &&
                             !s.IsDeleted &&
                             s.IsActive)
                         .OrderBy(s => s.SortOrder)
@@ -85,6 +88,16 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
 
                     var now = DateTime.UtcNow;
 
+                    // We only start a transaction AFTER all basic guards are passed.
+                    await using var tx = await _db.Database.BeginTransactionAsync(ct);
+
+                    // Helper: fail safely with rollback
+                    async Task<PublishResult> FailAsync(string message)
+                    {
+                        try { await tx.RollbackAsync(ct); } catch { /* ignore */ }
+                        return PublishResult.Fail(message);
+                    }
+
                     // 1) Auto-migrate legacy gallery JSON (items -> images) on draft sections
                     var anyMigrated = false;
 
@@ -93,8 +106,7 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
                         if (!sectionTypeKeys.TryGetValue(s.SectionTypeId, out var key) || string.IsNullOrWhiteSpace(key))
                             continue;
 
-                        var typeKey = key.Trim().ToLowerInvariant();
-                        if (typeKey != "gallery")
+                        if (!string.Equals(key.Trim(), "gallery", StringComparison.OrdinalIgnoreCase))
                             continue;
 
                         var json = string.IsNullOrWhiteSpace(s.SettingsJson) ? "{}" : s.SettingsJson.Trim();
@@ -144,7 +156,6 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
 
                     if (galleryAssetIds.Count > 0)
                     {
-                        // Pull assets (tenant scoped) and build url map
                         var assets = await _db.MediaAssets
                             .AsNoTracking()
                             .Where(a =>
@@ -156,7 +167,6 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
 
                         var assetUrlMap = assets.ToDictionary(a => a.Id, a => BuildMediaUrl(a));
 
-                        // Rewrite draft section JSON: assetId -> url (remove assetId)
                         foreach (var s in draftSections)
                         {
                             if (string.IsNullOrWhiteSpace(s.SettingsJson))
@@ -181,7 +191,7 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
                                 catch { continue; }
 
                                 if (!assetUrlMap.TryGetValue(id, out var url))
-                                    continue; // leave as-is; validation will fail (correctly) if url missing
+                                    continue;
 
                                 imgObj["url"] = url;
                                 imgObj.Remove("assetId");
@@ -219,8 +229,12 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
                     }
 
                     if (errors.Count > 0)
+                    {
+                        try { await tx.RollbackAsync(ct); } catch { /* ignore */ }
                         return new PublishResult { Success = false, Errors = errors };
+                    }
 
+                    // 3) Create published snapshot revision from draft content
                     var nextVersion =
                         (await _db.PageRevisions
                             .Where(r => r.TenantId == _tenant.TenantId &&
@@ -229,7 +243,6 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
                             .MaxAsync(r => (int?)r.VersionNumber, ct)
                         ?? 0) + 1;
 
-                    // 3) Create published snapshot revision from draft content
                     var publishedRevision = new PageRevision
                     {
                         TenantId = _tenant.TenantId,
@@ -272,17 +285,26 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
                     _db.PageRevisions.Add(publishedRevision);
                     await _db.SaveChangesAsync(ct);
 
-                    // 4) Update canonical publish pointer on Page
+                    // 4) Update canonical publish pointer + CANONICAL PAGE FIELDS
+                    // This is the piece that fixes your home dropdown + root redirect consistency.
                     page.PublishedRevisionId = publishedRevision.Id;
                     page.PublishedAt = now;
                     page.PageStatusId = PageStatusIds.Published;
+
+                    // Sync canonical columns used across the app (lists, redirects, SEO, etc.)
+                    page.Title = publishedRevision.Title;
+                    page.Slug = publishedRevision.Slug;
+                    page.LayoutKey = publishedRevision.LayoutKey;
+                    page.MetaTitle = publishedRevision.MetaTitle;
+                    page.MetaDescription = publishedRevision.MetaDescription;
+                    page.OgImageAssetId = publishedRevision.OgImageAssetId;
+
                     page.UpdatedAt = now;
                     page.UpdatedBy = actorUserId;
 
                     await _db.SaveChangesAsync(ct);
 
-                    // 5) Create a fresh draft revision cloned from the published snapshot
-                    // FIX: avoid duplicate key by using a NEW version number
+                    // 5) Create a fresh draft revision cloned from the published snapshot (new version)
                     var newDraft = new PageRevision
                     {
                         TenantId = _tenant.TenantId,
@@ -341,6 +363,7 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
                 return PublishResult.Fail("Publish failed: " + ex.Message);
             }
         }
+
 
         private static string BuildMediaUrl(MediaAsset asset)
         {
