@@ -2,8 +2,15 @@
 {
     public sealed class TenantNavigationVm
     {
-        public required IReadOnlyList<Node> Items { get; init; }
+        public int MenuId { get; init; }
+        public string? Variant { get; init; }
+
         public required string CurrentPath { get; init; }
+
+        // IMPORTANT:
+        // Items are *rendering nodes* (enriched with active flags),
+        // not the raw service NavItem objects.
+        public required IReadOnlyList<Node> Items { get; init; }
 
         public sealed class Node
         {
@@ -11,14 +18,18 @@
             public required string Url { get; init; }
             public required bool OpenInNewTab { get; init; }
 
-            // These are computed after mapping
+            // Computed after mapping
             public required bool IsActive { get; set; }
             public required bool IsAncestorOfActive { get; set; }
 
             public required IReadOnlyList<Node> Children { get; init; }
         }
 
-        public static TenantNavigationVm From(IReadOnlyList<NavItem> items, string currentPath)
+        public static TenantNavigationVm From(
+            IReadOnlyList<NavItem> items,
+            string currentPath,
+            int menuId,
+            string? variant)
         {
             var normalizedCurrent = NormalizePath(currentPath);
 
@@ -27,8 +38,8 @@
                 Title = x.Title,
                 Url = x.Url,
                 OpenInNewTab = x.OpenInNewTab,
-                IsActive = false,               // ✅ required member set
-                IsAncestorOfActive = false,     // ✅ required member set
+                IsActive = false,
+                IsAncestorOfActive = false,
                 Children = x.Children.Select(Map).ToList()
             };
 
@@ -40,6 +51,8 @@
 
             return new TenantNavigationVm
             {
+                MenuId = menuId,
+                Variant = variant,
                 Items = mapped,
                 CurrentPath = normalizedCurrent
             };
@@ -49,7 +62,9 @@
         {
             var nodePath = NormalizePath(node.Url);
 
+            // External/absolute URLs never become active.
             var isExact = !IsAbsolute(node.Url) && nodePath == current;
+
             var anyChildActive = node.Children.Any(c => MarkActive(c, current));
 
             node.IsActive = isExact;
@@ -68,9 +83,14 @@
             // Absolute => ignore for active matching
             if (Uri.TryCreate(pathOrUrl, UriKind.Absolute, out _)) return "";
 
+            // remove query + hash
             var p = pathOrUrl.Split('?', '#')[0].Trim();
+
             if (!p.StartsWith("/")) p = "/" + p;
+
+            // normalize trailing slash (except root)
             if (p.Length > 1 && p.EndsWith("/")) p = p.TrimEnd('/');
+
             return p.ToLowerInvariant();
         }
     }

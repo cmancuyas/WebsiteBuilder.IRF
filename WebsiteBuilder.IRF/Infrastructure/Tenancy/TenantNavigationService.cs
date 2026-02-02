@@ -51,6 +51,9 @@ namespace WebsiteBuilder.IRF.Infrastructure.Tenancy
         // Cache raw rows (user-agnostic). Then filter per request.
         private async Task<List<NavRow>> GetRawRowsAsync(int menuId, CancellationToken ct)
         {
+            if (!_tenant.IsResolved)
+                return new List<NavRow>();
+
             var cacheKey = CacheKey(menuId) + ":raw";
 
             if (_cache.TryGetValue(cacheKey, out List<NavRow>? cached) && cached is not null)
@@ -222,21 +225,33 @@ namespace WebsiteBuilder.IRF.Infrastructure.Tenancy
             return roots;
         }
 
+        // =========================
+        // Phase 5.3: Invalidation
+        // =========================
+
+        // Backward compatible: clears both header + footer
         public void Invalidate()
         {
-            if (!_tenant.IsResolved)
-                return;
-
-            _cache.Remove(CacheKey(HeaderMenuId) + ":raw");
-            _cache.Remove(CacheKey(FooterMenuId) + ":raw");
+            Invalidate(HeaderMenuId);
+            Invalidate(FooterMenuId);
         }
 
-        public void InvalidateMenu(int menuId)
+        // Targeted: clears only one menu
+        public void Invalidate(int menuId)
         {
             if (!_tenant.IsResolved)
                 return;
 
             _cache.Remove(CacheKey(menuId) + ":raw");
+        }
+
+        public void InvalidateMany(params int[] menuIds)
+        {
+            if (menuIds == null || menuIds.Length == 0)
+                return;
+
+            foreach (var id in menuIds)
+                Invalidate(id);
         }
 
         private static string ToUrl(string? slug)
