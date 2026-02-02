@@ -14,16 +14,21 @@
     var urlWrapClass = linkType == "url" ? "" : "d-none";
 }
 
-<li class="nav-node mb-2" data-id="@Model.Id">
+<li class="nav-node mb-2"
+    data-id="@Model.Id"
+    data-deleted="@(Model.IsDeleted ? "true" : "false")">
+
     <div class="node-row border rounded p-2 bg-white">
         <div class="d-flex align-items-start gap-2">
 
+            <!-- Drag handle -->
             <div class="drag-handle text-muted"
                  title="Drag to reorder"
                  style="cursor: grab; user-select: none;">
                 &#x2630;
             </div>
 
+            <!-- Expand / collapse -->
             <button type="button"
                     class="btn btn-sm btn-link toggle-children px-1 @(hasChildren ? "" : "d-none")"
                     aria-label="Toggle children"
@@ -31,11 +36,21 @@
                 ▼
             </button>
 
+            <!-- Sort badge -->
             <span class="badge bg-secondary sort-badge">S?</span>
 
             <div class="flex-grow-1">
                 <div class="row g-2">
 
+                    <!-- ✅ Visibility badge (correct placement) -->
+                    <div class="col-12">
+                        <span class="badge bg-secondary node-visibility-badge"
+                              title="Visibility status">
+                            …
+                        </span>
+                    </div>
+
+                    <!-- Label -->
                     <div class="col-12">
                         <label class="form-label mb-1 small">Label</label>
                         <input class="form-control form-control-sm node-label"
@@ -43,6 +58,7 @@
                                maxlength="200" />
                     </div>
 
+                    <!-- Link type -->
                     <div class="col-12">
                         <label class="form-label mb-1 small">Link Type</label>
                         <select class="form-select form-select-sm node-linktype">
@@ -59,10 +75,13 @@
                         </select>
                     </div>
 
+
+                    <!-- Page -->
                     <div class="col-12 node-pagewrap @pageWrapClass">
                         <label class="form-label mb-1 small">Page</label>
                         <select class="form-select form-select-sm node-pageid">
                             <option value="">-- Select page --</option>
+
                             @foreach (var p in Model.PageOptions)
                             {
                                 if (Model.PageId == p.Id)
@@ -77,6 +96,8 @@
                         </select>
                     </div>
 
+
+                    <!-- URL -->
                     <div class="col-12 node-urlwrap @urlWrapClass">
                         <label class="form-label mb-1 small">URL</label>
                         <input class="form-control form-control-sm node-url"
@@ -85,7 +106,8 @@
                                placeholder="https://..." />
                     </div>
 
-                    <div class="col-12 d-flex gap-3 align-items-center">
+                    <!-- Toggles -->
+                    <div class="col-12 d-flex flex-wrap gap-3 align-items-center">
                         <div class="form-check form-switch">
                             <input class="form-check-input node-newtab"
                                    type="checkbox"
@@ -99,32 +121,53 @@
                                    @(Model.IsActive ? "checked" : null) />
                             <label class="form-check-label small">Active</label>
                         </div>
+
                         <div class="form-check form-switch">
                             <input class="form-check-input node-published"
                                    type="checkbox"
                                    @(Model.IsPublished ? "checked" : null) />
                             <label class="form-check-label small">Published</label>
                         </div>
-                        <div class="col-12">
-                            <label class="form-label mb-1 small">Visible to Roles (CSV)</label>
-                            <input class="form-control form-control-sm node-roles"
-                                   value="@Model.AllowedRolesCsv"
-                                   maxlength="400"
-                                   placeholder="e.g. Admin,Agent (leave blank for everyone)" />
-                        </div>
+                    </div>
 
+                    <!-- Roles -->
+                    <div class="col-12">
+                        <label class="form-label mb-1 small">Visible to Roles (CSV)</label>
+                        <input class="form-control form-control-sm node-roles"
+                               value="@Model.AllowedRolesCsv"
+                               maxlength="400"
+                               placeholder="e.g. Admin,Agent (leave blank for everyone)" />
                     </div>
 
                 </div>
             </div>
 
+            <!-- Actions -->
             <div class="d-flex flex-column gap-2">
-                <button type="button" class="btn btn-sm btn-outline-secondary add-child">Add Child</button>
-                <button type="button" class="btn btn-sm btn-outline-danger delete-node">Delete</button>
+                <button type="button"
+                        class="btn btn-sm btn-outline-secondary add-child">
+                    Add Child
+                </button>
+
+                @if (!Model.IsDeleted)
+                {
+                    <button type="button"
+                            class="btn btn-sm btn-outline-danger delete-node">
+                        Delete
+                    </button>
+                }
+                else
+                {
+                    <button type="button"
+                            class="btn btn-sm btn-outline-warning restore-node">
+                        Restore
+                    </button>
+                }
             </div>
         </div>
     </div>
 
+    <!-- Children -->
     <ul class="nav-children list-unstyled ms-4 mt-2 mb-0">
         @foreach (var child in Model.Children!)
         {
@@ -132,3 +175,9 @@
         }
     </ul>
 </li>
+
+<style>
+    .node-visibility-badge {
+        font-weight: 600;
+    }
+</style>

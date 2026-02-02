@@ -422,7 +422,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
             entity.UpdatedBy = userGuid == Guid.Empty ? Guid.Empty : userGuid;
 
             await _db.SaveChangesAsync(ct);
-            _nav.InvalidateMenu(req.MenuId);
+            _nav.Invalidate(req.MenuId);
 
 
             return new JsonResult(new { ok = true });
@@ -446,7 +446,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
             entity.UpdatedAt = DateTime.UtcNow;
 
             await _db.SaveChangesAsync(ct);
-            _nav.InvalidateMenu(entity.MenuId);
+            _nav.Invalidate(entity.MenuId);
             return new JsonResult(new { ok = true });
 
         }
@@ -496,7 +496,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
             await _db.SaveChangesAsync(ct);
 
             foreach (var menuId in req.Items.Select(x => x.MenuId).Distinct())
-                _nav.InvalidateMenu(menuId);
+                _nav.Invalidate(menuId);
 
             return new JsonResult(new { ok = true });
         }

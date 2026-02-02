@@ -25,6 +25,9 @@
         <button id="saveBtn" type="button" class="btn btn-primary">
             Save Changes
         </button>
+        <button id="saveViewBtn" type="button" class="btn btn-outline-success">
+            Save &amp; View Site
+        </button>
     </div>
 </div>
 
@@ -92,22 +95,39 @@
 
             let isDirty = false;
 
-            function setDirty(on = true) {
-                isDirty = !!on;
-
+            function updateSaveButtonUi() {
                 const btn = document.getElementById('saveBtn');
                 if (!btn) return;
 
-                if (isDirty) {
-                    btn.classList.add('btn-warning');
-                    btn.classList.remove('btn-primary');
-                    btn.textContent = 'Save Changes*';
-                } else {
-                    btn.classList.add('btn-primary');
-                    btn.classList.remove('btn-warning');
-                    btn.textContent = 'Save Changes';
+                // Enable only when dirty AND not saving
+                btn.disabled = !isDirty || isSaving;
+
+                // Keep button color consistent; use warning only when dirty
+                btn.classList.toggle('btn-warning', isDirty && !isSaving);
+                btn.classList.toggle('btn-primary', !isDirty && !isSaving);
+
+                if (isSaving) {
+                    btn.textContent = 'Saving…';
+                    return;
                 }
+
+                if (!isDirty && lastSavedAt) {
+                    btn.textContent = 'Saved ✓';
+                    return;
+                }
+
+                btn.textContent = isDirty ? 'Save Changes*' : 'Save Changes';
             }
+
+            function setDirty(on = true) {
+                isDirty = !!on;
+
+                // If user edits after a successful save, revert “Saved ✓” back to normal
+                if (isDirty) lastSavedAt = null;
+
+                updateSaveButtonUi();
+            }
+
 
             window.addEventListener('beforeunload', (e) => {
                 if (!isDirty) return;
@@ -118,14 +138,63 @@
             document.addEventListener('DOMContentLoaded', () => {
                 const root = document.getElementById('navRoot');
 
-                root?.addEventListener('input', () => setDirty(true), true);
-                root?.addEventListener('change', () => setDirty(true), true);
+                root?.addEventListener('input', (e) => {
+                    setDirty(true);
+                    const li = e.target?.closest?.('.nav-node');
+                    if (li) updateVisibilityBadge(li);
+                }, true);
+
+                root?.addEventListener('change', (e) => {
+                    setDirty(true);
+                    const li = e.target?.closest?.('.nav-node');
+                    if (li) updateVisibilityBadge(li);
+                }, true);
+
 
                 document.getElementById('addRootBtn')?.addEventListener('click', () => setDirty(true));
+
+                refreshAllBadges();
+
             });
 
+            document.addEventListener("change", function (e) {
+                const sel = e.target;
+                if (!sel.classList.contains("node-linktype")) return;
+
+                const li = sel.closest(".nav-node");
+                if (!li) return;
+
+                const linkType = sel.value || "page";
+
+                const pageWrap = li.querySelector(".node-pagewrap");
+                const urlWrap = li.querySelector(".node-urlwrap");
+
+                const pageSel = li.querySelector(".node-pageid");
+                const urlInput = li.querySelector(".node-url");
+
+                if (linkType === "page") {
+                    // show page, hide url
+                    pageWrap?.classList.remove("d-none");
+                    urlWrap?.classList.add("d-none");
+
+                    // clear url to prevent stale validation/payload
+                    if (urlInput) urlInput.value = "";
+                } else {
+                    // show url, hide page
+                    urlWrap?.classList.remove("d-none");
+                    pageWrap?.classList.add("d-none");
+
+                    // clear page selection to prevent stale payload
+                    if (pageSel) pageSel.value = "";
+                }
+
+                setDirty(true);
+                scheduleAutosave?.(600); // only if you have scheduleAutosave from Phase 4.3
+            });
+
+
             const menuId = @Model.MenuId;
-            const sortableGroupName = `nav-menu-${menuId}`;
+            const sortableGroupName = 'nav-menu-' + menuId;
 
             // ---------- UI Feedback ----------
             const toastEl = document.getElementById("navToast");
@@ -230,6 +299,21 @@
                     ul.classList.remove('d-none');
                     btn.textContent = any ? '▼' : '▼';
                 }
+            }
+
+            function initNewNode(li) {
+                const linkSel = li.querySelector(".node-linktype");
+                const pageSel = li.querySelector(".node-pageid");
+                const urlInput = li.querySelector(".node-url");
+
+                // default to Internal Page
+                if (linkSel) linkSel.value = "page";
+                if (pageSel) pageSel.value = "";
+                if (urlInput) urlInput.value = "";
+
+                // ensure correct visibility
+                li.querySelector(".node-pagewrap")?.classList.remove("d-none");
+                li.querySelector(".node-urlwrap")?.classList.add("d-none");
             }
 
             function setLinkType(li, type) {
@@ -358,8 +442,18 @@
                 wireNodeUi(li);
                 initSortable(li.querySelector('.nav-children'));
 
-                // initial link type selection
-                normalizeLinkInputs(li);
+                // --- init link type + visibility ---
+                const initialType = (dto.linkType === 'url') ? 'url' : 'page';
+                setLinkType(li, initialType);
+
+                // Only normalize if dto.linkType was not explicitly provided
+                if (!dto.linkType) {
+                    // For new items, keep default 'page' unless user edits
+                    // (optional: still normalize if you really want "url wins" behavior)
+                    // normalizeLinkInputs(li);
+                } else {
+                    normalizeLinkInputs(li);
+                }
 
                 // collapse UI state
                 applyCollapseState(li);
@@ -369,11 +463,15 @@
 
             // ---------- Sortable ----------
             const autoSaveDebounced = debounce(() => {
+                // Don’t autosave if nothing changed or if a save is already running
+                if (!isDirty || isSaving) return;
+
                 save().catch(err => {
                     showToast(err.message || 'Save failed', 'error');
                     showMsg(err.message || 'Save failed', 'error');
                 });
             }, 700);
+
 
             function initSortable(ul) {
                 if (!ul) return;
@@ -393,6 +491,9 @@
                         autoSaveDebounced();
                     }
                 });
+
+                refreshAllBadges();
+
             }
 
             function initAllSortables() {
@@ -407,44 +508,57 @@
                 function walk(ul, parentId) {
                     const children = Array.from(ul.children).filter(x => x.classList.contains('nav-node'));
 
-                    children.forEach((li, idx) => {
+                   children.forEach((li, idx) => {
                         const id = Number(li.dataset.id);
                         const deleted = li.dataset.deleted === 'true';
 
                         const label = li.querySelector('.node-label')?.value?.trim() || '';
+
                         const linkType = li.querySelector('.node-linktype')?.value || 'page';
 
                         const pageIdRaw = li.querySelector('.node-pageid')?.value || '';
                         const pageId = pageIdRaw ? Number(pageIdRaw) : null;
 
-                        const url = li.querySelector('.node-url')?.value?.trim() || '';
+                        const urlRaw = li.querySelector('.node-url')?.value || '';
+                        const url = normalizeUrlInput(urlRaw);
+
                         const openInNewTab = !!li.querySelector('.node-newtab')?.checked;
                         const isActive = !!li.querySelector('.node-active')?.checked;
-
-                        // ✅ Published flag
                         const isPublished = !!li.querySelector('.node-published')?.checked;
 
-                        // ✅ Roles CSV (blank => null)
                         const rolesCsv = li.querySelector('.node-roles')?.value?.trim() || '';
                         const allowedRolesCsv = rolesCsv.length ? rolesCsv : null;
 
-                        items.push({
+                        const payloadItem = {
                             id,
                             parentId: parentId,
                             sortOrder: idx + 1,
                             label,
-                            pageId: (linkType === 'page') ? pageId : null,
-                            url: (linkType === 'url') ? url : (pageId ? '' : url),
+                            linkType,
+                            pageId: null,
+                            url: null,
                             allowedRolesCsv,
                             openInNewTab,
                             isActive,
                             isPublished,
                             isDeleted: deleted
-                        });
+                        };
+
+                        // Normalize based on linkType
+                        if (linkType === 'page') {
+                            payloadItem.pageId = pageId;
+                            payloadItem.url = null;
+                        } else {
+                            payloadItem.pageId = null;
+                            payloadItem.url = url;
+                        }
+
+                        items.push(payloadItem);
 
                         const childUl = li.querySelector(':scope > .nav-children');
                         if (childUl) walk(childUl, id);
                     });
+
                 }
 
                 walk(rootUl, null);
@@ -482,8 +596,21 @@
                 const url = normalizeUrlInput(x.url);
 
                 // Detect the user intent from payload (since payload already normalized)
-                const isInternal = pageId != null && Number.isFinite(Number(pageId));
-                const isExternal = !isInternal; // for our payload rule
+                const isInternal = x.linkType === 'page';
+                const isExternal = x.linkType === 'url';
+
+                if (isInternal) {
+                    if (!(Number(x.pageId) > 0)) {
+                        errors.push(`Row ${row} (“${label || 'Unnamed'}”): Please select an internal page.`);
+                    }
+                } else if (isExternal) {
+                    const url = normalizeUrlInput(x.url);
+                    if (!url) {
+                        errors.push(`Row ${row} (“${label || 'Unnamed'}”): URL is required when Link Type is External URL.`);
+                    } else if (!isValidUrlForNav(url)) {
+                        errors.push(`Row ${row} (“${label || 'Unnamed'}”): URL must start with “/” or “http(s)://”.`);
+                    }
+                }
 
                 if (isInternal) {
                     // When internal, pageId must be > 0
@@ -521,85 +648,118 @@
             let saveQueued = false;
 
             async function save() {
+
+                // If nothing changed, don’t call backend
+                if (!isDirty) {
+                    updateSaveButtonUi();
+                    return true;
+                }
+
+                // Prevent double-click saves
+                if (isSaving) return false;
+
+                // If an actual request is already running, queue one and exit cleanly
                 if (saveInFlight) {
                     saveQueued = true;
-                    return;
+                    return false;
                 }
 
-                const token = getToken();
-                if (!token) {
-                    showToast('Missing antiforgery token.', 'error');
-                    showMsg('Missing antiforgery token.', 'error');
-                    return;
-                }
+                isSaving = true;
+                updateSaveButtonUi();
 
-                const root = document.getElementById('navRoot');
-                if (!root) return;
-
-                const payload = {
-                    menuId,
-                    items: buildFlatList(root)
-                };
-
-                // ✅ FULL VALIDATION (replaces basic validation)
-                const errors = validatePayload(payload.items);
-                if (errors.length) {
-                    showValidationErrors(errors);
-                    showToast('Validation failed.', 'error');
-                    showMsg('Validation failed. Please fix the errors and try again.', 'error');
-                    return;
-                }
-
-                saveInFlight = true;
-                showToast('Saving…', 'info');
-
-                const res = await fetch('?handler=Save', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'RequestVerificationToken': token
-                    },
-                    body: JSON.stringify(payload)
-                });
-
-                const data = await res.json().catch(() => null);
-
-                if (!res.ok || !data || !data.success) {
-                    const err = data?.error ?? `Save failed (HTTP ${res.status})`;
-                    showToast(err, 'error');
-                    showMsg(err, 'error');
-                    saveInFlight = false;
-                    return;
-                }
-
-                // map temp IDs → real IDs (your existing logic)
-                if (data.idMap) {
-                    for (const [tempIdStr, realId] of Object.entries(data.idMap)) {
-                        const li = document.querySelector(`.nav-node[data-id="${tempIdStr}"]`);
-                        if (!li) continue;
-
-                        const oldKey = `nav-collapse-${menuId}-${tempIdStr}`;
-                        const newKey = `nav-collapse-${menuId}-${realId}`;
-
-                        const oldState = localStorage.getItem(oldKey);
-                        if (oldState !== null && localStorage.getItem(newKey) === null) {
-                            localStorage.setItem(newKey, oldState);
-                        }
-                        localStorage.removeItem(oldKey);
-
-                        li.dataset.id = String(realId);
+                try {
+                    const token = getToken();
+                    if (!token) {
+                        showToast('Missing antiforgery token.', 'error');
+                        showMsg('Missing antiforgery token.', 'error');
+                        return false;
                     }
+
+                    const root = document.getElementById('navRoot');
+                    if (!root) return false;
+
+                    const payload = { menuId, items: buildFlatList(root) };
+
+                    const errors = validatePayload(payload.items);
+                    if (errors.length) {
+                        showValidationErrors(errors);
+                        showToast('Validation failed.', 'error');
+                        showMsg('Validation failed. Please fix the errors and try again.', 'error');
+                        return false;
+                    }
+
+                    saveInFlight = true;
+                    showToast('Saving…', 'info');
+
+                    let res, data;
+                    try {
+                        res = await fetch('?handler=Save', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'RequestVerificationToken': token
+                            },
+                            body: JSON.stringify(payload)
+                        });
+
+                        data = await res.json().catch(() => null);
+                    } finally {
+                        saveInFlight = false;
+                    }
+
+                    if (!res.ok || !data || !data.success) {
+                        const err = data?.error ?? `Save failed (HTTP ${res.status})`;
+                        showToast(err, 'error');
+                        showMsg(err, 'error');
+                        return false;
+                    }
+
+                    // map temp IDs → real IDs
+                    if (data.idMap) {
+                        for (const [tempIdStr, realId] of Object.entries(data.idMap)) {
+                            const li = document.querySelector(`.nav-node[data-id="${tempIdStr}"]`);
+                            if (!li) continue;
+
+                            const oldKey = `nav-collapse-${menuId}-${tempIdStr}`;
+                            const newKey = `nav-collapse-${menuId}-${realId}`;
+
+                            const oldState = localStorage.getItem(oldKey);
+                            if (oldState !== null && localStorage.getItem(newKey) === null) {
+                                localStorage.setItem(newKey, oldState);
+                            }
+                            localStorage.removeItem(oldKey);
+
+                            li.dataset.id = String(realId);
+                        }
+                    }
+
+                    showToast('Saved', 'ok');
+                    showMsg('Saved successfully.', 'success');
+
+                    // ✅ mark clean first
+                    setDirty(false);
+
+                    // ✅ show “Saved ✓”
+                    lastSavedAt = new Date();
+                    updateSaveButtonUi();
+
+                    // ✅ run queued autosave if user edited during save
+                    if (saveQueued) {
+                        saveQueued = false;
+                        autoSaveDebounced();
+                    }
+
+                    return true;
                 }
-
-                showToast('Saved', 'ok');
-                showMsg('Saved successfully.', 'success');
-                setDirty(false);
-
-                saveInFlight = false;
-
-                if (saveQueued) {
-                    saveQueued = false;
-                    autoSaveDebounced();
+                catch (err) {
+                    const msg = err?.message || 'Unexpected error';
+                    showToast(msg, 'error');
+                    showMsg(msg, 'error');
+                    return false;
+                }
+                finally {
+                    isSaving = false;
+                    updateSaveButtonUi();
                 }
             }
 
@@ -618,7 +778,7 @@
                         if (el.classList.contains('node-url') || el.classList.contains('node-pageid')) {
                             normalizeLinkInputs(li);
                         }
-                        showToast('Saving…', 'info');
+                        // showToast('Saving…', 'info');
                         autoSaveDebounced();
                     });
                     el.addEventListener('change', () => {
@@ -628,7 +788,7 @@
                         if (el.classList.contains('node-pageid') || el.classList.contains('node-url')) {
                             normalizeLinkInputs(li);
                         }
-                        showToast('Saving…', 'info');
+                        // showToast('Saving…', 'info');
                         autoSaveDebounced();
                     });
                 });
@@ -670,23 +830,29 @@
 
                 // Add child
                 li.querySelector('.add-child')?.addEventListener('click', () => {
-                    const child = createNodeLi({
+                    const parentLi = li;
+
+                    const childLi = createNodeLi({
                         id: uniqueTempId(),
                         label: 'New Item',
+                        linkType: 'page',        // ✅ force correct default
                         pageId: null,
                         url: '',
                         openInNewTab: false,
                         isActive: true
                     });
 
-                    li.querySelector('.nav-children').appendChild(child);
+                    const childrenUl = parentLi.querySelector('.nav-children');
+                    childrenUl.appendChild(childLi);
 
-                    // ensure parent shows toggle now
-                    applyCollapseState(li);
+                    // Ensure parent now shows toggle + expanded state
+                    applyCollapseState(parentLi);
+                    applyCollapseState(childLi); // optional but safe
 
-                    showToast('Saving…', 'info');
+                    setDirty(true);
                     autoSaveDebounced();
                 });
+
 
                 // Delete node (soft delete in UI)
                 li.querySelector('.delete-node')?.addEventListener('click', () => {
@@ -702,32 +868,100 @@
                     autoSaveDebounced();
                 });
 
+                updateVisibilityBadge(li);
+
                 // Autosave on edits
                 wireAutosaveOnFieldChange(li);
             }
+
+
+        function normalizeRolesCsv(s) {
+            return (s || '')
+                .split(',')
+                .map(x => x.trim())
+                .filter(Boolean)
+                .join(',');
+        }
+
+        function computeVisibilityStatus(li) {
+            const isDeleted = li?.dataset?.deleted === 'true';
+            if (isDeleted) return { text: 'Deleted', cls: 'bg-danger', title: 'Marked for deletion' };
+
+            const isActive = !!li.querySelector('.node-active')?.checked;
+            const isPublished = !!li.querySelector('.node-published')?.checked;
+            const rolesRaw = li.querySelector('.node-roles')?.value || '';
+            const roles = normalizeRolesCsv(rolesRaw);
+
+            if (!isActive) return { text: 'Inactive', cls: 'bg-secondary', title: 'Hidden (Inactive)' };
+            if (!isPublished) return { text: 'Draft', cls: 'bg-warning text-dark', title: 'Not published (won’t show on tenant site)' };
+            if (roles.length > 0) return { text: 'Restricted', cls: 'bg-info text-dark', title: `Visible only to roles: ${roles}` };
+
+            return { text: 'Live', cls: 'bg-success', title: 'Visible to everyone on tenant site' };
+        }
+
+        function updateVisibilityBadge(li) {
+            const badge = li.querySelector('.node-visibility-badge');
+            if (!badge) return;
+
+            const s = computeVisibilityStatus(li);
+
+            // Reset badge classes (keep base "badge")
+            badge.className = 'badge node-visibility-badge ' + s.cls;
+            badge.textContent = s.text;
+            badge.title = s.title;
+        }
+
+        function refreshAllBadges() {
+            document.querySelectorAll('#navRoot .nav-node').forEach(updateVisibilityBadge);
+        }
+
 
             // ---------- Root actions ----------
             document.getElementById('addRootBtn')?.addEventListener('click', () => {
                 const li = createNodeLi({
                     id: uniqueTempId(),
                     label: 'New Item',
+                    linkType: 'page',   // ✅ important default
                     pageId: null,
                     url: '',
                     openInNewTab: false,
                     isActive: true
                 });
+
                 document.getElementById('navRoot').appendChild(li);
 
-                showToast('Saving…', 'info');
+                setDirty(true);
                 autoSaveDebounced();
             });
 
-            document.getElementById('saveBtn')?.addEventListener('click', () => {
-                save().catch(err => {
-                    showToast(err.message || 'Unexpected error', 'error');
-                    showMsg(err.message || 'Unexpected error', 'error');
+
+            document.addEventListener('DOMContentLoaded', () => {
+                updateSaveButtonUi(); // ✅ initialize
+
+                document.getElementById('saveBtn')?.addEventListener('click', async (e) => {
+                    e.preventDefault();
+                    if (isSaving) return;
+                    await save();
+                });
+
+                document.getElementById('saveViewBtn')?.addEventListener('click', async (e) => {
+                    e.preventDefault();
+                    if (isSaving) return;
+
+                    const ok = await save();
+                    if (!ok) return;
+
+                    window.open('/', '_blank');
                 });
             });
+
+            window.addEventListener('beforeunload', (e) => {
+                if (!isDirty) return;
+                if (isSaving) return; // optional: don’t block if actively saving
+                e.preventDefault();
+                e.returnValue = '';
+            });
+
 
             // ---------- Initialize ----------
             initAllSortables();
