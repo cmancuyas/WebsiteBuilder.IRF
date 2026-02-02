@@ -10,7 +10,6 @@ namespace WebsiteBuilder.IRF.Infrastructure.ViewComponents
         public TenantNavigationViewComponent(ITenantNavigationService nav)
             => _nav = nav;
 
-        // menuId: 1 = header, 2 = footer (matches your service constants)
         public async Task<IViewComponentResult> InvokeAsync(
             int menuId = 1,
             string? variant = null,
@@ -18,8 +17,8 @@ namespace WebsiteBuilder.IRF.Infrastructure.ViewComponents
         {
             var items = await _nav.GetMenuAsync(menuId, ct);
 
-            // Active matching should be based on Request.Path only (query is ignored)
-            var currentPath = HttpContext?.Request?.Path.Value?.ToLowerInvariant() ?? "/";
+            // Pass raw Request.Path; VM handles normalization (slashes, /home, casing, etc.)
+            var currentPath = HttpContext?.Request?.Path.Value ?? "/";
 
             var resolvedVariant = variant ?? (menuId == 2 ? "footer" : "header");
 

@@ -17,7 +17,7 @@
         var q = p.IndexOfAny(new[] { '?', '#' });
         if (q >= 0) p = p.Substring(0, q);
 
-        // Normalize trailing slash
+        // Normalize trailing slash (except root)
         p = p.TrimEnd('/');
         if (p.Length == 0) p = "/";
 
@@ -32,6 +32,11 @@
         => !string.IsNullOrWhiteSpace(url) &&
            (url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
             url.StartsWith("https://", StringComparison.OrdinalIgnoreCase));
+
+    private static bool IsMeaningfulCrumbUrl(string? url)
+        => !string.IsNullOrWhiteSpace(url) &&
+           !url.Equals("#", StringComparison.Ordinal) &&
+           !IsAbsoluteUrl(url);
 
     private static bool MatchCurrent(string currentPath, string itemUrl)
     {
@@ -71,41 +76,55 @@
 
 @if (TenantContext.IsResolved)
 {
-    var currentPath = Context?.Request?.Path.Value ?? "/";
+    var currentPath = NormalizePath(Context?.Request?.Path.Value ?? "/");
     var headerItems = await NavService.GetHeaderAsync();
 
     var trail = new List<NavItem>();
     var found = TryFindPath(headerItems, currentPath, trail);
 
-    // If not found or it's home/root, don't show breadcrumbs
-    if (found && trail.Count > 0 && NormalizePath(currentPath) != "/")
+    // Hide breadcrumbs on home/root or when current page isn't in the header nav.
+    if (found && trail.Count > 0 && currentPath != "/")
     {
-        <nav aria-label="breadcrumb" class="mb-3">
-            <ol class="breadcrumb mb-0">
-                <li class="breadcrumb-item">
-                    <a href="/" class="text-decoration-none">Home</a>
-                </li>
+        // If trail begins with a "Home" entry (Url "/" or "/home"), remove it to prevent "Home > Home".
+        var firstUrl = NormalizePath(trail[0].Url);
+        if (firstUrl == "/")
+            trail.RemoveAt(0);
 
-                @for (int i = 0; i < trail.Count; i++)
-                {
-                    var item = trail[i];
-                    var isLast = (i == trail.Count - 1);
+        // If nothing remains after trimming, don't render breadcrumbs.
+        if (trail.Count > 0)
+        {
+            <nav aria-label="breadcrumb" class="mb-3">
+                <ol class="breadcrumb mb-0">
+                    <li class="breadcrumb-item">
+                        <a href="/" class="text-decoration-none">Home</a>
+                    </li>
 
-                    if (isLast)
+                    @for (int i = 0; i < trail.Count; i++)
                     {
-                        <li class="breadcrumb-item active" aria-current="page">@item.Title</li>
-                    }
-                    else
-                    {
-                        // Guard: if Url is empty, fall back to "#"
-                        var href = string.IsNullOrWhiteSpace(item.Url) ? "#" : item.Url;
+                        var item = trail[i];
+                        var isLast = (i == trail.Count - 1);
 
-                        <li class="breadcrumb-item">
-                            <a class="text-decoration-none" href="@href">@item.Title</a>
-                        </li>
+                        if (isLast)
+                        {
+                            <li class="breadcrumb-item active" aria-current="page">@item.Title</li>
+                        }
+                        else
+                        {
+                            // Only link intermediate crumbs when URL is an app-relative meaningful URL (not absolute, not "#").
+                            if (IsMeaningfulCrumbUrl(item.Url))
+                            {
+                                <li class="breadcrumb-item">
+                                    <a class="text-decoration-none" href="@item.Url">@item.Title</a>
+                                </li>
+                            }
+                            else
+                            {
+                                <li class="breadcrumb-item">@item.Title</li>
+                            }
+                        }
                     }
-                }
-            </ol>
-        </nav>
+                </ol>
+            </nav>
+        }
     }
 }

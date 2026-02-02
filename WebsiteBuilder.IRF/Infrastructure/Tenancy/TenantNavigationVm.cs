@@ -7,9 +7,7 @@
 
         public required string CurrentPath { get; init; }
 
-        // IMPORTANT:
-        // Items are *rendering nodes* (enriched with active flags),
-        // not the raw service NavItem objects.
+        // Rendering nodes (enriched with active flags), not raw NavItem objects.
         public required IReadOnlyList<Node> Items { get; init; }
 
         public sealed class Node
@@ -18,7 +16,6 @@
             public required string Url { get; init; }
             public required bool OpenInNewTab { get; init; }
 
-            // Computed after mapping
             public required bool IsActive { get; set; }
             public required bool IsAncestorOfActive { get; set; }
 
@@ -45,7 +42,6 @@
 
             var mapped = items.Select(Map).ToList();
 
-            // Mark active + ancestors
             foreach (var n in mapped)
                 MarkActive(n, normalizedCurrent);
 
@@ -60,10 +56,8 @@
 
         private static bool MarkActive(Node node, string current)
         {
-            var nodePath = NormalizePath(node.Url);
-
             // External/absolute URLs never become active.
-            var isExact = !IsAbsolute(node.Url) && nodePath == current;
+            var isExact = !IsAbsolute(node.Url) && NormalizePath(node.Url) == current;
 
             var anyChildActive = node.Children.Any(c => MarkActive(c, current));
 
@@ -76,20 +70,31 @@
         private static bool IsAbsolute(string url)
             => Uri.TryCreate(url, UriKind.Absolute, out _);
 
-        private static string NormalizePath(string pathOrUrl)
+        private static string NormalizePath(string? pathOrUrl)
         {
-            if (string.IsNullOrWhiteSpace(pathOrUrl)) return "/";
+            if (string.IsNullOrWhiteSpace(pathOrUrl))
+                return "/";
 
-            // Absolute => ignore for active matching
-            if (Uri.TryCreate(pathOrUrl, UriKind.Absolute, out _)) return "";
+            // Absolute URL => never match current path
+            if (Uri.TryCreate(pathOrUrl, UriKind.Absolute, out _))
+                return "#abs";
 
-            // remove query + hash
+            // Strip query + hash
             var p = pathOrUrl.Split('?', '#')[0].Trim();
 
-            if (!p.StartsWith("/")) p = "/" + p;
+            if (string.IsNullOrWhiteSpace(p))
+                return "/";
 
-            // normalize trailing slash (except root)
-            if (p.Length > 1 && p.EndsWith("/")) p = p.TrimEnd('/');
+            if (!p.StartsWith("/"))
+                p = "/" + p;
+
+            // Normalize trailing slash (except root)
+            if (p.Length > 1 && p.EndsWith("/"))
+                p = p.TrimEnd('/');
+
+            // Treat /home as /
+            if (p.Equals("/home", System.StringComparison.OrdinalIgnoreCase))
+                p = "/";
 
             return p.ToLowerInvariant();
         }
