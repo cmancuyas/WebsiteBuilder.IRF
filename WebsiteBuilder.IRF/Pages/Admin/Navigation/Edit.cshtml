@@ -1019,6 +1019,54 @@
                 }
             }
 
+            const REFRESH_MS = 45000;
+
+            function isUserInteractingWithEditor() {
+                const el = document.activeElement;
+                if (!el) return false;
+
+                // If focused anywhere inside a nav node editor, assume interaction
+                const inNode = el.closest && el.closest('#navRoot .nav-node');
+                return !!inNode;
+            }
+
+            async function periodicRefreshTick() {
+                // Don’t refresh during save/autosave or while there are unsaved changes
+                if (isSaving || saveInFlight) return;
+                if (isDirty) return;
+
+                // Don’t refresh in background tabs
+                if (document.hidden) return;
+
+                // Don’t refresh while user is interacting (prevents dropdown re-render interruptions)
+                if (isUserInteractingWithEditor()) return;
+
+                // Refresh flags first (cheap + safe)
+                await refreshPageFlagsFromServer();
+
+                // Refresh page options second (can re-render dropdowns)
+                await refreshPageOptionsFromServer();
+            }
+
+            function startPeriodicRefresh() {
+                // Initial “quiet” refresh shortly after load (optional)
+                setTimeout(() => { periodicRefreshTick(); }, 2500);
+
+                // Interval refresh
+                setInterval(() => { periodicRefreshTick(); }, REFRESH_MS);
+
+                // When user returns to tab, refresh once
+                document.addEventListener('visibilitychange', () => {
+                    if (!document.hidden) periodicRefreshTick();
+                });
+
+                // When window regains focus, refresh once
+                window.addEventListener('focus', () => {
+                    periodicRefreshTick();
+                });
+            }
+
+
             function wireNodeUi(li) {
                 const toggleBtn = li.querySelector('.toggle-children');
                 if (toggleBtn) {
@@ -1214,6 +1262,7 @@
                 });
 
                applyShowDeletedUi();
+               startPeriodicRefresh();
 
             });
 
