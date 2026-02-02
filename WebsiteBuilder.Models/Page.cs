@@ -45,5 +45,6 @@ namespace WebsiteBuilder.Models
         // Published revision pointer
         public int? PublishedRevisionId { get; set; }
         public PageRevision? PublishedRevision { get; set; }
+        public PageStatus? PageStatus { get; set; }
     }
 }

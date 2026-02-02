@@ -11,6 +11,10 @@
 
         public string Label { get; set; } = string.Empty;
 
+        // "page" | "url"
+        // JS already sends linkType, so this will bind automatically.
+        public string LinkType { get; set; } = "page";
+
         public int? PageId { get; set; }
         public string Url { get; set; } = string.Empty;
 
@@ -22,7 +26,6 @@
         // Publishing & visibility
         public bool IsPublished { get; set; } = true;
 
-        // CSV list of roles allowed to see this nav item.
         // Null/empty => visible to everyone.
         public string? AllowedRolesCsv { get; set; }
 
