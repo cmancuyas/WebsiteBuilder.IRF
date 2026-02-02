@@ -1,45 +1,55 @@
-﻿@page "/admin/pages"
+﻿@page
 @model WebsiteBuilder.IRF.Pages.Admin.Pages.IndexModel
 
-<h2 class="mb-3">Pages</h2>
+@if (User.IsInRole(WebsiteBuilder.IRF.Infrastructure.Auth.AppRoles.SuperAdmin) ||
+     User.IsInRole(WebsiteBuilder.IRF.Infrastructure.Auth.AppRoles.Admin))
+{
+    <div class="card mb-3">
+        <div class="card-body">
+            <h6 class="mb-2">Tenant Home Page</h6>
 
-<form method="get" class="row g-2 mb-3">
-    <div class="col-md-6">
-        <input class="form-control" name="Q" value="@Model.Q" placeholder="Search title or slug..." />
-    </div>
-    <div class="col-md-3">
-        <input class="form-control" name="StatusId" value="@Model.StatusId" placeholder="StatusId (optional)" />
-    </div>
-    <div class="col-md-3 d-flex gap-2">
-        <button class="btn btn-primary" type="submit">Search</button>
-        <a class="btn btn-outline-secondary" href="/admin/pages">Reset</a>
-        <a class="btn btn-success ms-auto" href="/admin/pages/create">Create</a>
-    </div>
-</form>
+            <form method="post" asp-page-handler="SetHomePage" class="row g-2 align-items-end">
+                @Html.AntiForgeryToken()
 
-<table class="table table-striped align-middle">
-    <thead>
-        <tr>
-            <th>Title</th>
-            <th>Slug</th>
-            <th>Status</th>
-            <th>Updated</th>
-            <th style="width:160px;"></th>
-        </tr>
-    </thead>
-    <tbody>
-        @foreach (var p in Model.Items)
-        {
-            <tr>
-                <td>@p.Title</td>
-                <td><code>/@p.Slug</code></td>
-                <td>@p.PageStatusId</td>
-                <td>@p.UpdatedAt.ToString("yyyy-MM-dd HH:mm")</td>
-                <td class="text-end">
-                    <a class="btn btn-sm btn-outline-primary" href="/admin/pages/edit/@p.Id">Edit</a>
-                    <a class="btn btn-sm btn-outline-secondary" href="/admin/pages/edit/@p.Id?tab=sections">Sections</a>
-                </td>
-            </tr>
-        }
-    </tbody>
-</table>
+                <div class="col-12 col-md-8">
+                    <label class="form-label mb-1">Select a published page</label>
+
+                    <select class="form-select" asp-for="SelectedHomePageId">
+                        <option value="">-- Select Home Page --</option>
+                        @foreach (var opt in Model.PublishedPagesSelect)
+                        {
+                            <option value="@opt.Value" selected="@(opt.Value == Model.SelectedHomePageId?.ToString())">
+                                @opt.Text
+                            </option>
+                        }
+                    </select>
+
+                    <div class="form-text">
+                        This is where <code>/</code> will redirect for this tenant.
+                    </div>
+
+                    <span class="text-danger">
+                        @Html.ValidationMessageFor(m => m.SelectedHomePageId)
+                    </span>
+                </div>
+
+                <div class="col-12 col-md-4">
+                    <button type="submit" class="btn btn-primary w-100">
+                        Set as Home
+                    </button>
+                </div>
+            </form>
+
+            @* Optional: show only "global" errors *@
+            @if (ViewData.ModelState.TryGetValue(string.Empty, out var entry) && entry.Errors.Count > 0)
+            {
+                <div class="text-danger mt-2">
+                    @foreach (var err in entry.Errors)
+                    {
+                        <div>@err.ErrorMessage</div>
+                    }
+                </div>
+            }
+        </div>
+    </div>
+}

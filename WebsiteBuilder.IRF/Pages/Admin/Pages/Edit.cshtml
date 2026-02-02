@@ -10,8 +10,10 @@
 
     // Pass to partials
     ViewData["IsEditable"] = isEditable;
-}
 
+    // CSP nonce (Program.cs middleware sets: context.Items["CspNonce"])
+    var nonce = HttpContext?.Items?["CspNonce"]?.ToString() ?? "";
+}
 
 <!-- Anti-forgery token carrier for JS fetch calls -->
 <form id="antiForgeryForm" method="post" class="d-none">
@@ -209,8 +211,6 @@
         </div>
     }
 
-
-
     @* Feedback *@
     @if (Model.SaveSuccess)
     {
@@ -236,7 +236,6 @@
 
                     <input type="hidden" asp-for="Input.Id" />
 
-                    @* Disable the entire page edit form when not Draft *@
                     @if (!isEditable)
                     {
                         <fieldset disabled>
@@ -316,8 +315,6 @@
                 </div>
 
                 <div class="card-body">
-
-                    <!-- Undo banner (single source of truth) -->
                     <div id="sectionUndoBanner"
                          class="alert alert-warning d-none py-2"
                          role="alert"
@@ -342,7 +339,6 @@
                         </div>
                     </div>
 
-                    <!-- Active sections -->
                     <div id="sectionsPanel">
                         @if (!Model.HasSections)
                         {
@@ -360,7 +356,6 @@
                         }
                     </div>
 
-                    <!-- Trash sections -->
                     <div id="trashPanel" class="d-none">
                         @if (Model.TrashCount <= 0)
                         {
@@ -406,8 +401,6 @@
 
 </div>
 
-
-@* Add Section Modal *@
 <div class="modal fade" id="addSectionModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog">
         <div class="modal-content">
@@ -446,7 +439,7 @@
 @section Scripts {
     <partial name="_ValidationScriptsPartial" />
 
-    <style>
+    <style nonce="@nonce">
         .cursor-grab {
             cursor: grab;
             user-select: none;
@@ -457,50 +450,30 @@
         }
     </style>
 
-    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
-    <script>
-        // Single source of truth for draft/editability in JS
+    <script nonce="@nonce" src="~/lib/jquery-sortablejs/jquery-sortable.min.js"></script>
+    <script nonce="@nonce">
         window.PAGE_IS_EDITABLE = @(isEditable.ToString().ToLowerInvariant());
-    </script>
+        let isSaving = false;
 
-    <script>
-        // -----------------------------
-        // Shared anti-forgery token getter (robust)
-        // Requires: <form id="antiForgeryForm">@Html.AntiForgeryToken()</form>
-        // -----------------------------
         function getAntiForgeryToken() {
             const scoped = document.querySelector('#antiForgeryForm input[name="__RequestVerificationToken"]');
             if (scoped?.value) return scoped.value;
-
             const el = document.querySelector('input[name="__RequestVerificationToken"]');
             return el ? el.value : null;
         }
     </script>
 
-    <script>
-        // -----------------------------
-        // Autosave UX indicator (single authoritative state)
-        // -----------------------------
+    <script nonce="@nonce">
         (function () {
             const indicator = document.getElementById("globalSaveIndicator");
             const retryBtn = document.getElementById("retryFailedAutosavesBtn");
             const offlineBadge = document.getElementById("offlineBadge");
 
-            // authoritative counters live here
-            const state = {
-                saving: 0,
-                failed: 0,
-                lastSavedAt: null,
-                retryQueue: new Map()
-            };
-
-            // expose state so other blocks can read it safely
+            const state = { saving: 0, failed: 0, lastSavedAt: null, retryQueue: new Map() };
             window.AutosaveUxState = state;
 
             function fmt(d) {
-                return d
-                    ? `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`
-                    : "";
+                return d ? `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}` : "";
             }
 
             function render() {
@@ -508,70 +481,26 @@
 
                 const offline = navigator.onLine === false;
                 offlineBadge?.classList.toggle("d-none", !offline);
-
                 retryBtn?.classList.toggle("d-none", state.failed === 0);
 
-                if (offline) {
-                    indicator.textContent = "Offline — changes not saved";
-                    indicator.className = "small text-warning";
-                    return;
-                }
+                if (offline) { indicator.textContent = "Offline — changes not saved"; indicator.className = "small text-warning"; return; }
+                if (state.saving > 0) { indicator.textContent = "Saving…"; indicator.className = "small text-muted"; return; }
+                if (state.failed > 0) { indicator.textContent = "Save failed"; indicator.className = "small text-danger"; return; }
+                if (window.PageDirty?._keys?.has("page")) { indicator.textContent = "Unsaved page changes (click Save)"; indicator.className = "small text-warning"; return; }
 
-                if (state.saving > 0) {
-                    indicator.textContent = "Saving…";
-                    indicator.className = "small text-muted";
-                    return;
-                }
-
-                if (state.failed > 0) {
-                    indicator.textContent = "Save failed";
-                    indicator.className = "small text-danger";
-                    return;
-                }
-
-                if (window.PageDirty?._keys?.has("page")) {
-                    indicator.textContent = "Unsaved page changes (click Save)";
-                    indicator.className = "small text-warning";
-                    return;
-                }
-
-                indicator.textContent = state.lastSavedAt
-                    ? `All changes saved (Saved ${fmt(state.lastSavedAt)})`
-                    : "All changes saved";
+                indicator.textContent = state.lastSavedAt ? `All changes saved (Saved ${fmt(state.lastSavedAt)})` : "All changes saved";
                 indicator.className = "small text-success";
             }
 
             window.AutosaveUx = {
-                onSaving(sectionId) {
-                    state.saving++;
-                    render();
-                },
-                onSaved(sectionId) {
-                    state.saving = Math.max(0, state.saving - 1);
-                    state.lastSavedAt = new Date();
-                    render();
-                },
-                onFailed(sectionId, retryFn) {
-                    state.saving = Math.max(0, state.saving - 1);
-                    state.failed++;
-                    if (retryFn) state.retryQueue.set(sectionId, retryFn);
-                    render();
-                },
-                onRecovered(sectionId) {
-                    // recovery counts as a successful completion of a previously failing item
-                    state.saving = Math.max(0, state.saving - 1);
-
-                    if (state.failed > 0) state.failed--;
-                    state.retryQueue.delete(sectionId);
-                    state.lastSavedAt = new Date();
-                    render();
-                }
+                onSaving() { state.saving++; render(); },
+                onSaved() { state.saving = Math.max(0, state.saving - 1); state.lastSavedAt = new Date(); render(); },
+                onFailed(sectionId, retryFn) { state.saving = Math.max(0, state.saving - 1); state.failed++; if (retryFn) state.retryQueue.set(sectionId, retryFn); render(); },
+                onRecovered(sectionId) { state.saving = Math.max(0, state.saving - 1); if (state.failed > 0) state.failed--; state.retryQueue.delete(sectionId); state.lastSavedAt = new Date(); render(); }
             };
 
             retryBtn?.addEventListener("click", async () => {
-                for (const fn of state.retryQueue.values()) {
-                    try { await fn(); } catch { }
-                }
+                for (const fn of state.retryQueue.values()) { try { await fn(); } catch { } }
                 render();
             });
 
@@ -581,16 +510,12 @@
         })();
     </script>
 
-    <script>
-        // -----------------------------
-        // Disable page action buttons while autosave is in-flight
-        // -----------------------------
+    <script nonce="@nonce">
         (function () {
             function updatePageActionButtons(disabled) {
                 document.querySelectorAll(".page-action-btn").forEach(btn => {
                     btn.disabled = disabled;
                     btn.classList.toggle("disabled", disabled);
-
                     if (disabled) btn.setAttribute("title", "Saving changes…");
                     else btn.removeAttribute("title");
                 });
@@ -611,39 +536,33 @@
 
             ux.onSaved = function (...args) {
                 originalOnSaved?.apply(this, args);
-                // only enable if nothing is saving anymore
-                if ((window.AutosaveUxState?.saving ?? 0) === 0) {
-                    updatePageActionButtons(false);
-                }
+                if ((window.AutosaveUxState?.saving ?? 0) === 0) updatePageActionButtons(false);
             };
 
             ux.onFailed = function (...args) {
                 originalOnFailed?.apply(this, args);
-                // allow publish actions if user wants, despite failed autosave
                 updatePageActionButtons(false);
             };
 
             ux.onRecovered = function (...args) {
                 originalOnRecovered?.apply(this, args);
-                if ((window.AutosaveUxState?.saving ?? 0) === 0) {
-                    updatePageActionButtons(false);
-                }
+                if ((window.AutosaveUxState?.saving ?? 0) === 0) updatePageActionButtons(false);
             };
         })();
     </script>
 
-    <script>
-        // -----------------------------
-        // Section reorder (auto-save order)
-        // Targets: #sectionsContainer (matches your markup)
-        // -----------------------------
+    <script nonce="@nonce">
         document.addEventListener("DOMContentLoaded", function () {
 
-            // Only enable drag/drop in Draft
             if (window.PAGE_IS_EDITABLE !== true) return;
 
             const el = document.getElementById("sectionsContainer");
             if (!el) return;
+
+            if (typeof Sortable === "undefined") {
+                console.error("SortableJS failed to load (CSP/CDN blocked). Reorder disabled.");
+                return;
+            }
 
             function getIds() {
                 return Array.from(el.querySelectorAll(".section-item"))
@@ -664,15 +583,15 @@
                 }
             }
 
-            let isSaving = false;
             let hasPendingChanges = false;
 
             function setSaving(state) {
                 isSaving = state;
                 hasPendingChanges = state;
 
+                // FIX: do NOT keep old disabled state
                 document.querySelectorAll(".page-action-btn").forEach(btn => {
-                    btn.disabled = state || btn.disabled;
+                    btn.disabled = state;
                 });
             }
 
@@ -718,16 +637,12 @@
 
                         if (!res.ok || !json || json.ok !== true) {
                             if (prev.length) applyOrder(prev);
-
-                            const msg =
-                                (json && (json.message || json.Message)) ||
-                                "Failed to save order.";
-
+                            const msg = (json && (json.message || json.Message)) || "Failed to save order.";
                             alert(msg);
                             return;
                         }
 
-                        hasPendingChanges = false; // saved successfully
+                        hasPendingChanges = false;
                     } catch {
                         if (prev.length) applyOrder(prev);
                         hasPendingChanges = false;
@@ -740,17 +655,15 @@
         });
     </script>
 
+    @* KEEP the rest of your scripts (delete/restore/autosave/dirty state) but ADD nonce="@nonce" to every script tag *@
 
-    <script>
+    <script nonce="@nonce">
         // -----------------------------
         // Soft delete / Undo / Trash UI for draft sections
-        // Single implementation. Uses in-card banner (#sectionUndoBanner).
-        // Delete button hook: [data-delete-revision-section]
         // -----------------------------
         (function () {
 
-        if (window.PAGE_IS_EDITABLE !== true) return;
-
+            if (window.PAGE_IS_EDITABLE !== true) return;
 
             let lastDeletedId = null;
             let undoTimer = null;
@@ -892,17 +805,14 @@
                 if (!id) return;
 
                 try {
-                    // 1) flip IsDeleted=false (server handler is plural)
                     await postJson("?handler=RestoreRevisionSections", { sectionIds: [id] });
 
-                    // 2) remove from trash UI
                     const trashCard = document.getElementById(`trash-section-${id}`);
                     if (trashCard) trashCard.remove();
 
                     incBadge("trashCountBadge", -1);
                     incBadge("activeCountBadge", +1);
 
-                    // 3) fetch server-rendered row HTML (no reload)
                     const htmlRes = await fetch(`?handler=RevisionSectionRow&sectionId=${id}`, {
                         method: "GET",
                         headers: { "X-Requested-With": "XMLHttpRequest" }
@@ -913,11 +823,9 @@
                         throw new Error("Failed to load restored section markup.");
                     }
 
-                    // Ensure we are on Sections tab
                     setActiveTab("sections");
                     hideUndoBanner();
 
-                    // Remove "No sections" message if present
                     const sectionsPanel = q("sectionsPanel");
                     const emptyMsg = sectionsPanel?.querySelector(".text-muted");
                     if (emptyMsg && emptyMsg.textContent?.toLowerCase().includes("no sections")) {
@@ -932,14 +840,12 @@
                     const restoredEl = wrap.firstElementChild;
                     if (!restoredEl) throw new Error("Invalid restored HTML.");
 
-                    // Insert back into active list (prepend is fine; reorder is the user’s choice)
                     container.prepend(restoredEl);
 
                 } catch (e) {
                     alert(e && e.message ? e.message : "Restore failed.");
                 }
             };
-
 
             document.addEventListener("DOMContentLoaded", function () {
                 q("tabSectionsBtn")?.addEventListener("click", () => setActiveTab("sections"));
@@ -952,7 +858,6 @@
 
                 q("closeUndoBannerBtn")?.addEventListener("click", hideUndoBanner);
 
-                // Delegate Delete clicks
                 document.addEventListener("click", function (e) {
                     const btn = e.target.closest("[data-delete-revision-section]");
                     if (!btn) return;
@@ -961,7 +866,6 @@
                     window.deleteRevisionSection(id);
                 });
 
-                // Delegate Restore clicks in trash
                 document.addEventListener("click", function (e) {
                     const btn = e.target.closest("[data-restore-revision-section]");
                     if (!btn) return;
@@ -975,10 +879,188 @@
         })();
     </script>
 
-    <script>
-        // -----------------------------
-        // Section autosave helper (authoritative, no double-calls)
-        // -----------------------------
+    @* IMPORTANT:
+       For your remaining SectionAutoSave + PageDirty scripts, keep your logic,
+       but make sure each <script> has nonce="@nonce".
+    *@
+    <script nonce="@nonce">
+        /* ============================================================
+         * [AUTOSAVE UX INDICATOR]
+         * - Shows global "Saving… / All changes saved / Save failed"
+         * - Tracks in-flight saves and failures
+         * - Supports a Retry button for failed autosaves
+         * ============================================================ */
+        (function () {
+            const indicator = document.getElementById("globalSaveIndicator");
+            const retryBtn = document.getElementById("retryFailedAutosavesBtn");
+            const offlineBadge = document.getElementById("offlineBadge");
+
+            // authoritative counters live here
+            const state = {
+                saving: 0,
+                failed: 0,
+                lastSavedAt: null,
+                retryQueue: new Map() // sectionId -> retryFn
+            };
+
+            // expose state so other blocks can read it safely
+            window.AutosaveUxState = state;
+
+            function fmt(d) {
+                return d
+                    ? `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`
+                    : "";
+            }
+
+            function render() {
+                if (!indicator) return;
+
+                const offline = navigator.onLine === false;
+                offlineBadge?.classList.toggle("d-none", !offline);
+
+                retryBtn?.classList.toggle("d-none", state.failed === 0);
+
+                if (offline) {
+                    indicator.textContent = "Offline — changes not saved";
+                    indicator.className = "small text-warning";
+                    return;
+                }
+
+                if (state.saving > 0) {
+                    indicator.textContent = "Saving…";
+                    indicator.className = "small text-muted";
+                    return;
+                }
+
+                if (state.failed > 0) {
+                    indicator.textContent = "Save failed";
+                    indicator.className = "small text-danger";
+                    return;
+                }
+
+                // Page-level dirty (manual Save)
+                if (window.PageDirty?._keys?.has("page")) {
+                    indicator.textContent = "Unsaved page changes (click Save)";
+                    indicator.className = "small text-warning";
+                    return;
+                }
+
+                indicator.textContent = state.lastSavedAt
+                    ? `All changes saved (Saved ${fmt(state.lastSavedAt)})`
+                    : "All changes saved";
+                indicator.className = "small text-success";
+            }
+
+            window.AutosaveUx = {
+                onSaving(sectionId) {
+                    state.saving++;
+                    render();
+                },
+                onSaved(sectionId) {
+                    state.saving = Math.max(0, state.saving - 1);
+                    state.lastSavedAt = new Date();
+                    render();
+                },
+                onFailed(sectionId, retryFn) {
+                    state.saving = Math.max(0, state.saving - 1);
+                    state.failed++;
+                    if (retryFn) state.retryQueue.set(sectionId, retryFn);
+                    render();
+                },
+                onRecovered(sectionId) {
+                    state.saving = Math.max(0, state.saving - 1);
+                    if (state.failed > 0) state.failed--;
+                    state.retryQueue.delete(sectionId);
+                    state.lastSavedAt = new Date();
+                    render();
+                }
+            };
+
+            retryBtn?.addEventListener("click", async () => {
+                for (const fn of state.retryQueue.values()) {
+                    try { await fn(); } catch { /* ignore */ }
+                }
+                render();
+            });
+
+            window.addEventListener("online", render);
+            window.addEventListener("offline", render);
+            document.addEventListener("DOMContentLoaded", render);
+        })();
+    </script>
+
+    <script nonce="@nonce">
+        /* ============================================================
+         * [DISABLE PAGE ACTIONS WHILE SAVING]
+         * - Hooks into AutosaveUx events
+         * - Disables/enables buttons with .page-action-btn
+         * ============================================================ */
+        (function () {
+            function updatePageActionButtons(disabled) {
+                document.querySelectorAll(".page-action-btn").forEach(btn => {
+                    btn.disabled = disabled;
+                    btn.classList.toggle("disabled", disabled);
+
+                    if (disabled) btn.setAttribute("title", "Saving changes…");
+                    else btn.removeAttribute("title");
+                });
+            }
+
+            const ux = window.AutosaveUx;
+            if (!ux) return;
+
+            const originalOnSaving = ux.onSaving;
+            const originalOnSaved = ux.onSaved;
+            const originalOnFailed = ux.onFailed;
+            const originalOnRecovered = ux.onRecovered;
+
+            ux.onSaving = function (...args) {
+                originalOnSaving?.apply(this, args);
+                updatePageActionButtons(true);
+            };
+
+            ux.onSaved = function (...args) {
+                originalOnSaved?.apply(this, args);
+                if ((window.AutosaveUxState?.saving ?? 0) === 0) {
+                    updatePageActionButtons(false);
+                }
+            };
+
+            ux.onFailed = function (...args) {
+                originalOnFailed?.apply(this, args);
+                // allow user to proceed even if autosave failed
+                updatePageActionButtons(false);
+            };
+
+            ux.onRecovered = function (...args) {
+                originalOnRecovered?.apply(this, args);
+                if ((window.AutosaveUxState?.saving ?? 0) === 0) {
+                    updatePageActionButtons(false);
+                }
+            };
+        })();
+    </script>
+    <script nonce="@nonce">
+        /* ============================================================
+         * [SECTION AUTOSAVE HELPER]
+         * - Debounced autosave for section settings (JSON)
+         * - Updates per-section status element (Saving/Saved/Failed)
+         * - Shows validation errors returned by server
+         * - Integrates with AutosaveUx + PageDirty
+         *
+         * Usage from a section partial:
+         *   const saver = SectionAutoSave.bindSectionAutoSave(
+         *       sectionId,
+         *       () => JSON.stringify(payload),
+         *       '?handler=SaveSection',
+         *       statusEl,
+         *       errorsEl
+         *   );
+         *   // call when inputs change:
+         *   saver.notifyChanged();
+         *   // optional manual trigger:
+         *   saver.saveNow();
+         * ============================================================ */
         (function () {
             function debounce(fn, delay) {
                 let t = null;
@@ -1003,10 +1085,7 @@
                     if (!errorsEl) return;
 
                     const list = Array.isArray(errors) ? errors : [];
-                    if (!list.length) {
-                        clearErrors();
-                        return;
-                    }
+                    if (!list.length) { clearErrors(); return; }
 
                     errorsEl.classList.remove("d-none");
                     errorsEl.innerHTML = `
@@ -1033,7 +1112,7 @@
                     }
 
                     try {
-                        const token = getAntiForgeryToken();
+                        const token = (typeof getAntiForgeryToken === "function") ? getAntiForgeryToken() : null;
 
                         const res = await fetch(saveUrl, {
                             method: "POST",
@@ -1056,12 +1135,10 @@
                         clearErrors();
 
                         // Clear dirty only after successful save
-                        window.PageDirty && typeof window.PageDirty.clear === "function" && window.PageDirty.clear(dirtyKey);
+                        window.PageDirty?.clear?.(dirtyKey);
 
                         // success signal
-                        if (window.AutosaveUx && typeof window.AutosaveUx.onSaved === "function") {
-                            window.AutosaveUx.onSaved(sectionId);
-                        }
+                        window.AutosaveUx?.onSaved?.(sectionId);
 
                         if (inFlight === 0 && statusEl) {
                             statusEl.textContent = "Saved";
@@ -1081,7 +1158,7 @@
                         }
 
                         // failed signal (provide retry fn)
-                        window.AutosaveUx && window.AutosaveUx.onFailed(sectionId, () => runSave());
+                        window.AutosaveUx?.onFailed?.(sectionId, () => runSave());
 
                         showErrors(e && e.errors ? e.errors : []);
                         return null;
@@ -1092,7 +1169,7 @@
 
                 return {
                     notifyChanged: () => {
-                        window.PageDirty && typeof window.PageDirty.set === "function" && window.PageDirty.set(dirtyKey);
+                        window.PageDirty?.set?.(dirtyKey);
                         debounced();
                     },
                     saveNow: () => runSave()
@@ -1102,11 +1179,15 @@
             window.SectionAutoSave = { bindSectionAutoSave };
         })();
     </script>
-
-    <script>
-        // -----------------------------
-        // Global dirty state (page + sections)
-        // -----------------------------
+    <script nonce="@nonce">
+        /* ============================================================
+         * [GLOBAL DIRTY STATE]
+         * - Tracks unsaved changes from:
+         *   - page fields (manual Save) -> key "page"
+         *   - section autosaves -> key "section:{id}"
+         * - Warns on navigation/unload if dirty
+         * - Can be checked via: PageDirty.isDirty
+         * ============================================================ */
         (function () {
             const Dirty = {
                 _keys: new Set(),
@@ -1189,4 +1270,5 @@
             });
         })();
     </script>
+
 }
