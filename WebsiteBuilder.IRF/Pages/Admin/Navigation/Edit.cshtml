@@ -113,6 +113,81 @@
     .nav-node.deleted-hidden {
         display: none !important;
     }
+
+    @@keyframes navPulse {
+        0% {
+            box-shadow: 0 0 0 0 rgba(255,193,7,.65);
+        }
+
+        70% {
+            box-shadow: 0 0 0 8px rgba(255,193,7,0);
+        }
+
+        100% {
+            box-shadow: 0 0 0 0 rgba(255,193,7,0);
+        }
+    }
+
+    .nav-node.pulse-update > .node-row {
+        animation: navPulse 1.2s ease-out 1;
+        border-color: #ffc107 !important;
+    }
+
+    @@keyframes navPulseWarning {
+        0% {
+            box-shadow: 0 0 0 0 rgba(255,193,7,.65);
+        }
+
+        70% {
+            box-shadow: 0 0 0 8px rgba(255,193,7,0);
+        }
+
+        100% {
+            box-shadow: 0 0 0 0 rgba(255,193,7,0);
+        }
+    }
+    @@keyframes navPulseDanger {
+        0% {
+            box-shadow: 0 0 0 0 rgba(220,53,69,.55);
+        }
+
+        70% {
+            box-shadow: 0 0 0 8px rgba(220,53,69,0);
+        }
+
+        100% {
+            box-shadow: 0 0 0 0 rgba(220,53,69,0);
+        }
+    }
+    @@keyframes navPulseInfo {
+        0% {
+            box-shadow: 0 0 0 0 rgba(13,110,253,.45);
+        }
+
+        70% {
+            box-shadow: 0 0 0 8px rgba(13,110,253,0);
+        }
+
+        100% {
+            box-shadow: 0 0 0 0 rgba(13,110,253,0);
+        }
+    }
+
+    .nav-node.pulse-warning > .node-row {
+        animation: navPulseWarning 1.2s ease-out 1;
+        border-color: #ffc107 !important;
+    }
+
+    .nav-node.pulse-danger > .node-row {
+        animation: navPulseDanger 1.2s ease-out 1;
+        border-color: #dc3545 !important;
+    }
+
+    .nav-node.pulse-info > .node-row {
+        animation: navPulseInfo 1.2s ease-out 1;
+        border-color: #0d6efd !important;
+    }
+
 </style>
 
 @section Scripts {
@@ -131,6 +206,81 @@
             const toastEl = document.getElementById("navToast");
 
             const showDeletedKey = `nav-show-deleted-${menuId}`;
+
+            function getPageSeverity(pageId) {
+                const f = pageFlagsById[String(pageId)] || pageFlagsById[pageId];
+                if (!f) return 'info';
+
+                const isDeleted = !!f.isDeleted;
+                const isActive = f.isActive !== false; // default true if missing
+                const isPublished = typeof f.pageStatusId === 'number'
+                    ? (f.pageStatusId === PAGE_STATUS_PUBLISHED)
+                    : true;
+
+                const showInNav = f.showInNavigation !== false; // default true if missing
+
+                const hard = isDeleted || !isActive || !isPublished;
+                if (hard) return 'danger';
+
+                if (!showInNav) return 'warning';
+
+                return 'info';
+            }
+
+
+            function diffChangedIds(prevSnap, nextSnap) {
+                const changedIds = [];
+                const prevKeys = new Set(Object.keys(prevSnap || {}));
+                const nextKeys = new Set(Object.keys(nextSnap || {}));
+
+                // ids that are new or removed aren’t directly linkable, but include anyway
+                nextKeys.forEach(k => { if (!prevKeys.has(k)) changedIds.push(Number(k)); });
+                prevKeys.forEach(k => { if (!nextKeys.has(k)) changedIds.push(Number(k)); });
+
+                // ids that changed
+                nextKeys.forEach(k => {
+                    if (prevKeys.has(k) && prevSnap[k] !== nextSnap[k]) changedIds.push(Number(k));
+                });
+
+                return Array.from(new Set(changedIds.filter(n => !Number.isNaN(n) && n > 0)));
+            }
+
+            function pulseNavNodesForPageIds(pageIds) {
+                if (!pageIds || pageIds.length === 0) return;
+
+                const set = new Set(pageIds.map(Number));
+
+                document.querySelectorAll('#navRoot .nav-node').forEach(li => {
+                    const linkType = (li.querySelector('.node-linktype')?.value || 'page').toLowerCase();
+                    if (linkType !== 'page') return;
+
+                    const raw = li.querySelector('.node-pageid')?.value || '';
+                    const pid = raw ? Number(raw) : 0;
+                    if (!(pid > 0) || !set.has(pid)) return;
+
+                    const sev = getPageSeverity(pid);
+
+                    // restart animation safely
+                    li.classList.remove('pulse-danger', 'pulse-warning', 'pulse-info');
+                    void li.offsetWidth;
+                    li.classList.add(sev === 'danger' ? 'pulse-danger' : sev === 'warning' ? 'pulse-warning' : 'pulse-info');
+
+                    // optional: also pulse warn badge if visible
+                    const badge = li.querySelector('.node-page-warn-badge');
+                    if (badge && !badge.classList.contains('d-none')) {
+                        badge.classList.remove('bg-warning', 'bg-danger', 'text-dark', 'text-white');
+                        if (sev === 'danger') badge.classList.add('bg-danger', 'text-white');
+                        else if (sev === 'warning') badge.classList.add('bg-warning', 'text-dark');
+                        else badge.classList.add('bg-info', 'text-white');
+                    }
+
+                    setTimeout(() => {
+                        li.classList.remove('pulse-danger', 'pulse-warning', 'pulse-info');
+                    }, 1300);
+                });
+            }
+
+
 
             function getShowDeletedPref() {
                 return localStorage.getItem(showDeletedKey) === 'true';
@@ -355,26 +505,79 @@
                     });
 
                     const data = await res.json().catch(() => null);
-                    if (!res.ok || !data || !data.success) return false;
+                    if (!res.ok || !data || !data.success) return null;
 
-                    pages = data.pages || [];
+                    const nextPages = data.pages || [];
+                    const nextSnap = buildPagesSnapshot(nextPages);
 
-                    // Re-render every page select, preserving current selection
-                    document.querySelectorAll('#navRoot .nav-node').forEach(li => {
-                        const sel = li.querySelector('.node-pageid');
-                        if (!sel) return;
+                    const prevSnap = lastPagesSnapshot;
+                    const changedIds = diffChangedIds(prevSnap, nextSnap);
+                    const delta = diffSnapshotCounts(prevSnap, nextSnap);
 
-                        const current = sel.value || '';
-                        sel.innerHTML = `<option value="">-- Select page --</option>${renderPageOptions(current)}`;
-                    });
+                    pages = nextPages;
+                    lastPagesSnapshot = nextSnap;
 
-                    // Recompute warnings (because the label "(Not published)" may change)
-                    refreshAllBadges();
-                    return true;
+                    if (delta.changed || delta.added || delta.removed) {
+                        document.querySelectorAll('#navRoot .nav-node').forEach(li => {
+                            const sel = li.querySelector('.node-pageid');
+                            if (!sel) return;
+
+                            const current = sel.value || '';
+                            sel.innerHTML = `<option value="">-- Select page --</option>${renderPageOptions(current)}`;
+                        });
+
+                        refreshAllBadges();
+                    }
+
+                    return { delta, changedIds };
                 } catch {
-                    return false;
+                    return null;
                 }
             }
+
+
+
+            let lastFlagsSig = '';
+            let lastPagesSig = '';
+            let lastRefreshToastAt = 0;
+
+            function buildFlagsSignature(flagsObj) {
+                const ids = Object.keys(flagsObj || {}).map(Number).filter(n => !Number.isNaN(n)).sort((a, b) => a - b);
+                // id|show|status|active|deleted
+                return ids.map(id => {
+                    const f = flagsObj[String(id)] || flagsObj[id];
+                    if (!f) return `${id}|?`;
+                    return [
+                        id,
+                        f.showInNavigation ? 1 : 0,
+                        Number(f.pageStatusId ?? -1),
+                        f.isActive ? 1 : 0,
+                        f.isDeleted ? 1 : 0
+                    ].join('|');
+                }).join(';');
+            }
+
+            function buildPagesSignature(pagesArr) {
+                const arr = Array.isArray(pagesArr) ? pagesArr : [];
+                // id|title|slug
+                const norm = arr.map(p => ({
+                    id: Number(p.id ?? p.Id ?? 0),
+                    title: String(p.title ?? p.Title ?? ''),
+                    slug: String(p.slug ?? p.Slug ?? '')
+                })).filter(x => x.id > 0)
+                  .sort((a, b) => a.id - b.id);
+
+                return norm.map(x => `${x.id}|${x.title}|${x.slug}`).join(';');
+            }
+
+            function maybeToastRefreshChanged(message) {
+                const now = Date.now();
+                if (now - lastRefreshToastAt < 6000) return;
+
+                showToast(message || 'Page data updated', 'info');
+                lastRefreshToastAt = now;
+            }
+
 
             function getSelectedPageId(li) {
                 const linkType = (li.querySelector('.node-linktype')?.value || 'page').toLowerCase();
@@ -1005,19 +1208,33 @@
                     });
 
                     const data = await res.json().catch(() => null);
-                    if (!res.ok || !data || !data.success) return false;
+                    if (!res.ok || !data || !data.success) return null;
 
-                    // Replace the in-memory flags object (mutate reference-safe)
-                    // If pageFlagsById is const, we need to mutate its keys instead of reassign.
+                    const nextFlags = data.flags || {};
+                    const nextSnap = buildFlagsSnapshot(nextFlags);
+
+                    const prevSnap = lastFlagsSnapshot;
+                    const changedIds = diffChangedIds(prevSnap, nextSnap);
+                    const delta = diffSnapshotCounts(prevSnap, nextSnap);
+
+                    // mutate const object
                     Object.keys(pageFlagsById).forEach(k => delete pageFlagsById[k]);
-                    Object.entries(data.flags || {}).forEach(([k, v]) => pageFlagsById[k] = v);
+                    Object.entries(nextFlags).forEach(([k, v]) => pageFlagsById[k] = v);
 
-                    refreshAllBadges();
-                    return true;
+                    lastFlagsSnapshot = nextSnap;
+
+                    if (delta.changed || delta.added || delta.removed) {
+                        refreshAllBadges();
+                    }
+
+                    return { delta, changedIds };
                 } catch {
-                    return false;
+                    return null;
                 }
             }
+
+
+
 
             const REFRESH_MS = 45000;
 
@@ -1031,22 +1248,35 @@
             }
 
             async function periodicRefreshTick() {
-                // Don’t refresh during save/autosave or while there are unsaved changes
                 if (isSaving || saveInFlight) return;
                 if (isDirty) return;
-
-                // Don’t refresh in background tabs
                 if (document.hidden) return;
-
-                // Don’t refresh while user is interacting (prevents dropdown re-render interruptions)
                 if (isUserInteractingWithEditor()) return;
 
-                // Refresh flags first (cheap + safe)
-                await refreshPageFlagsFromServer();
+                const flagsRes = await refreshPageFlagsFromServer();
+                const pagesRes = await refreshPageOptionsFromServer();
 
-                // Refresh page options second (can re-render dropdowns)
-                await refreshPageOptionsFromServer();
+                if (!flagsRes && !pagesRes) return;
+
+                const f = flagsRes?.delta || { changed: 0, added: 0, removed: 0 };
+                const p = pagesRes?.delta || { changed: 0, added: 0, removed: 0 };
+
+                // union of changed ids (flags + option changes)
+                const ids = Array.from(new Set([
+                    ...(flagsRes?.changedIds || []),
+                    ...(pagesRes?.changedIds || [])
+                ]));
+
+                if ((f.changed + f.added + f.removed + p.changed + p.added + p.removed) > 0) {
+                    const msg = formatRefreshToast(f, p);
+                    maybeToastRefreshChanged(msg);
+
+                    // ✅ highlight nav items that link to affected pages
+                    pulseNavNodesForPageIds(ids);
+                }
             }
+
+
 
             function startPeriodicRefresh() {
                 // Initial “quiet” refresh shortly after load (optional)
@@ -1210,6 +1440,78 @@
                 li.scrollIntoView({ behavior: 'smooth', block: 'center' });
             }
 
+            function buildFlagsSnapshot(flagsObj) {
+                const snap = {};
+                Object.entries(flagsObj || {}).forEach(([k, f]) => {
+                    const id = Number(k);
+                    if (!id) return;
+                    snap[id] = [
+                        (f?.showInNavigation ? 1 : 0),
+                        Number(f?.pageStatusId ?? -1),
+                        (f?.isActive ? 1 : 0),
+                        (f?.isDeleted ? 1 : 0)
+                    ].join('|');
+                });
+                return snap;
+            }
+
+            function diffSnapshotCounts(prev, next) {
+                // returns { changed, added, removed }
+                let changed = 0, added = 0, removed = 0;
+
+                const prevKeys = new Set(Object.keys(prev || {}));
+                const nextKeys = new Set(Object.keys(next || {}));
+
+                // added
+                nextKeys.forEach(k => { if (!prevKeys.has(k)) added++; });
+
+                // removed
+                prevKeys.forEach(k => { if (!nextKeys.has(k)) removed++; });
+
+                // changed
+                nextKeys.forEach(k => {
+                    if (prevKeys.has(k) && prev[k] !== next[k]) changed++;
+                });
+
+                return { changed, added, removed };
+            }
+
+            function buildPagesSnapshot(pagesArr) {
+                const snap = {};
+                (Array.isArray(pagesArr) ? pagesArr : []).forEach(p => {
+                    const id = Number(p.id ?? p.Id ?? 0);
+                    if (!id) return;
+                    const title = String(p.title ?? p.Title ?? '');
+                    const slug = String(p.slug ?? p.Slug ?? '');
+                    snap[id] = `${title}|${slug}`;
+                });
+                return snap;
+            }
+
+            function formatRefreshToast(flagsDelta, pagesDelta) {
+                const parts = [];
+
+                if ((flagsDelta.changed + flagsDelta.added + flagsDelta.removed) > 0) {
+                    // Most useful is "changed"
+                    const bits = [];
+                    if (flagsDelta.changed) bits.push(`${flagsDelta.changed} status changed`);
+                    if (flagsDelta.added) bits.push(`${flagsDelta.added} new`);
+                    if (flagsDelta.removed) bits.push(`${flagsDelta.removed} removed`);
+                    parts.push(`Pages: ${bits.join(', ')}`);
+                }
+
+                if ((pagesDelta.changed + pagesDelta.added + pagesDelta.removed) > 0) {
+                    const bits = [];
+                    if (pagesDelta.added) bits.push(`${pagesDelta.added} added`);
+                    if (pagesDelta.removed) bits.push(`${pagesDelta.removed} removed`);
+                    if (pagesDelta.changed) bits.push(`${pagesDelta.changed} renamed`);
+                    parts.push(`Options: ${bits.join(', ')}`);
+                }
+
+                return parts.length ? parts.join(' • ') : 'Page data updated';
+            }
+
+
             // ------------------------------------------------------------
             // Init
             // ------------------------------------------------------------
@@ -1260,6 +1562,16 @@
 
                     window.open(publicBaseUrl, '_blank');
                 });
+
+                lastFlagsSig = buildFlagsSignature(pageFlagsById);
+                lastPagesSig = buildPagesSignature(pages);
+
+                let lastFlagsSnapshot = {};   // { [id]: "show|status|active|deleted" }
+                let lastPagesSnapshot = {};   // { [id]: "title|slug" }
+
+                lastFlagsSnapshot = buildFlagsSnapshot(pageFlagsById);
+                lastPagesSnapshot = buildPagesSnapshot(pages);
+
 
                applyShowDeletedUi();
                startPeriodicRefresh();
