@@ -223,6 +223,10 @@
         border: 1px solid rgba(220,53,69,.35);
     }
 
+    .node-page-warn-badge {
+        cursor: pointer;
+    }
+
 </style>
 
 @section Scripts {
@@ -241,6 +245,64 @@
             const toastEl = document.getElementById("navToast");
 
             const showDeletedKey = `nav-show-deleted-${menuId}`;
+
+            // pageId -> lastFlagsSnapshotValue (string) that we acknowledged
+            const ackDangerByPageId = new Map();
+
+            function getFlagsSigForPage(pageId) {
+                // lastFlagsSnapshot uses string keys in our snapshot helpers
+                const key = String(pageId);
+                return (lastFlagsSnapshot && lastFlagsSnapshot[key]) ? lastFlagsSnapshot[key] : null;
+            }
+
+            function isDangerAcknowledged(pageId) {
+                const currentSig = getFlagsSigForPage(pageId);
+                if (!currentSig) return false;
+
+                const ackSig = ackDangerByPageId.get(Number(pageId));
+                return ackSig === currentSig;
+            }
+
+            function acknowledgeDanger(pageId) {
+                const currentSig = getFlagsSigForPage(pageId);
+                if (!currentSig) return;
+                ackDangerByPageId.set(Number(pageId), currentSig);
+            }
+
+            function resetAcknowledgementForPage(pageId) {
+                if (!(pageId > 0)) return;
+                ackDangerByPageId.delete(Number(pageId));
+            }
+
+            function wireBadgeAckReset() {
+                const root = document.getElementById('navRoot');
+                if (!root) return;
+
+                root.addEventListener('click', (e) => {
+                    const badge = e.target?.closest?.('.node-page-warn-badge');
+                    if (!badge) return;
+
+                    const li = badge.closest('.nav-node');
+                    if (!li) return;
+
+                    const pageId = getSelectedPageId(li);
+                    if (!pageId) return;
+
+                    // Only meaningful for danger pages (hard problems)
+                    const sev = getPageSeverity(pageId);
+                    if (sev !== 'danger') return;
+
+                    // Reset ack and refresh badge state
+                    resetAcknowledgementForPage(pageId);
+                    updatePageWarnBadge(li);
+
+                    // Optional feedback
+                    showToast('Re-alert enabled for this page', 'info');
+
+                    // Optional: pulse immediately to show it’s armed again
+                    // pulseNavNodesForPageIds([pageId]);
+                });
+            }
 
             function markAutoExpanded(parentLi) {
                 const btn = parentLi.querySelector(':scope .toggle-children');
@@ -287,19 +349,29 @@
                     const btn = parentLi.querySelector(':scope .toggle-children');
 
                     if (ul) {
-                        ul.classList.remove('d-none');
-                        localStorage.setItem(collapseKeyFor(parentLi), 'false');
+                        const wasCollapsed =
+                            ul.classList.contains('d-none') ||
+                            localStorage.getItem(collapseKeyFor(parentLi)) === 'true';
+
+                        if (wasCollapsed) {
+                            // actually expand
+                            ul.classList.remove('d-none');
+                            localStorage.setItem(collapseKeyFor(parentLi), 'false');
+
+                            if (btn) btn.textContent = '▼';
+
+                            // ✅ only indicate if state changed
+                            markAutoExpanded(parentLi);
+                        }
                     }
-                    if (btn) btn.textContent = '▼';
 
+                    // re-sync toggle visibility (children count etc.)
                     applyCollapseState(parentLi);
-
-                    // ✅ new: show indicator
-                    markAutoExpanded(parentLi);
 
                     current = parentLi;
                 }
             }
+
 
 
 
@@ -357,8 +429,16 @@
                     const sev = getPageSeverity(pid);
 
                     if (sev === 'danger') {
+                        // ✅ only pulse/expand if not acknowledged for current flags
+                        if (isDangerAcknowledged(pid)) return;
+
                         expandAncestors(li);
-                        scrollNodeIntoView(li);
+                        scrollNodeIntoView(li); // optional
+                        acknowledgeDanger(pid);
+                    }
+
+                    if (sev === 'danger' && isDangerAcknowledged(pid)) {
+                        return; // return from this node handler (inside forEach), not whole function
                     }
 
                     // restart animation safely
@@ -733,6 +813,9 @@
                 badge.classList.remove('d-none');
                 badge.textContent = '⚠';
                 badge.title = problems.join('\n');
+
+                if (hard) badge.title += '\n\nClick ⚠ to re-enable alerts for this page';
+
 
                 badge.classList.remove('bg-warning', 'bg-danger', 'text-dark', 'text-white');
                 if (hard) badge.classList.add('bg-danger', 'text-white');
@@ -1673,7 +1756,7 @@
                 lastFlagsSnapshot = buildFlagsSnapshot(pageFlagsById);
                 lastPagesSnapshot = buildPagesSnapshot(pages);
 
-
+                wireBadgeAckReset();
                applyShowDeletedUi();
                startPeriodicRefresh();
 
