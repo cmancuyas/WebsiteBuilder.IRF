@@ -188,6 +188,41 @@
         border-color: #0d6efd !important;
     }
 
+    @@keyframes caretBlink {
+        0%, 100% {
+            transform: scale(1);
+            opacity: 1;
+        }
+
+        35% {
+            transform: scale(1.18);
+            opacity: .65;
+        }
+
+        70% {
+            transform: scale(1.05);
+            opacity: .9;
+        }
+    }
+
+    .toggle-children.auto-expand-blink {
+        animation: caretBlink 900ms ease-in-out 2;
+        color: #dc3545 !important; /* bootstrap danger */
+        font-weight: 700;
+    }
+
+    .auto-expand-pill {
+        display: inline-block;
+        margin-left: 6px;
+        padding: 2px 6px;
+        border-radius: 999px;
+        font-size: 0.72rem;
+        line-height: 1.2;
+        background: rgba(220,53,69,.12);
+        color: #dc3545;
+        border: 1px solid rgba(220,53,69,.35);
+    }
+
 </style>
 
 @section Scripts {
@@ -206,6 +241,67 @@
             const toastEl = document.getElementById("navToast");
 
             const showDeletedKey = `nav-show-deleted-${menuId}`;
+
+            function markAutoExpanded(parentLi) {
+                const btn = parentLi.querySelector(':scope .toggle-children');
+                if (!btn) return;
+
+                // Blink caret
+                btn.classList.remove('auto-expand-blink');
+                void btn.offsetWidth; // restart animation
+                btn.classList.add('auto-expand-blink');
+
+                // Add pill once (next to caret)
+                let pill = parentLi.querySelector(':scope .auto-expand-pill');
+                if (!pill) {
+                    pill = document.createElement('span');
+                    pill.className = 'auto-expand-pill';
+                    pill.textContent = 'Auto-expanded';
+                    btn.insertAdjacentElement('afterend', pill);
+                }
+
+                // Cleanup after 2.2s
+                setTimeout(() => {
+                    btn.classList.remove('auto-expand-blink');
+                    pill?.remove();
+                }, 2200);
+            }
+
+
+            function scrollNodeIntoView(li) {
+                // Don’t yank the user around if they are interacting
+                if (isUserInteractingWithEditor()) return;
+
+                li.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+
+
+            function expandAncestors(li) {
+                let current = li;
+
+                while (true) {
+                    const parentLi = current.closest('ul')?.closest('li.nav-node');
+                    if (!parentLi) break;
+
+                    const ul = parentLi.querySelector(':scope > .nav-children');
+                    const btn = parentLi.querySelector(':scope .toggle-children');
+
+                    if (ul) {
+                        ul.classList.remove('d-none');
+                        localStorage.setItem(collapseKeyFor(parentLi), 'false');
+                    }
+                    if (btn) btn.textContent = '▼';
+
+                    applyCollapseState(parentLi);
+
+                    // ✅ new: show indicator
+                    markAutoExpanded(parentLi);
+
+                    current = parentLi;
+                }
+            }
+
+
 
             function getPageSeverity(pageId) {
                 const f = pageFlagsById[String(pageId)] || pageFlagsById[pageId];
@@ -259,6 +355,11 @@
                     if (!(pid > 0) || !set.has(pid)) return;
 
                     const sev = getPageSeverity(pid);
+
+                    if (sev === 'danger') {
+                        expandAncestors(li);
+                        scrollNodeIntoView(li);
+                    }
 
                     // restart animation safely
                     li.classList.remove('pulse-danger', 'pulse-warning', 'pulse-info');
