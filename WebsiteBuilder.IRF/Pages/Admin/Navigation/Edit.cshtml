@@ -1,4 +1,6 @@
 ﻿@page
+@using System.Text.Json
+@using WebsiteBuilder.Models.Constants
 @model WebsiteBuilder.IRF.Pages.Admin.Navigation.EditModel
 
 @{
@@ -16,18 +18,14 @@
     </div>
 
     <div class="d-flex gap-2">
-        <a asp-page="/Admin/Navigation/Index" class="btn btn-outline-secondary">
-            Back
-        </a>
-        <button id="addRootBtn" type="button" class="btn btn-outline-primary">
-            Add Item
+        <a asp-page="/Admin/Navigation/Index" class="btn btn-outline-secondary">Back</a>
+        <button id="addRootBtn" type="button" class="btn btn-outline-primary">Add Item</button>
+        <button id="saveBtn" type="button" class="btn btn-primary">Save Changes</button>
+        <button id="toggleDeletedBtn" type="button" class="btn btn-outline-danger">
+            Show deleted
         </button>
-        <button id="saveBtn" type="button" class="btn btn-primary">
-            Save Changes
-        </button>
-        <button id="saveViewBtn" type="button" class="btn btn-outline-success">
-            Save &amp; View Site
-        </button>
+
+        <button id="saveViewBtn" type="button" class="btn btn-outline-success">Save &amp; View Site</button>
     </div>
 </div>
 
@@ -46,7 +44,6 @@
                 <div id="statusMsg" class="alert alert-info d-none"></div>
 
                 <ul id="navRoot" class="nav-tree list-unstyled mb-0">
-                    @* Server renders initial tree *@
                     @foreach (var node in Model.Tree)
                     {
                         @Html.Partial("_NavNode", node)
@@ -58,13 +55,9 @@
 
     <div class="col-lg-4">
         <div class="card">
-            <div class="card-header">
-                <strong>Linking</strong>
-            </div>
+            <div class="card-header"><strong>Linking</strong></div>
             <div class="card-body">
-                <p class="text-muted mb-2">
-                    Each menu item can link to either:
-                </p>
+                <p class="text-muted mb-2">Each menu item can link to either:</p>
                 <ul class="text-muted mb-0">
                     <li>Internal page (PageId)</li>
                     <li>External URL (Url)</li>
@@ -78,144 +71,275 @@
     </div>
 </div>
 
-@* Non-blocking save toast *@
 <div id="navToast"
      class="position-fixed bottom-0 end-0 m-3 px-3 py-2 rounded shadow-sm d-none"
      style="background:#222;color:#fff;z-index:1050;font-size:0.875rem;max-width:360px;">
 </div>
+
 <style>
     .node-visibility-badge {
         font-weight: 600;
     }
+
+    .nav-tree .node-row {
+        background: #fff;
+    }
+
+    .nav-node {
+        list-style: none;
+    }
+
+    .drag-handle {
+        width: 20px;
+        text-align: center;
+    }
+
+    .toggle-children {
+        width: 28px;
+        text-align: center;
+    }
+
+    .nav-node.is-deleted > .node-row {
+        opacity: .55;
+        filter: grayscale(0.15);
+    }
+
+    .nav-node.is-deleted .drag-handle,
+    .nav-node.is-deleted .toggle-children {
+        pointer-events: none;
+        opacity: .4;
+    }
+
+    .nav-node.deleted-hidden {
+        display: none !important;
+    }
+
+    @@keyframes navPulse {
+        0% {
+            box-shadow: 0 0 0 0 rgba(255,193,7,.65);
+        }
+
+        70% {
+            box-shadow: 0 0 0 8px rgba(255,193,7,0);
+        }
+
+        100% {
+            box-shadow: 0 0 0 0 rgba(255,193,7,0);
+        }
+    }
+
+    .nav-node.pulse-update > .node-row {
+        animation: navPulse 1.2s ease-out 1;
+        border-color: #ffc107 !important;
+    }
+
+    @@keyframes navPulseWarning {
+        0% {
+            box-shadow: 0 0 0 0 rgba(255,193,7,.65);
+        }
+
+        70% {
+            box-shadow: 0 0 0 8px rgba(255,193,7,0);
+        }
+
+        100% {
+            box-shadow: 0 0 0 0 rgba(255,193,7,0);
+        }
+    }
+    @@keyframes navPulseDanger {
+        0% {
+            box-shadow: 0 0 0 0 rgba(220,53,69,.55);
+        }
+
+        70% {
+            box-shadow: 0 0 0 8px rgba(220,53,69,0);
+        }
+
+        100% {
+            box-shadow: 0 0 0 0 rgba(220,53,69,0);
+        }
+    }
+    @@keyframes navPulseInfo {
+        0% {
+            box-shadow: 0 0 0 0 rgba(13,110,253,.45);
+        }
+
+        70% {
+            box-shadow: 0 0 0 8px rgba(13,110,253,0);
+        }
+
+        100% {
+            box-shadow: 0 0 0 0 rgba(13,110,253,0);
+        }
+    }
+
+    .nav-node.pulse-warning > .node-row {
+        animation: navPulseWarning 1.2s ease-out 1;
+        border-color: #ffc107 !important;
+    }
+
+    .nav-node.pulse-danger > .node-row {
+        animation: navPulseDanger 1.2s ease-out 1;
+        border-color: #dc3545 !important;
+    }
+
+    .nav-node.pulse-info > .node-row {
+        animation: navPulseInfo 1.2s ease-out 1;
+        border-color: #0d6efd !important;
+    }
+
 </style>
 
 @section Scripts {
-    @* SortableJS (CDN) *@
-
     <script src="~/lib/jquery-sortablejs/jquery-sortable.min.js"></script>
 
     <script>
         (function () {
-
             let isDirty = false;
             let isSaving = false;
             let lastSavedAt = new Date();
 
-            function updateSaveButtonUi() {
-                const btn = document.getElementById('saveBtn');
-                if (!btn) return;
-
-                // Enable only when dirty AND not saving
-                btn.disabled = !isDirty || isSaving;
-
-                // Keep button color consistent; use warning only when dirty
-                btn.classList.toggle('btn-warning', isDirty && !isSaving);
-                btn.classList.toggle('btn-primary', !isDirty && !isSaving);
-
-                if (isSaving) {
-                    btn.textContent = 'Saving…';
-                    return;
-                }
-
-                if (!isDirty && lastSavedAt) {
-                    btn.textContent = 'Saved ✓';
-                    return;
-                }
-
-                btn.textContent = isDirty ? 'Save Changes*' : 'Save Changes';
-            }
-
-            function setDirty(on = true) {
-                isDirty = !!on;
-
-                // If user edits after a successful save, revert “Saved ✓” back to normal
-                if (isDirty) lastSavedAt = null;
-
-                updateSaveButtonUi();
-            }
-
-
-            window.addEventListener('beforeunload', (e) => {
-                if (!isDirty) return;
-                e.preventDefault();
-                e.returnValue = '';
-            });
-
-            document.addEventListener('DOMContentLoaded', () => {
-                const root = document.getElementById('navRoot');
-
-                root?.addEventListener('input', (e) => {
-                    setDirty(true);
-                    const li = e.target?.closest?.('.nav-node');
-                    if (li) updateVisibilityBadge(li);
-                }, true);
-
-                root?.addEventListener('change', (e) => {
-                    setDirty(true);
-                    const li = e.target?.closest?.('.nav-node');
-                    if (li) updateVisibilityBadge(li);
-                }, true);
-
-
-                document.getElementById('addRootBtn')?.addEventListener('click', () => setDirty(true));
-
-                refreshAllBadges();
-
-            });
-
-            document.addEventListener("change", function (e) {
-                const sel = e.target;
-                if (!sel.classList.contains("node-linktype")) return;
-
-                const li = sel.closest(".nav-node");
-                if (!li) return;
-
-                const linkType = sel.value || "page";
-
-                const pageWrap = li.querySelector(".node-pagewrap");
-                const urlWrap = li.querySelector(".node-urlwrap");
-
-                const pageSel = li.querySelector(".node-pageid");
-                const urlInput = li.querySelector(".node-url");
-
-                if (linkType === "page") {
-                    // show page, hide url
-                    pageWrap?.classList.remove("d-none");
-                    urlWrap?.classList.add("d-none");
-
-                    // clear url to prevent stale validation/payload
-                    if (urlInput) urlInput.value = "";
-                } else {
-                    // show url, hide page
-                    urlWrap?.classList.remove("d-none");
-                    pageWrap?.classList.add("d-none");
-
-                    // clear page selection to prevent stale payload
-                    if (pageSel) pageSel.value = "";
-                }
-
-                setDirty(true);
-                scheduleAutosave?.(600); // only if you have scheduleAutosave from Phase 4.3
-            });
-
-
             const menuId = @Model.MenuId;
             const sortableGroupName = 'nav-menu-' + menuId;
+            const publicBaseUrl = @Html.Raw(JsonSerializer.Serialize(Model.PublicBaseUrl, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
 
-            // ---------- UI Feedback ----------
             const toastEl = document.getElementById("navToast");
+
+            const showDeletedKey = `nav-show-deleted-${menuId}`;
+
+            function getPageSeverity(pageId) {
+                const f = pageFlagsById[String(pageId)] || pageFlagsById[pageId];
+                if (!f) return 'info';
+
+                const isDeleted = !!f.isDeleted;
+                const isActive = f.isActive !== false; // default true if missing
+                const isPublished = typeof f.pageStatusId === 'number'
+                    ? (f.pageStatusId === PAGE_STATUS_PUBLISHED)
+                    : true;
+
+                const showInNav = f.showInNavigation !== false; // default true if missing
+
+                const hard = isDeleted || !isActive || !isPublished;
+                if (hard) return 'danger';
+
+                if (!showInNav) return 'warning';
+
+                return 'info';
+            }
+
+
+            function diffChangedIds(prevSnap, nextSnap) {
+                const changedIds = [];
+                const prevKeys = new Set(Object.keys(prevSnap || {}));
+                const nextKeys = new Set(Object.keys(nextSnap || {}));
+
+                // ids that are new or removed aren’t directly linkable, but include anyway
+                nextKeys.forEach(k => { if (!prevKeys.has(k)) changedIds.push(Number(k)); });
+                prevKeys.forEach(k => { if (!nextKeys.has(k)) changedIds.push(Number(k)); });
+
+                // ids that changed
+                nextKeys.forEach(k => {
+                    if (prevKeys.has(k) && prevSnap[k] !== nextSnap[k]) changedIds.push(Number(k));
+                });
+
+                return Array.from(new Set(changedIds.filter(n => !Number.isNaN(n) && n > 0)));
+            }
+
+            function pulseNavNodesForPageIds(pageIds) {
+                if (!pageIds || pageIds.length === 0) return;
+
+                const set = new Set(pageIds.map(Number));
+
+                document.querySelectorAll('#navRoot .nav-node').forEach(li => {
+                    const linkType = (li.querySelector('.node-linktype')?.value || 'page').toLowerCase();
+                    if (linkType !== 'page') return;
+
+                    const raw = li.querySelector('.node-pageid')?.value || '';
+                    const pid = raw ? Number(raw) : 0;
+                    if (!(pid > 0) || !set.has(pid)) return;
+
+                    const sev = getPageSeverity(pid);
+
+                    // restart animation safely
+                    li.classList.remove('pulse-danger', 'pulse-warning', 'pulse-info');
+                    void li.offsetWidth;
+                    li.classList.add(sev === 'danger' ? 'pulse-danger' : sev === 'warning' ? 'pulse-warning' : 'pulse-info');
+
+                    // optional: also pulse warn badge if visible
+                    const badge = li.querySelector('.node-page-warn-badge');
+                    if (badge && !badge.classList.contains('d-none')) {
+                        badge.classList.remove('bg-warning', 'bg-danger', 'text-dark', 'text-white');
+                        if (sev === 'danger') badge.classList.add('bg-danger', 'text-white');
+                        else if (sev === 'warning') badge.classList.add('bg-warning', 'text-dark');
+                        else badge.classList.add('bg-info', 'text-white');
+                    }
+
+                    setTimeout(() => {
+                        li.classList.remove('pulse-danger', 'pulse-warning', 'pulse-info');
+                    }, 1300);
+                });
+            }
+
+
+
+            function getShowDeletedPref() {
+                return localStorage.getItem(showDeletedKey) === 'true';
+            }
+
+            function setShowDeletedPref(val) {
+                localStorage.setItem(showDeletedKey, val ? 'true' : 'false');
+            }
+
+            function applyShowDeletedUi() {
+                const showDeleted = getShowDeletedPref();
+
+                document.querySelectorAll('#navRoot .nav-node').forEach(li => {
+                    const isDel = li.dataset.deleted === 'true';
+                    li.classList.toggle('deleted-hidden', isDel && !showDeleted);
+                });
+
+                // Update button UI
+                const btn = document.getElementById('toggleDeletedBtn');
+                if (btn) {
+                    if (showDeleted) {
+                        btn.textContent = 'Hide deleted';
+                        btn.classList.remove('btn-outline-danger');
+                        btn.classList.add('btn-danger');
+                    } else {
+                        btn.textContent = 'Show deleted';
+                        btn.classList.remove('btn-danger');
+                        btn.classList.add('btn-outline-danger');
+                    }
+                }
+
+                // Recompute toggles + sort badges since visibility changed
+                refreshAllToggles();
+                refreshAllBadges();
+                if (typeof refreshSortBadges === 'function') refreshSortBadges();
+            }
+
 
             function showToast(text, state) {
                 if (!toastEl) return;
 
                 toastEl.textContent = text;
-                toastEl.classList.remove("d-none", "bg-success", "bg-danger", "bg-secondary");
+                toastEl.classList.remove("d-none", "bg-success", "bg-danger", "bg-secondary", "bg-info");
 
                 if (state === "ok") toastEl.classList.add("bg-success");
                 else if (state === "error") toastEl.classList.add("bg-danger");
+                else if (state === "info") toastEl.classList.add("bg-info");
                 else toastEl.classList.add("bg-secondary");
 
                 setTimeout(() => toastEl.classList.add("d-none"), 1400);
+            }
+
+            function showMsg(text, kind) {
+                const box = document.getElementById('statusMsg');
+                if (!box) return;
+
+                box.classList.remove('d-none', 'alert-info', 'alert-success', 'alert-danger');
+                box.classList.add(kind === 'success' ? 'alert-success' : kind === 'error' ? 'alert-danger' : 'alert-info');
+                box.textContent = text;
             }
 
             function getToken() {
@@ -223,15 +347,24 @@
                 return el ? el.value : null;
             }
 
-            function showMsg(text, kind) {
-                // Keep your existing inline alert for detailed errors,
-                // but prefer toast for routine save UX.
-                const box = document.getElementById('statusMsg');
-                if (!box) return;
+            function updateSaveButtonUi() {
+                const btn = document.getElementById('saveBtn');
+                if (!btn) return;
 
-                box.classList.remove('d-none', 'alert-info', 'alert-success', 'alert-danger');
-                box.classList.add(kind === 'success' ? 'alert-success' : kind === 'error' ? 'alert-danger' : 'alert-info');
-                box.textContent = text;
+                btn.disabled = !isDirty || isSaving;
+                btn.classList.toggle('btn-warning', isDirty && !isSaving);
+                btn.classList.toggle('btn-primary', !isDirty && !isSaving);
+
+                if (isSaving) { btn.textContent = 'Saving…'; return; }
+                if (!isDirty && lastSavedAt) { btn.textContent = 'Saved ✓'; return; }
+
+                btn.textContent = isDirty ? 'Save Changes*' : 'Save Changes';
+            }
+
+            function setDirty(on = true) {
+                isDirty = !!on;
+                if (isDirty) lastSavedAt = null;
+                updateSaveButtonUi();
             }
 
             function debounce(fn, ms) {
@@ -242,12 +375,110 @@
                 };
             }
 
-            // ---------- ID + Node creation ----------
-            function uniqueTempId() {
-                // negative IDs for new client-side items
-                return -Math.floor(Math.random() * 1000000000) - 1;
+            // ------------------------------------------------------------
+            // URL + validation helpers
+            // ------------------------------------------------------------
+            function normalizeUrlInput(u) { return (u || '').trim(); }
+
+            function isValidUrlForNav(u) {
+                if (!u) return false;
+                return u.startsWith('/') || u.startsWith('http://') || u.startsWith('https://');
+            }
+            function getPageFlags(pageId) {
+                if (!pageId || pageId <= 0) return null;
+                return pageFlagsById[String(pageId)] || pageFlagsById[pageId] || null;
             }
 
+            function validatePayload(items) {
+                const errors = [];
+
+                items.forEach((x, i) => {
+                    const row = i + 1;
+                    if (x.isDeleted === true) return;
+
+                    const label = (x.label || '').trim();
+                    if (!label) {
+                        errors.push({ index: i, message: `Row ${row}: Label is required.` });
+                        return;
+                    }
+
+                    const linkType = (x.linkType || 'page').toLowerCase();
+                    const pageId = Number(x.pageId || 0);
+                    const url = normalizeUrlInput(x.url);
+
+                    if (linkType === 'page') {
+                        if (!(pageId > 0)) {
+                            errors.push({ index: i, message: `Row ${row} (“${label}”): Please select an internal page.` });
+                            return;
+                        }
+
+                        // block save when selected page is deleted/inactive/not published
+                        const flags = getPageFlags(pageId);
+                        if (!flags) {
+                            errors.push({ index: i, message: `Row ${row} (“${label}”): Selected page is unavailable. Choose another page or use External URL.` });
+                            return;
+                        }
+
+                        if (flags.isDeleted) {
+                            errors.push({ index: i, message: `Row ${row} (“${label}”): Selected page is deleted. Choose another page or use External URL.` });
+                            return;
+                        }
+
+                        if (flags.isActive === false) {
+                            errors.push({ index: i, message: `Row ${row} (“${label}”): Selected page is inactive. Choose another page or use External URL.` });
+                            return;
+                        }
+
+                        if (typeof flags.pageStatusId === 'number' && flags.pageStatusId !== PAGE_STATUS_PUBLISHED) {
+                            errors.push({ index: i, message: `Row ${row} (“${label}”): Selected page is not published. Choose another page or use External URL.` });
+                            return;
+                        }
+
+                        // showInNavigation=false is warning-only (no blocking)
+                        return;
+                    }
+
+                    if (linkType === 'url') {
+                        if (!url) {
+                            errors.push({ index: i, message: `Row ${row} (“${label}”): URL is required when Link Type is External URL.` });
+                            return;
+                        }
+                        if (!isValidUrlForNav(url)) {
+                            errors.push({ index: i, message: `Row ${row} (“${label}”): URL must start with “/” or “http(s)://”.` });
+                            return;
+                        }
+                        return;
+                    }
+
+                    errors.push({ index: i, message: `Row ${row} (“${label}”): Invalid Link Type.` });
+                });
+
+                return errors;
+            }
+
+
+            function showValidationErrors(errors, payloadItems) {
+                if (!errors || errors.length === 0) return;
+
+                // show summary
+                alert("Please fix the following before saving:\n\n" + errors.map(e => `• ${e.message}`).join('\n'));
+
+                // focus first error
+                const first = errors[0];
+                const li = document.querySelectorAll('#navRoot .nav-node')[first.index];
+                if (!li) return;
+
+                expandNodeAndAncestors(li);
+                scrollToNode(li);
+
+                const item = payloadItems?.[first.index];
+                if (item) focusFirstErrorField(li, item);
+            }
+
+
+            // ------------------------------------------------------------
+            // Pages JSON + flags JSON
+            // ------------------------------------------------------------
             function escapeHtml(s) {
                 return String(s)
                     .replaceAll('&', '&amp;')
@@ -257,7 +488,158 @@
                     .replaceAll("'", '&#039;');
             }
 
-            const pages = @Html.Raw(Model.PagesJson);
+            let pages = @Html.Raw(Model.PagesJson);
+
+            // ✅ inject page flags (already camelCased by JsonSerializerDefaults.Web)
+            const pageFlagsById = @Html.Raw(Model.PageFlagsJson ?? "{}");
+
+            // ✅ published status id (int)
+            const PUBLISHED_STATUS_ID = Number(@PageStatusIds.Published);
+
+
+            async function refreshPageOptionsFromServer() {
+                try {
+                    const res = await fetch(`?handler=PageOptions&menuId=${menuId}`, {
+                        method: 'GET',
+                        headers: { 'Accept': 'application/json' }
+                    });
+
+                    const data = await res.json().catch(() => null);
+                    if (!res.ok || !data || !data.success) return null;
+
+                    const nextPages = data.pages || [];
+                    const nextSnap = buildPagesSnapshot(nextPages);
+
+                    const prevSnap = lastPagesSnapshot;
+                    const changedIds = diffChangedIds(prevSnap, nextSnap);
+                    const delta = diffSnapshotCounts(prevSnap, nextSnap);
+
+                    pages = nextPages;
+                    lastPagesSnapshot = nextSnap;
+
+                    if (delta.changed || delta.added || delta.removed) {
+                        document.querySelectorAll('#navRoot .nav-node').forEach(li => {
+                            const sel = li.querySelector('.node-pageid');
+                            if (!sel) return;
+
+                            const current = sel.value || '';
+                            sel.innerHTML = `<option value="">-- Select page --</option>${renderPageOptions(current)}`;
+                        });
+
+                        refreshAllBadges();
+                    }
+
+                    return { delta, changedIds };
+                } catch {
+                    return null;
+                }
+            }
+
+
+
+            let lastFlagsSig = '';
+            let lastPagesSig = '';
+            let lastRefreshToastAt = 0;
+
+            function buildFlagsSignature(flagsObj) {
+                const ids = Object.keys(flagsObj || {}).map(Number).filter(n => !Number.isNaN(n)).sort((a, b) => a - b);
+                // id|show|status|active|deleted
+                return ids.map(id => {
+                    const f = flagsObj[String(id)] || flagsObj[id];
+                    if (!f) return `${id}|?`;
+                    return [
+                        id,
+                        f.showInNavigation ? 1 : 0,
+                        Number(f.pageStatusId ?? -1),
+                        f.isActive ? 1 : 0,
+                        f.isDeleted ? 1 : 0
+                    ].join('|');
+                }).join(';');
+            }
+
+            function buildPagesSignature(pagesArr) {
+                const arr = Array.isArray(pagesArr) ? pagesArr : [];
+                // id|title|slug
+                const norm = arr.map(p => ({
+                    id: Number(p.id ?? p.Id ?? 0),
+                    title: String(p.title ?? p.Title ?? ''),
+                    slug: String(p.slug ?? p.Slug ?? '')
+                })).filter(x => x.id > 0)
+                  .sort((a, b) => a.id - b.id);
+
+                return norm.map(x => `${x.id}|${x.title}|${x.slug}`).join(';');
+            }
+
+            function maybeToastRefreshChanged(message) {
+                const now = Date.now();
+                if (now - lastRefreshToastAt < 6000) return;
+
+                showToast(message || 'Page data updated', 'info');
+                lastRefreshToastAt = now;
+            }
+
+
+            function getSelectedPageId(li) {
+                const linkType = (li.querySelector('.node-linktype')?.value || 'page').toLowerCase();
+                if (linkType !== 'page') return null;
+
+                const raw = li.querySelector('.node-pageid')?.value || '';
+                const id = raw ? Number(raw) : null;
+                return (id && id > 0) ? id : null;
+            }
+
+            function updatePageWarnBadge(li) {
+                const badge = li.querySelector('.node-page-warn-badge');
+                if (!badge) return;
+
+                const linkType = (li.querySelector('.node-linktype')?.value || 'page').toLowerCase();
+                const pageId = getSelectedPageId(li);
+
+                // show only for internal page links with a selected page
+                if (linkType !== 'page' || !pageId) {
+                    badge.classList.add('d-none');
+                    badge.textContent = '';
+                    badge.title = '';
+                    return;
+                }
+
+                const flags = pageFlagsById[String(pageId)] || pageFlagsById[pageId];
+                if (!flags) {
+                    badge.classList.add('d-none');
+                    badge.textContent = '';
+                    badge.title = '';
+                    return;
+                }
+
+                const problems = [];
+
+                if (flags.isDeleted) problems.push('Page is deleted');
+                if (flags.isActive === false) problems.push('Page is inactive');
+                if (typeof flags.pageStatusId === 'number' && flags.pageStatusId !== PAGE_STATUS_PUBLISHED) problems.push('Page is not published');
+                if (flags.showInNavigation === false) problems.push('Page.ShowInNavigation is false');
+
+                if (problems.length === 0) {
+                    badge.classList.add('d-none');
+                    badge.textContent = '';
+                    badge.title = '';
+                    return;
+                }
+
+                const hard = problems.some(p =>
+                    p.includes('deleted') || p.includes('inactive') || p.includes('not published')
+                );
+
+                badge.classList.remove('d-none');
+                badge.textContent = '⚠';
+                badge.title = problems.join('\n');
+
+                badge.classList.remove('bg-warning', 'bg-danger', 'text-dark', 'text-white');
+                if (hard) badge.classList.add('bg-danger', 'text-white');
+                else badge.classList.add('bg-warning', 'text-dark');
+            }
+
+
+
 
             function renderPageOptions(selectedId) {
                 const sel = selectedId ? String(selectedId) : '';
@@ -265,38 +647,33 @@
                     const id = p.id ?? p.Id;
                     const title = p.title ?? p.Title ?? '';
                     const slug = p.slug ?? p.Slug ?? '';
-
                     if (!id) return '';
 
                     const selected = sel && sel === String(id) ? 'selected' : '';
-                    return `<option value="${id}" ${selected}>
-                        ${escapeHtml(title)} (${escapeHtml(slug)})
-                    </option>`;
+                    return `<option value="${id}" ${selected}>${escapeHtml(title)} (${escapeHtml(slug)})</option>`;
                 }).join('');
             }
 
-
+            // ------------------------------------------------------------
+            // Collapse logic
+            // ------------------------------------------------------------
             function hasChildren(li) {
                 const ul = li.querySelector(':scope > .nav-children');
                 if (!ul) return false;
                 return Array.from(ul.children).some(x => x.classList && x.classList.contains('nav-node') && x.dataset.deleted !== 'true');
             }
 
-            function collapseKeyFor(li) {
-                return `nav-collapse-${menuId}-${li.dataset.id}`;
-            }
+            function collapseKeyFor(li) { return `nav-collapse-${menuId}-${li.dataset.id}`; }
 
             function applyCollapseState(li) {
                 const ul = li.querySelector(':scope > .nav-children');
                 const btn = li.querySelector(':scope .toggle-children');
                 if (!ul || !btn) return;
 
-                // Only show toggle when there are children
                 const any = hasChildren(li);
                 btn.classList.toggle('d-none', !any);
 
-                const key = collapseKeyFor(li);
-                const collapsed = localStorage.getItem(key) === 'true';
+                const collapsed = localStorage.getItem(collapseKeyFor(li)) === 'true';
 
                 if (any && collapsed) {
                     ul.classList.add('d-none');
@@ -307,21 +684,98 @@
                 }
             }
 
-            function initNewNode(li) {
-                const linkSel = li.querySelector(".node-linktype");
-                const pageSel = li.querySelector(".node-pageid");
-                const urlInput = li.querySelector(".node-url");
-
-                // default to Internal Page
-                if (linkSel) linkSel.value = "page";
-                if (pageSel) pageSel.value = "";
-                if (urlInput) urlInput.value = "";
-
-                // ensure correct visibility
-                li.querySelector(".node-pagewrap")?.classList.remove("d-none");
-                li.querySelector(".node-urlwrap")?.classList.add("d-none");
+            function refreshAllToggles() {
+                document.querySelectorAll('.nav-node').forEach(applyCollapseState);
             }
 
+            // ------------------------------------------------------------
+            // Visibility badge logic
+            // ------------------------------------------------------------
+            function normalizeRolesCsv(s) {
+                return (s || '')
+                    .split(',')
+                    .map(x => x.trim())
+                    .filter(Boolean)
+                    .join(',');
+            }
+
+            function computeVisibilityStatus(li) {
+                const isDeleted = li?.dataset?.deleted === 'true';
+                if (isDeleted) return { text: 'Deleted', cls: 'bg-danger', title: 'Marked for deletion' };
+
+                const isActive = !!li.querySelector('.node-active')?.checked;
+                const isPublished = !!li.querySelector('.node-published')?.checked;
+                const rolesRaw = li.querySelector('.node-roles')?.value || '';
+                const roles = normalizeRolesCsv(rolesRaw);
+
+                if (!isActive) return { text: 'Inactive', cls: 'bg-secondary', title: 'Hidden (Inactive)' };
+                if (!isPublished) return { text: 'Draft', cls: 'bg-warning text-dark', title: 'Not published (won’t show on tenant site)' };
+                if (roles.length > 0) return { text: 'Restricted', cls: 'bg-info text-dark', title: `Visible only to roles: ${roles}` };
+
+                return { text: 'Live', cls: 'bg-success', title: 'Visible to everyone on tenant site' };
+            }
+
+            function updateVisibilityBadge(li) {
+                const badge = li.querySelector('.node-visibility-badge');
+                if (!badge) return;
+
+                const s = computeVisibilityStatus(li);
+                badge.className = 'badge node-visibility-badge ' + s.cls;
+                badge.textContent = s.text;
+                badge.title = s.title;
+            }
+
+            function refreshAllBadges() {
+                document.querySelectorAll('#navRoot .nav-node').forEach(li => {
+                    updateVisibilityBadge(li);
+                    updatePageWarnBadge(li);
+                });
+            }
+            function refreshSortBadges(rootUl = document.getElementById('navRoot')) {
+                if (!rootUl) return;
+
+                function updateUl(ul) {
+                    const nodes = Array.from(ul.children)
+                        .filter(x => x.classList && x.classList.contains('nav-node'));
+
+                    // Only count non-deleted nodes for S1..Sn
+                    let n = 0;
+
+                    nodes.forEach(li => {
+                        const badge = li.querySelector(':scope .sort-badge');
+                        if (!badge) return;
+
+                        const isDel = li.dataset.deleted === 'true';
+
+                        if (isDel) {
+                            // Deleted nodes don’t need an order; show a neutral marker
+                            badge.textContent = 'Del';
+                            badge.classList.remove('bg-secondary');
+                            badge.classList.add('bg-danger');
+                            badge.title = 'Marked for deletion';
+                            return;
+                        }
+
+                        n += 1;
+                        badge.textContent = `S${n}`;
+                        badge.classList.remove('bg-danger');
+                        badge.classList.add('bg-secondary');
+                        badge.title = `Sort order: ${n}`;
+                    });
+
+                    // Recurse into child lists
+                    nodes.forEach(li => {
+                        const childUl = li.querySelector(':scope > .nav-children');
+                        if (childUl) updateUl(childUl);
+                    });
+                }
+
+                updateUl(rootUl);
+            }
+
+            // ------------------------------------------------------------
+            // LinkType rules
+            // ------------------------------------------------------------
             function setLinkType(li, type) {
                 const linkType = li.querySelector('.node-linktype');
                 const pageWrap = li.querySelector('.node-pagewrap');
@@ -330,23 +784,21 @@
                 const pageSelect = li.querySelector('.node-pageid');
                 const urlInput = li.querySelector('.node-url');
 
-                linkType.value = type;
+                if (linkType) linkType.value = type;
 
                 if (type === 'page') {
-                    pageWrap.classList.remove('d-none');
-                    urlWrap.classList.add('d-none');
+                    pageWrap?.classList.remove('d-none');
+                    urlWrap?.classList.add('d-none');
 
-                    // UX guardrails
                     if (urlInput) {
                         urlInput.value = '';
                         urlInput.disabled = true;
                     }
                     if (pageSelect) pageSelect.disabled = false;
                 } else {
-                    urlWrap.classList.remove('d-none');
-                    pageWrap.classList.add('d-none');
+                    urlWrap?.classList.remove('d-none');
+                    pageWrap?.classList.add('d-none');
 
-                    // UX guardrails
                     if (pageSelect) {
                         pageSelect.value = '';
                         pageSelect.disabled = true;
@@ -356,22 +808,16 @@
             }
 
             function normalizeLinkInputs(li) {
-                const pageSelect = li.querySelector('.node-pageid');
-                const urlInput = li.querySelector('.node-url');
+                const urlVal = (li.querySelector('.node-url')?.value || '').trim();
+                if (urlVal) setLinkType(li, 'url');  // url wins
+                else setLinkType(li, 'page');
+            }
 
-                const pageIdRaw = pageSelect?.value || '';
-                const urlVal = (urlInput?.value || '').trim();
-
-                if (pageIdRaw) {
-                    // page wins
-                    setLinkType(li, 'page');
-                } else if (urlVal) {
-                    // url wins
-                    setLinkType(li, 'url');
-                } else {
-                    // default
-                    setLinkType(li, 'page');
-                }
+            // ------------------------------------------------------------
+            // Node creation
+            // ------------------------------------------------------------
+            function uniqueTempId() {
+                return -Math.floor(Math.random() * 1000000000) - 1;
             }
 
             function createNodeLi(dto) {
@@ -379,6 +825,7 @@
                 li.className = 'nav-node mb-2';
                 li.dataset.id = String(dto.id);
 
+                // ✅ includes warn badge element
                 li.innerHTML = `
                     <div class="node-row border rounded p-2 bg-white">
                         <div class="d-flex align-items-start gap-2">
@@ -393,8 +840,14 @@
                                 ▼
                             </button>
 
+                            <span class="badge bg-warning text-dark d-none node-page-warn-badge" title=""></span>
+
                             <div class="flex-grow-1">
                                 <div class="row g-2">
+                                    <div class="col-12">
+                                        <span class="badge node-visibility-badge bg-secondary" title=""></span>
+                                    </div>
+
                                     <div class="col-12">
                                         <label class="form-label mb-1 small">Label</label>
                                         <input class="form-control form-control-sm node-label" value="${escapeHtml(dto.label || '')}" maxlength="200" />
@@ -421,7 +874,12 @@
                                         <input class="form-control form-control-sm node-url" value="${escapeHtml(dto.url || '')}" maxlength="500" placeholder="https://..." />
                                     </div>
 
-                                    <div class="col-12 d-flex gap-3 align-items-center">
+                                    <div class="col-12">
+                                        <label class="form-label mb-1 small">Allowed Roles (CSV)</label>
+                                        <input class="form-control form-control-sm node-roles" value="${escapeHtml(dto.allowedRolesCsv || '')}" placeholder="e.g. Admin,Editor" />
+                                    </div>
+
+                                    <div class="col-12 d-flex flex-wrap gap-3 align-items-center">
                                         <div class="form-check form-switch">
                                             <input class="form-check-input node-newtab" type="checkbox" ${dto.openInNewTab ? 'checked' : ''}>
                                             <label class="form-check-label small">Open in new tab</label>
@@ -431,6 +889,11 @@
                                             <input class="form-check-input node-active" type="checkbox" ${dto.isActive ? 'checked' : ''}>
                                             <label class="form-check-label small">Active</label>
                                         </div>
+
+                                        <div class="form-check form-switch">
+                                            <input class="form-check-input node-published" type="checkbox" ${dto.isPublished ? 'checked' : ''}>
+                                            <label class="form-check-label small">Published</label>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -438,6 +901,8 @@
                             <div class="d-flex flex-column gap-2">
                                 <button type="button" class="btn btn-sm btn-outline-secondary add-child">Add Child</button>
                                 <button type="button" class="btn btn-sm btn-outline-danger delete-node">Delete</button>
+                                <button type="button" class="btn btn-sm btn-outline-success restore-node d-none">Restore</button>
+
                             </div>
                         </div>
                     </div>
@@ -448,39 +913,26 @@
                 wireNodeUi(li);
                 initSortable(li.querySelector('.nav-children'));
 
-                // --- init link type + visibility ---
                 const initialType = (dto.linkType === 'url') ? 'url' : 'page';
                 setLinkType(li, initialType);
+                normalizeLinkInputs(li);
 
-                // Only normalize if dto.linkType was not explicitly provided
-                if (!dto.linkType) {
-                    // For new items, keep default 'page' unless user edits
-                    // (optional: still normalize if you really want "url wins" behavior)
-                    // normalizeLinkInputs(li);
-                } else {
-                    normalizeLinkInputs(li);
-                }
-
-                // collapse UI state
                 applyCollapseState(li);
+                updateVisibilityBadge(li);
+                updatePageWarnBadge(li);
 
                 return li;
             }
 
-            // ---------- Sortable ----------
-            const autoSaveDebounced = debounce(() => {
-                // Don’t autosave if nothing changed or if a save is already running
-                if (!isDirty || isSaving) return;
-
-                save().catch(err => {
-                    showToast(err.message || 'Save failed', 'error');
-                    showMsg(err.message || 'Save failed', 'error');
-                });
-            }, 700);
-
-
+            // ------------------------------------------------------------
+            // Sortable
+            // ------------------------------------------------------------
             function initSortable(ul) {
                 if (!ul) return;
+                if (!window.Sortable) {
+                    showMsg('SortableJS is not loaded. Ensure SortableJS is available as window.Sortable.', 'error');
+                    return;
+                }
 
                 Sortable.create(ul, {
                     group: { name: sortableGroupName, pull: true, put: true },
@@ -491,15 +943,13 @@
                     swapThreshold: 0.65,
                     onEnd: function () {
                         setDirty(true);
-                        // after any reorder/nest, refresh toggles + autosave
                         refreshAllToggles();
+                        refreshAllBadges();
+                        refreshSortBadges();
                         showToast('Saving…', 'info');
                         autoSaveDebounced();
                     }
                 });
-
-                refreshAllBadges();
-
             }
 
             function initAllSortables() {
@@ -507,19 +957,20 @@
                 document.querySelectorAll('.nav-children').forEach(initSortable);
             }
 
-            // ---------- Build payload ----------
+            // ------------------------------------------------------------
+            // Build payload
+            // ------------------------------------------------------------
             function buildFlatList(rootUl) {
                 const items = [];
 
                 function walk(ul, parentId) {
                     const children = Array.from(ul.children).filter(x => x.classList.contains('nav-node'));
 
-                   children.forEach((li, idx) => {
+                    children.forEach((li, idx) => {
                         const id = Number(li.dataset.id);
                         const deleted = li.dataset.deleted === 'true';
 
                         const label = li.querySelector('.node-label')?.value?.trim() || '';
-
                         const linkType = li.querySelector('.node-linktype')?.value || 'page';
 
                         const pageIdRaw = li.querySelector('.node-pageid')?.value || '';
@@ -550,7 +1001,6 @@
                             isDeleted: deleted
                         };
 
-                        // Normalize based on linkType
                         if (linkType === 'page') {
                             payloadItem.pageId = pageId;
                             payloadItem.url = null;
@@ -564,107 +1014,31 @@
                         const childUl = li.querySelector(':scope > .nav-children');
                         if (childUl) walk(childUl, id);
                     });
-
                 }
 
                 walk(rootUl, null);
                 return items;
             }
-                    function normalizeUrlInput(u) {
-            return (u || '').trim();
-        }
 
-        function isValidUrlForNav(u) {
-            // allow /relative, http://, https://
-            if (!u) return false;
-            return u.startsWith('/') || u.startsWith('http://') || u.startsWith('https://');
-        }
-
-        /* ==========================================================
-         * validatePayload(items)
-         * PURPOSE:
-         *   Client-side guardrails before calling ?handler=Save.
-         *   Ensures each non-deleted item has:
-         *     - Label
-         *     - Valid link target based on LinkType:
-         *         page => PageId required
-         *         url  => Url required and must be /relative or http(s)
-         *
-         * NOTES:
-         *   - Skips validation for items marked as deleted (IsDeleted=true)
-         *   - Does NOT duplicate errors (single source of truth)
-         * ========================================================== */
-        function validatePayload(items) {
-            const errors = [];
-
-            items.forEach((x, i) => {
-                const row = i + 1;
-
-                // Skip deleted items (they can be incomplete; they won't be saved as active)
-                if (x.isDeleted === true) return;
-
-                const label = (x.label || '').trim();
-
-                if (!label) {
-                    errors.push(`Row ${row}: Label is required.`);
-                    return; // label missing; still continue? up to you, but this keeps message clean
-                }
-
-                const linkType = (x.linkType || 'page').toLowerCase();
-                const pageId = Number(x.pageId || 0);
-                const url = normalizeUrlInput(x.url);
-
-                if (linkType === 'page') {
-                    if (!(pageId > 0)) {
-                        errors.push(`Row ${row} (“${label}”): Please select an internal page.`);
-                    }
-                    return;
-                }
-
-                if (linkType === 'url') {
-                    if (!url) {
-                        errors.push(`Row ${row} (“${label}”): URL is required when Link Type is External URL.`);
-                    } else if (!isValidUrlForNav(url)) {
-                        errors.push(`Row ${row} (“${label}”): URL must start with “/” or “http(s)://”.`);
-                    }
-                    return;
-                }
-
-                // Unknown link types => fail safe
-                errors.push(`Row ${row} (“${label}”): Invalid Link Type.`);
-            });
-
-            return errors;
-        }
-
-
-        function showValidationErrors(errors) {
-            // Uses a simple alert by default; replace with your toast/toastr/SweetAlert if you prefer
-            const msg = "Please fix the following before saving:\n\n" + errors.map(e => `• ${e}`).join('\n');
-            alert(msg);
-        }
-
-
-            // ---------- Save (same endpoint contract) ----------
+            // ------------------------------------------------------------
+            // Save
+            // ------------------------------------------------------------
             let saveInFlight = false;
             let saveQueued = false;
 
+            const autoSaveDebounced = debounce(() => {
+                if (!isDirty || isSaving) return;
+                save().catch(err => {
+                    showToast(err.message || 'Save failed', 'error');
+                    showMsg(err.message || 'Save failed', 'error');
+                });
+            }, 700);
+
             async function save() {
-
-                // If nothing changed, don’t call backend
-                if (!isDirty) {
-                    updateSaveButtonUi();
-                    return true;
-                }
-
-                // Prevent double-click saves
+                if (!isDirty) { updateSaveButtonUi(); return true; }
                 if (isSaving) return false;
 
-                // If an actual request is already running, queue one and exit cleanly
-                if (saveInFlight) {
-                    saveQueued = true;
-                    return false;
-                }
+                if (saveInFlight) { saveQueued = true; return false; }
 
                 isSaving = true;
                 updateSaveButtonUi();
@@ -684,9 +1058,9 @@
 
                     const errors = validatePayload(payload.items);
                     if (errors.length) {
-                        showValidationErrors(errors);
+                        showValidationErrors(errors, payload.items);
                         showToast('Validation failed.', 'error');
-                        showMsg('Validation failed. Please fix the errors and try again.', 'error');
+                        showMsg('Validation failed. Please fix the highlighted item and try again.', 'error');
                         return false;
                     }
 
@@ -716,7 +1090,6 @@
                         return false;
                     }
 
-                    // map temp IDs → real IDs
                     if (data.idMap) {
                         for (const [tempIdStr, realId] of Object.entries(data.idMap)) {
                             const li = document.querySelector(`.nav-node[data-id="${tempIdStr}"]`);
@@ -738,14 +1111,17 @@
                     showToast('Saved', 'ok');
                     showMsg('Saved successfully.', 'success');
 
-                    // ✅ mark clean first
                     setDirty(false);
-
-                    // ✅ show “Saved ✓”
                     lastSavedAt = new Date();
                     updateSaveButtonUi();
 
-                    // ✅ run queued autosave if user edited during save
+                    refreshAllToggles();
+                    refreshAllBadges();
+
+                    await refreshPageFlagsFromServer();
+                    await refreshPageOptionsFromServer();
+
+
                     if (saveQueued) {
                         saveQueued = false;
                         autoSaveDebounced();
@@ -765,39 +1141,163 @@
                 }
             }
 
-
-            // ---------- Node wiring ----------
-            function refreshAllToggles() {
-                document.querySelectorAll('.nav-node').forEach(li => applyCollapseState(li));
-            }
-
+            // ------------------------------------------------------------
+            // Node wiring
+            // ------------------------------------------------------------
             function wireAutosaveOnFieldChange(li) {
-                // Any edit should auto-save (debounced). Save button still exists.
                 const inputs = li.querySelectorAll('input, select');
                 inputs.forEach(el => {
                     el.addEventListener('input', () => {
-                        // Keep link rules consistent while user types/selects
+                        setDirty(true);
+
                         if (el.classList.contains('node-url') || el.classList.contains('node-pageid')) {
                             normalizeLinkInputs(li);
                         }
-                        // showToast('Saving…', 'info');
+
+                        updateVisibilityBadge(li);
+                        updatePageWarnBadge(li);
                         autoSaveDebounced();
                     });
+
                     el.addEventListener('change', () => {
+                        setDirty(true);
+
                         if (el.classList.contains('node-linktype')) {
                             setLinkType(li, el.value);
                         }
                         if (el.classList.contains('node-pageid') || el.classList.contains('node-url')) {
                             normalizeLinkInputs(li);
                         }
-                        // showToast('Saving…', 'info');
+
+                        updateVisibilityBadge(li);
+                        updatePageWarnBadge(li);
                         autoSaveDebounced();
                     });
                 });
             }
 
+            function setDeletedState(li, deleted) {
+                li.dataset.deleted = deleted ? 'true' : 'false';
+                li.classList.toggle('is-deleted', !!deleted);
+
+                // Disable/enable fields (don’t disable restore button)
+                li.querySelectorAll('input, select, textarea').forEach(el => {
+                    el.disabled = !!deleted;
+                });
+
+                const addChildBtn = li.querySelector('.add-child');
+                if (addChildBtn) addChildBtn.disabled = !!deleted;
+
+                const delBtn = li.querySelector('.delete-node');
+                const restoreBtn = li.querySelector('.restore-node');
+
+                // If both exist, swap visibility. If only restore exists, just ensure it’s visible.
+                if (delBtn) delBtn.classList.toggle('d-none', !!deleted);
+                if (restoreBtn) restoreBtn.classList.toggle('d-none', !deleted);
+
+                updateVisibilityBadge(li);
+                updatePageWarnBadge(li);
+
+            }
+
+            async function refreshPageFlagsFromServer() {
+                try {
+                    const res = await fetch(`?handler=PageFlags&menuId=${menuId}`, {
+                        method: 'GET',
+                        headers: { 'Accept': 'application/json' }
+                    });
+
+                    const data = await res.json().catch(() => null);
+                    if (!res.ok || !data || !data.success) return null;
+
+                    const nextFlags = data.flags || {};
+                    const nextSnap = buildFlagsSnapshot(nextFlags);
+
+                    const prevSnap = lastFlagsSnapshot;
+                    const changedIds = diffChangedIds(prevSnap, nextSnap);
+                    const delta = diffSnapshotCounts(prevSnap, nextSnap);
+
+                    // mutate const object
+                    Object.keys(pageFlagsById).forEach(k => delete pageFlagsById[k]);
+                    Object.entries(nextFlags).forEach(([k, v]) => pageFlagsById[k] = v);
+
+                    lastFlagsSnapshot = nextSnap;
+
+                    if (delta.changed || delta.added || delta.removed) {
+                        refreshAllBadges();
+                    }
+
+                    return { delta, changedIds };
+                } catch {
+                    return null;
+                }
+            }
+
+
+
+
+            const REFRESH_MS = 45000;
+
+            function isUserInteractingWithEditor() {
+                const el = document.activeElement;
+                if (!el) return false;
+
+                // If focused anywhere inside a nav node editor, assume interaction
+                const inNode = el.closest && el.closest('#navRoot .nav-node');
+                return !!inNode;
+            }
+
+            async function periodicRefreshTick() {
+                if (isSaving || saveInFlight) return;
+                if (isDirty) return;
+                if (document.hidden) return;
+                if (isUserInteractingWithEditor()) return;
+
+                const flagsRes = await refreshPageFlagsFromServer();
+                const pagesRes = await refreshPageOptionsFromServer();
+
+                if (!flagsRes && !pagesRes) return;
+
+                const f = flagsRes?.delta || { changed: 0, added: 0, removed: 0 };
+                const p = pagesRes?.delta || { changed: 0, added: 0, removed: 0 };
+
+                // union of changed ids (flags + option changes)
+                const ids = Array.from(new Set([
+                    ...(flagsRes?.changedIds || []),
+                    ...(pagesRes?.changedIds || [])
+                ]));
+
+                if ((f.changed + f.added + f.removed + p.changed + p.added + p.removed) > 0) {
+                    const msg = formatRefreshToast(f, p);
+                    maybeToastRefreshChanged(msg);
+
+                    // ✅ highlight nav items that link to affected pages
+                    pulseNavNodesForPageIds(ids);
+                }
+            }
+
+
+
+            function startPeriodicRefresh() {
+                // Initial “quiet” refresh shortly after load (optional)
+                setTimeout(() => { periodicRefreshTick(); }, 2500);
+
+                // Interval refresh
+                setInterval(() => { periodicRefreshTick(); }, REFRESH_MS);
+
+                // When user returns to tab, refresh once
+                document.addEventListener('visibilitychange', () => {
+                    if (!document.hidden) periodicRefreshTick();
+                });
+
+                // When window regains focus, refresh once
+                window.addEventListener('focus', () => {
+                    periodicRefreshTick();
+                });
+            }
+
+
             function wireNodeUi(li) {
-                // Collapse/expand
                 const toggleBtn = li.querySelector('.toggle-children');
                 if (toggleBtn) {
                     toggleBtn.addEventListener('click', () => {
@@ -811,134 +1311,241 @@
                     });
                 }
 
-                // LinkType explicit change still supported
-                li.querySelector('.node-linktype')?.addEventListener('change', (e) => {
-                    setLinkType(li, e.target.value);
-                    showToast('Saving…', 'info');
-                    autoSaveDebounced();
-                });
-
-                // Page selection guardrail
-                li.querySelector('.node-pageid')?.addEventListener('change', () => {
-                    normalizeLinkInputs(li);
-                    showToast('Saving…', 'info');
-                    autoSaveDebounced();
-                });
-
-                // Url typing guardrail
-                li.querySelector('.node-url')?.addEventListener('input', () => {
-                    normalizeLinkInputs(li);
-                });
-
-                // Add child
                 li.querySelector('.add-child')?.addEventListener('click', () => {
-                    const parentLi = li;
-
                     const childLi = createNodeLi({
                         id: uniqueTempId(),
                         label: 'New Item',
-                        linkType: 'page',        // ✅ force correct default
+                        linkType: 'page',
                         pageId: null,
                         url: '',
+                        allowedRolesCsv: '',
                         openInNewTab: false,
-                        isActive: true
+                        isActive: true,
+                        isPublished: true
                     });
 
-                    const childrenUl = parentLi.querySelector('.nav-children');
-                    childrenUl.appendChild(childLi);
+                    li.querySelector('.nav-children')?.appendChild(childLi);
 
-                    // Ensure parent now shows toggle + expanded state
-                    applyCollapseState(parentLi);
-                    applyCollapseState(childLi); // optional but safe
+                    applyCollapseState(li);
+                    applyCollapseState(childLi);
+
+                    setDirty(true);
+                    autoSaveDebounced();
+                });
+
+                li.querySelector('.delete-node')?.addEventListener('click', () => {
+                    setDeletedState(li, true);
+                    applyShowDeletedUi();
+                    const parentLi = li.closest('ul')?.closest('li.nav-node');
+                    if (parentLi) applyCollapseState(parentLi);
+
+                    refreshSortBadges();   // ✅ THIS is the missing line
 
                     setDirty(true);
                     autoSaveDebounced();
                 });
 
 
-                // Delete node (soft delete in UI)
-                li.querySelector('.delete-node')?.addEventListener('click', () => {
-                    li.dataset.deleted = 'true';
-                    li.style.opacity = '0.5';
-                    li.style.display = 'none';
-
-                    // parent may lose toggle if last child deleted
+                li.querySelector('.restore-node')?.addEventListener('click', () => {
+                    setDeletedState(li, false);
+                    applyShowDeletedUi();
                     const parentLi = li.closest('ul')?.closest('li.nav-node');
                     if (parentLi) applyCollapseState(parentLi);
 
-                    showToast('Saving…', 'info');
+                    refreshSortBadges();   // ✅ ADD THIS
+
+                    setDirty(true);
                     autoSaveDebounced();
                 });
 
-                updateVisibilityBadge(li);
 
-                // Autosave on edits
+
+                updateVisibilityBadge(li);
+                updatePageWarnBadge(li);
                 wireAutosaveOnFieldChange(li);
             }
 
+            function wireExistingNodes() {
+                document.querySelectorAll('.nav-node').forEach(li => {
+                    wireNodeUi(li);
 
-        function normalizeRolesCsv(s) {
-            return (s || '')
-                .split(',')
-                .map(x => x.trim())
-                .filter(Boolean)
-                .join(',');
-        }
+                    const childrenUl = li.querySelector(':scope > .nav-children');
+                    initSortable(childrenUl);
 
-        function computeVisibilityStatus(li) {
-            const isDeleted = li?.dataset?.deleted === 'true';
-            if (isDeleted) return { text: 'Deleted', cls: 'bg-danger', title: 'Marked for deletion' };
-
-            const isActive = !!li.querySelector('.node-active')?.checked;
-            const isPublished = !!li.querySelector('.node-published')?.checked;
-            const rolesRaw = li.querySelector('.node-roles')?.value || '';
-            const roles = normalizeRolesCsv(rolesRaw);
-
-            if (!isActive) return { text: 'Inactive', cls: 'bg-secondary', title: 'Hidden (Inactive)' };
-            if (!isPublished) return { text: 'Draft', cls: 'bg-warning text-dark', title: 'Not published (won’t show on tenant site)' };
-            if (roles.length > 0) return { text: 'Restricted', cls: 'bg-info text-dark', title: `Visible only to roles: ${roles}` };
-
-            return { text: 'Live', cls: 'bg-success', title: 'Visible to everyone on tenant site' };
-        }
-
-        function updateVisibilityBadge(li) {
-            const badge = li.querySelector('.node-visibility-badge');
-            if (!badge) return;
-
-            const s = computeVisibilityStatus(li);
-
-            // Reset badge classes (keep base "badge")
-            badge.className = 'badge node-visibility-badge ' + s.cls;
-            badge.textContent = s.text;
-            badge.title = s.title;
-        }
-
-        function refreshAllBadges() {
-            document.querySelectorAll('#navRoot .nav-node').forEach(updateVisibilityBadge);
-        }
-
-
-            // ---------- Root actions ----------
-            document.getElementById('addRootBtn')?.addEventListener('click', () => {
-                const li = createNodeLi({
-                    id: uniqueTempId(),
-                    label: 'New Item',
-                    linkType: 'page',   // ✅ important default
-                    pageId: null,
-                    url: '',
-                    openInNewTab: false,
-                    isActive: true
+                    normalizeLinkInputs(li);
+                    applyCollapseState(li);
+                    updateVisibilityBadge(li);
+                    updatePageWarnBadge(li);
                 });
 
-                document.getElementById('navRoot').appendChild(li);
+                refreshAllToggles();
+                refreshAllBadges();
+                refreshSortBadges();
 
-                setDirty(true);
-                autoSaveDebounced();
-            });
+            }
+            function expandNodeAndAncestors(li) {
+                // Walk up through parent nav-node elements and expand their child ULs
+                let cur = li;
+                while (cur) {
+                    const childUl = cur.querySelector(':scope > .nav-children');
+                    const toggleBtn = cur.querySelector(':scope .toggle-children');
+
+                    if (childUl && childUl.classList.contains('d-none')) {
+                        childUl.classList.remove('d-none');
+                        if (toggleBtn) toggleBtn.textContent = '▼';
+                        localStorage.setItem(collapseKeyFor(cur), 'false');
+                    }
+
+                    // next ancestor nav-node
+                    const parentUl = cur.closest('ul');
+                    const parentLi = parentUl?.closest('li.nav-node') || null;
+                    cur = parentLi;
+                }
+            }
+
+            function focusFirstErrorField(li, payloadItem) {
+                const linkType = (payloadItem.linkType || 'page').toLowerCase();
+
+                if (linkType === 'page') {
+                    const sel = li.querySelector('.node-pageid');
+                    if (sel && !sel.disabled) {
+                        sel.focus({ preventScroll: true });
+                        sel.classList.add('is-invalid');
+                        setTimeout(() => sel.classList.remove('is-invalid'), 1500);
+                        return;
+                    }
+                }
+
+                if (linkType === 'url') {
+                    const inp = li.querySelector('.node-url');
+                    if (inp && !inp.disabled) {
+                        inp.focus({ preventScroll: true });
+                        inp.classList.add('is-invalid');
+                        setTimeout(() => inp.classList.remove('is-invalid'), 1500);
+                        return;
+                    }
+                }
+
+                // fallback: label field
+                const label = li.querySelector('.node-label');
+                if (label) {
+                    label.focus({ preventScroll: true });
+                    label.classList.add('is-invalid');
+                    setTimeout(() => label.classList.remove('is-invalid'), 1500);
+                }
+            }
+
+            function scrollToNode(li) {
+                // smooth scroll, but keep focus control separate
+                li.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+
+            function buildFlagsSnapshot(flagsObj) {
+                const snap = {};
+                Object.entries(flagsObj || {}).forEach(([k, f]) => {
+                    const id = Number(k);
+                    if (!id) return;
+                    snap[id] = [
+                        (f?.showInNavigation ? 1 : 0),
+                        Number(f?.pageStatusId ?? -1),
+                        (f?.isActive ? 1 : 0),
+                        (f?.isDeleted ? 1 : 0)
+                    ].join('|');
+                });
+                return snap;
+            }
+
+            function diffSnapshotCounts(prev, next) {
+                // returns { changed, added, removed }
+                let changed = 0, added = 0, removed = 0;
+
+                const prevKeys = new Set(Object.keys(prev || {}));
+                const nextKeys = new Set(Object.keys(next || {}));
+
+                // added
+                nextKeys.forEach(k => { if (!prevKeys.has(k)) added++; });
+
+                // removed
+                prevKeys.forEach(k => { if (!nextKeys.has(k)) removed++; });
+
+                // changed
+                nextKeys.forEach(k => {
+                    if (prevKeys.has(k) && prev[k] !== next[k]) changed++;
+                });
+
+                return { changed, added, removed };
+            }
+
+            function buildPagesSnapshot(pagesArr) {
+                const snap = {};
+                (Array.isArray(pagesArr) ? pagesArr : []).forEach(p => {
+                    const id = Number(p.id ?? p.Id ?? 0);
+                    if (!id) return;
+                    const title = String(p.title ?? p.Title ?? '');
+                    const slug = String(p.slug ?? p.Slug ?? '');
+                    snap[id] = `${title}|${slug}`;
+                });
+                return snap;
+            }
+
+            function formatRefreshToast(flagsDelta, pagesDelta) {
+                const parts = [];
+
+                if ((flagsDelta.changed + flagsDelta.added + flagsDelta.removed) > 0) {
+                    // Most useful is "changed"
+                    const bits = [];
+                    if (flagsDelta.changed) bits.push(`${flagsDelta.changed} status changed`);
+                    if (flagsDelta.added) bits.push(`${flagsDelta.added} new`);
+                    if (flagsDelta.removed) bits.push(`${flagsDelta.removed} removed`);
+                    parts.push(`Pages: ${bits.join(', ')}`);
+                }
+
+                if ((pagesDelta.changed + pagesDelta.added + pagesDelta.removed) > 0) {
+                    const bits = [];
+                    if (pagesDelta.added) bits.push(`${pagesDelta.added} added`);
+                    if (pagesDelta.removed) bits.push(`${pagesDelta.removed} removed`);
+                    if (pagesDelta.changed) bits.push(`${pagesDelta.changed} renamed`);
+                    parts.push(`Options: ${bits.join(', ')}`);
+                }
+
+                return parts.length ? parts.join(' • ') : 'Page data updated';
+            }
 
 
+            // ------------------------------------------------------------
+            // Init
+            // ------------------------------------------------------------
             document.addEventListener('DOMContentLoaded', () => {
-                updateSaveButtonUi(); // ✅ initialize
+                updateSaveButtonUi();
+
+                initAllSortables();
+                wireExistingNodes();
+
+                document.getElementById('toggleDeletedBtn')?.addEventListener('click', () => {
+                    const next = !getShowDeletedPref();
+                    setShowDeletedPref(next);
+                    applyShowDeletedUi();
+                });
+
+                document.getElementById('addRootBtn')?.addEventListener('click', () => {
+                    const li = createNodeLi({
+                        id: uniqueTempId(),
+                        label: 'New Item',
+                        linkType: 'page',
+                        pageId: null,
+                        url: '',
+                        allowedRolesCsv: '',
+                        openInNewTab: false,
+                        isActive: true,
+                        isPublished: true
+                    });
+
+                    document.getElementById('navRoot')?.appendChild(li);
+
+                    refreshSortBadges();
+                    setDirty(true);
+                    autoSaveDebounced();
+                });
 
                 document.getElementById('saveBtn')?.addEventListener('click', async (e) => {
                     e.preventDefault();
@@ -953,58 +1560,31 @@
                     const ok = await save();
                     if (!ok) return;
 
-                    window.open('/', '_blank');
+                    window.open(publicBaseUrl, '_blank');
                 });
+
+                lastFlagsSig = buildFlagsSignature(pageFlagsById);
+                lastPagesSig = buildPagesSignature(pages);
+
+                let lastFlagsSnapshot = {};   // { [id]: "show|status|active|deleted" }
+                let lastPagesSnapshot = {};   // { [id]: "title|slug" }
+
+                lastFlagsSnapshot = buildFlagsSnapshot(pageFlagsById);
+                lastPagesSnapshot = buildPagesSnapshot(pages);
+
+
+               applyShowDeletedUi();
+               startPeriodicRefresh();
+
             });
 
             window.addEventListener('beforeunload', (e) => {
                 if (!isDirty) return;
-                if (isSaving) return; // optional: don’t block if actively saving
+                if (isSaving) return;
                 e.preventDefault();
                 e.returnValue = '';
             });
 
-
-            // ---------- Initialize ----------
-            initAllSortables();
-
-            // Wire server-rendered nodes (partial view)
-            document.querySelectorAll('.nav-node').forEach(li => {
-                wireNodeUi(li);
-
-                const childrenUl = li.querySelector(':scope > .nav-children');
-                initSortable(childrenUl);
-
-                // Initial link mode based on values
-                normalizeLinkInputs(li);
-
-                // Collapse toggle visibility/state
-                applyCollapseState(li);
-            });
-
-            // Ensure initial toggle visibility is correct
-            refreshAllToggles();
-
         })();
     </script>
-
-    <style>
-        .nav-tree .node-row {
-            background: #fff;
-        }
-
-        .nav-node {
-            list-style: none;
-        }
-
-        .drag-handle {
-            width: 20px;
-            text-align: center;
-        }
-
-        .toggle-children {
-            width: 28px;
-            text-align: center;
-        }
-    </style>
 }

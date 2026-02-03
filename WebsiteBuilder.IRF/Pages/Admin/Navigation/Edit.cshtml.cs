@@ -1,13 +1,13 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Caching.Memory;
 using System.Security.Claims;
 using System.Text.Json;
 using WebsiteBuilder.IRF.DataAccess;
 using WebsiteBuilder.IRF.Infrastructure.Tenancy;
 using WebsiteBuilder.IRF.ViewModels.Admin.Navigation;
 using WebsiteBuilder.Models;
+using WebsiteBuilder.Models.Constants;
 
 namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
 {
@@ -15,13 +15,13 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
     {
         private readonly DataContext _db;
         private readonly ITenantContext _tenant;
-        private readonly IMemoryCache _cache;
+        private readonly ITenantNavigationService _nav;
 
-        public EditModel(DataContext db, ITenantContext tenant, IMemoryCache cache)
+        public EditModel(DataContext db, ITenantContext tenant, ITenantNavigationService nav)
         {
             _db = db;
             _tenant = tenant;
-            _cache = cache;
+            _nav = nav;
         }
 
         [BindProperty(SupportsGet = true)]
@@ -29,24 +29,42 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
 
         public List<NavNodeVm> Tree { get; set; } = new();
 
-        // Used by JS to render page dropdowns for newly added nodes
+        // Used by JS to render page dropdowns for newly added nodes (Published ONLY)
         public string PagesJson { get; set; } = "[]";
+
+        // ✅ Used by JS to show warning badges about the selected Page
+        public string PageFlagsJson { get; set; } = "{}";
+
+        // ✅ Declaration you asked for (the “flags” object)
+        public sealed record PageNavFlags(
+            bool ShowInNavigation,
+            int PageStatusId,
+            bool IsActive,
+            bool IsDeleted
+        );
+        public string PublicBaseUrl { get; private set; } = "/";
+
+        public Dictionary<int, PageNavFlags> PageFlagsById { get; private set; } = new();
 
         public async Task<IActionResult> OnGetAsync(int menuId)
         {
             MenuId = menuId;
 
-            var pages = await _db.Pages
+            // ✅ Public site base URL (used by “Save & View Site”)
+            var primaryHost = await _db.DomainMappings
                 .AsNoTracking()
-                .Where(p => p.TenantId == _tenant.TenantId && !p.IsDeleted)
-                .OrderBy(p => p.Title)
-                .Select(p => new PageOptionVm { Id = p.Id, Title = p.Title, Slug = p.Slug })
-                .ToListAsync();
+                .Where(d => d.TenantId == _tenant.TenantId && d.IsPrimary)
+                .Select(d => d.Host)
+                .FirstOrDefaultAsync();
 
-            PagesJson = JsonSerializer.Serialize(
-                pages,
-                new JsonSerializerOptions(JsonSerializerDefaults.Web) // camelCase
-            );
+            var scheme = Request.Scheme;                 // http/https
+            var host = string.IsNullOrWhiteSpace(primaryHost)
+                ? Request.Host.Value                     // fallback to current host
+                : primaryHost.Trim();
+
+            var pathBase = Request.PathBase.HasValue ? Request.PathBase.Value : ""; // if you use PathBase for tenancy
+
+            PublicBaseUrl = $"{scheme}://{host}{pathBase}/";
 
 
             var items = await _db.NavigationMenuItems
@@ -56,32 +74,119 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
                 .ThenBy(x => x.SortOrder)
                 .ToListAsync();
 
-            Tree = BuildTree(items, pages);
+            var publishedPages = await _db.Pages
+                .AsNoTracking()
+                .Where(p =>
+                    p.TenantId == _tenant.TenantId &&
+                    !p.IsDeleted &&
+                    p.PageStatusId == PageStatusIds.Published)
+                .OrderBy(p => p.Title)
+                .Select(p => new PageOptionVm
+                {
+                    Id = p.Id,
+                    Title = p.Title,
+                    Slug = p.Slug
+                })
+                .ToListAsync();
+
+            // ------------------------------------------------------------
+            // ✅ Page visibility flags (for Navigation Editor UI warnings)
+            // ------------------------------------------------------------
+            PageFlagsById = await _db.Pages
+                .AsNoTracking()
+                .Where(p => p.TenantId == _tenant.TenantId)
+                .Select(p => new
+                {
+                    p.Id,
+                    p.ShowInNavigation,
+                    p.PageStatusId,
+                    p.IsActive,
+                    p.IsDeleted
+                })
+                .ToDictionaryAsync(
+                    x => x.Id,
+                    x => new PageNavFlags(
+                        x.ShowInNavigation,
+                        x.PageStatusId,
+                        x.IsActive,
+                        x.IsDeleted
+                    )
+                );
+
+            PagesJson = JsonSerializer.Serialize(
+                publishedPages,
+                new JsonSerializerOptions(JsonSerializerDefaults.Web)
+            );
+
+            // ✅ Serialize flags for client-side warning badges
+            PageFlagsJson = JsonSerializer.Serialize(
+                PageFlagsById,
+                new JsonSerializerOptions(JsonSerializerDefaults.Web)
+            );
+
+
+            // Include referenced pages even if not published, so existing items remain selectable
+            var referencedPageIds = items
+                .Where(x => x.PageId.HasValue && x.PageId.Value > 0)
+                .Select(x => x.PageId!.Value)
+                .Distinct()
+                .ToList();
+
+            var publishedIdSet = publishedPages.Select(x => x.Id).ToHashSet();
+
+            var missingIds = referencedPageIds
+                .Where(id => !publishedIdSet.Contains(id))
+                .Distinct()
+                .ToList();
+
+            List<PageOptionVm> extraNotPublished = new();
+
+            if (missingIds.Count > 0)
+            {
+                extraNotPublished = await _db.Pages
+                    .AsNoTracking()
+                    .Where(p =>
+                        p.TenantId == _tenant.TenantId &&
+                        missingIds.Contains(p.Id))
+                    .OrderBy(p => p.Title)
+                    .Select(p => new PageOptionVm
+                    {
+                        Id = p.Id,
+                        Title =
+                            p.Title +
+                            (p.IsDeleted ? " (Deleted)" :
+                             p.PageStatusId != PageStatusIds.Published ? " (Not published)" :
+                             ""),
+                        Slug = p.Slug
+                    })
+                    .ToListAsync();
+            }
+
+            var pageOptionsForExistingNodes = extraNotPublished
+                .Concat(publishedPages)
+                .ToList();
+
+            Tree = BuildTree(items, pageOptionsForExistingNodes);
             return Page();
         }
 
         public async Task<IActionResult> OnPostSaveAsync([FromBody] NavSaveRequestVm request)
         {
-            if (request == null) return BadRequest(new { success = false, error = "Invalid payload." });
-            if (request.MenuId != MenuId && MenuId != 0) { /* no-op, MenuId comes from route */ }
+            if (request == null)
+                return BadRequest(new { success = false, error = "Invalid payload." });
 
-            // server-side guardrails
             if (request.MenuId <= 0)
                 return BadRequest(new { success = false, error = "MenuId is required." });
 
-            // Items may reference temp negative IDs as ParentId.
-            // We'll create real rows first and produce an ID map.
             var userId = GetUserIdOrEmpty();
             var now = DateTime.UtcNow;
 
-            // Load existing
             var existing = await _db.NavigationMenuItems
                 .Where(x => x.TenantId == _tenant.TenantId && x.MenuId == request.MenuId)
                 .ToListAsync();
 
             var existingById = existing.ToDictionary(x => x.Id);
 
-            // Validate labels
             foreach (var i in request.Items.Where(x => !x.IsDeleted))
             {
                 if (string.IsNullOrWhiteSpace(i.Label))
@@ -94,54 +199,95 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
                     return BadRequest(new { success = false, error = "Url exceeds 500 chars." });
             }
 
-            // 1) Create new items first (for temp IDs), without ParentId resolution yet.
-            // We'll assign ParentId after we have the full temp->real map.
+            // ✅ Guard: only validate PageId when item is intended to be an internal page link.
+            // Rule: URL wins. If Url is non-empty -> treat as URL item, ignore PageId.
+            var internalPageIds = request.Items
+                .Where(x => !x.IsDeleted)
+                .Where(x => string.IsNullOrWhiteSpace(x.Url))
+                .Where(x => x.PageId.HasValue && x.PageId.Value > 0)
+                .Select(x => x.PageId!.Value)
+                .Distinct()
+                .ToList();
+
+            if (internalPageIds.Count > 0)
+            {
+                var allowedPublishedIds = await _db.Pages
+                    .AsNoTracking()
+                    .Where(p =>
+                        p.TenantId == _tenant.TenantId &&
+                        !p.IsDeleted &&
+                        p.PageStatusId == PageStatusIds.Published &&
+                        internalPageIds.Contains(p.Id))
+                    .Select(p => p.Id)
+                    .ToListAsync();
+
+                var allowedSet = allowedPublishedIds.ToHashSet();
+                var invalidIds = internalPageIds.Where(id => !allowedSet.Contains(id)).ToList();
+
+                if (invalidIds.Count > 0)
+                {
+                    var badItems = request.Items
+                        .Where(x => !x.IsDeleted)
+                        .Where(x => string.IsNullOrWhiteSpace(x.Url))
+                        .Where(x => x.PageId.HasValue && invalidIds.Contains(x.PageId.Value))
+                        .Select(x => x.Label ?? "Unnamed")
+                        .Distinct()
+                        .ToList();
+
+                    var msg = badItems.Count > 0
+                        ? $"These items link to a non-published page: {string.Join(", ", badItems)}. Publish the page first or switch to External URL."
+                        : "One or more items link to a non-published page. Publish the page first or switch to External URL.";
+
+                    return BadRequest(new { success = false, error = msg });
+                }
+            }
+
             var idMap = new Dictionary<int, int>(); // tempId -> realId
 
             foreach (var vm in request.Items.Where(x => x.Id <= 0 && !x.IsDeleted))
             {
+                var url = (vm.Url ?? string.Empty).Trim();
+                var isUrl = !string.IsNullOrWhiteSpace(url);
+                var pageId = (vm.PageId.HasValue && vm.PageId.Value > 0) ? vm.PageId : null;
+                var isPage = !isUrl && pageId.HasValue;
+
                 var entity = new NavigationMenuItem
                 {
                     TenantId = _tenant.TenantId,
                     MenuId = request.MenuId,
-
-                    // temporary, resolved later
                     ParentId = null,
                     SortOrder = vm.SortOrder,
-
-                    Label = vm.Label.Trim(),
-                    PageId = vm.PageId,
-                    Url = vm.PageId.HasValue ? string.Empty : (vm.Url ?? string.Empty).Trim(),
+                    Label = (vm.Label ?? string.Empty).Trim(),
+                    PageId = isPage ? pageId : null,
+                    Url = isUrl ? url : string.Empty,
                     OpenInNewTab = vm.OpenInNewTab,
-
                     IsActive = vm.IsActive,
+                    IsPublished = vm.IsPublished,
+                    AllowedRolesCsv = NormalizeRolesCsv(vm.AllowedRolesCsv),
                     IsDeleted = false,
-
                     CreatedAt = now,
                     CreatedBy = userId
                 };
 
                 _db.NavigationMenuItems.Add(entity);
-                await _db.SaveChangesAsync(); // to get Id
+                await _db.SaveChangesAsync();
                 idMap[vm.Id] = entity.Id;
             }
 
-            // Helper to resolve parent IDs that may be temp
             int? ResolveParent(int? parentId)
             {
                 if (!parentId.HasValue) return null;
+
                 if (parentId.Value <= 0)
                 {
                     if (idMap.TryGetValue(parentId.Value, out var real))
                         return real;
-
-                    // parent might have been deleted or missing
                     return null;
                 }
+
                 return parentId.Value;
             }
 
-            // 2) Update existing + newly created entities with final ParentId/sort + fields
             foreach (var vm in request.Items)
             {
                 if (vm.Id <= 0)
@@ -157,24 +303,106 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
                 }
 
                 if (!existingById.TryGetValue(vm.Id, out var entity))
-                {
-                    // ignore unknown IDs (tenant isolation / stale client)
                     continue;
-                }
 
                 ApplyVm(entity, vm, ResolveParent(vm.ParentId), userId, now);
             }
 
             await _db.SaveChangesAsync();
+            _nav.Invalidate(request.MenuId);
 
-            // 3) Cache invalidation (public navigation)
-            InvalidateNavCache(_tenant.TenantId, request.MenuId);
+            return new JsonResult(new { success = true, idMap });
+        }
+        public async Task<IActionResult> OnGetPageFlagsAsync(int menuId)
+        {
+            if (menuId <= 0) return new JsonResult(new { success = false, error = "Invalid menuId." });
+
+            // Tenant-safe
+            var flags = await _db.Pages
+                .AsNoTracking()
+                .Where(p => p.TenantId == _tenant.TenantId)
+                .Select(p => new
+                {
+                    p.Id,
+                    p.ShowInNavigation,
+                    p.PageStatusId,
+                    p.IsActive,
+                    p.IsDeleted
+                })
+                .ToDictionaryAsync(
+                    x => x.Id,
+                    x => new PageNavFlags(
+                        x.ShowInNavigation,
+                        x.PageStatusId,
+                        x.IsActive,
+                        x.IsDeleted
+                    )
+                );
 
             return new JsonResult(new
             {
                 success = true,
-                idMap // allows client to swap temp IDs for real IDs
+                flags
             });
+        }
+        public async Task<IActionResult> OnGetPageOptionsAsync(int menuId)
+        {
+            if (menuId <= 0) return new JsonResult(new { success = false, error = "Invalid menuId." });
+
+            // 1) Published pages (normal list)
+            var published = await _db.Pages
+                .AsNoTracking()
+                .Where(p =>
+                    p.TenantId == _tenant.TenantId &&
+                    !p.IsDeleted &&
+                    p.PageStatusId == PageStatusIds.Published)
+                .OrderBy(p => p.Title)
+                .Select(p => new PageOptionVm
+                {
+                    Id = p.Id,
+                    Title = p.Title,
+                    Slug = p.Slug
+                })
+                .ToListAsync();
+
+            // 2) Include referenced pages (even if not published or deleted) so existing selections stay visible
+            var referencedIds = await _db.NavigationMenuItems
+                .AsNoTracking()
+                .Where(x => x.TenantId == _tenant.TenantId && x.MenuId == menuId && !x.IsDeleted)
+                .Where(x => x.PageId.HasValue && x.PageId.Value > 0)
+                .Select(x => x.PageId!.Value)
+                .Distinct()
+                .ToListAsync();
+
+            var publishedSet = published.Select(x => x.Id).ToHashSet();
+            var missingIds = referencedIds.Where(id => !publishedSet.Contains(id)).ToList();
+
+            List<PageOptionVm> extras = new();
+
+            if (missingIds.Count > 0)
+            {
+                extras = await _db.Pages
+                    .AsNoTracking()
+                    .Where(p =>
+                        p.TenantId == _tenant.TenantId &&
+                        missingIds.Contains(p.Id))
+                    .OrderBy(p => p.Title)
+                    .Select(p => new PageOptionVm
+                    {
+                        Id = p.Id,
+                        Title =
+                            p.Title +
+                            (p.IsDeleted ? " (Deleted)" :
+                             p.PageStatusId != PageStatusIds.Published ? " (Not published)" :
+                             ""),
+                        Slug = p.Slug
+                    })
+                    .ToListAsync();
+            }
+
+            var options = extras.Concat(published).ToList();
+
+            return new JsonResult(new { success = true, pages = options });
         }
 
         private void ApplyVm(
@@ -188,17 +416,25 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
             entity.SortOrder = vm.SortOrder;
 
             entity.Label = (vm.Label ?? string.Empty).Trim();
-
-            entity.PageId = vm.PageId;
-            entity.Url = vm.PageId.HasValue
-                ? string.Empty
-                : (vm.Url ?? string.Empty).Trim();
-
             entity.OpenInNewTab = vm.OpenInNewTab;
             entity.IsActive = vm.IsActive;
             entity.IsPublished = vm.IsPublished;
             entity.AllowedRolesCsv = NormalizeRolesCsv(vm.AllowedRolesCsv);
-            // ✅ EXPLICIT RESTORE (Undo delete)
+
+            var url = (vm.Url ?? string.Empty).Trim();
+            var isUrl = !string.IsNullOrWhiteSpace(url);
+
+            if (isUrl)
+            {
+                entity.PageId = null;
+                entity.Url = url;
+            }
+            else
+            {
+                entity.PageId = (vm.PageId.HasValue && vm.PageId.Value > 0) ? vm.PageId : null;
+                entity.Url = string.Empty;
+            }
+
             if (vm.Restore)
             {
                 entity.IsDeleted = false;
@@ -210,7 +446,6 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
                 return;
             }
 
-            // ✅ Explicit delete
             if (vm.IsDeleted)
             {
                 entity.IsDeleted = true;
@@ -219,7 +454,6 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
                 return;
             }
 
-            // Normal update (no auto-undelete)
             entity.UpdatedAt = now;
             entity.UpdatedBy = userId;
         }
@@ -240,7 +474,6 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
 
         private List<NavNodeVm> BuildTree(List<NavigationMenuItem> items, List<PageOptionVm> pages)
         {
-            // Lookup supports null keys (root ParentId == null) safely
             var byParent = items.ToLookup(x => x.ParentId);
 
             List<NavNodeVm> build(int? parentId)
@@ -253,12 +486,15 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
                         ParentId = x.ParentId,
                         SortOrder = x.SortOrder,
                         Label = x.Label,
+
                         PageId = x.PageId,
                         Url = x.Url,
+
                         OpenInNewTab = x.OpenInNewTab,
                         IsActive = x.IsActive,
                         IsPublished = x.IsPublished,
                         AllowedRolesCsv = x.AllowedRolesCsv,
+
                         PageOptions = pages,
                         Children = build(x.Id)
                     })
@@ -268,16 +504,10 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
             return build(parentId: null);
         }
 
-
         private Guid GetUserIdOrEmpty()
         {
             var s = User.FindFirstValue(ClaimTypes.NameIdentifier);
             return Guid.TryParse(s, out var id) ? id : Guid.Empty;
-        }
-
-        private void InvalidateNavCache(Guid tenantId, int menuId)
-        {
-            _cache.Remove($"nav:{tenantId}:{menuId}");
         }
     }
 }

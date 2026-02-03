@@ -14,9 +14,6 @@
     var pageWrapClass = linkType == "page" ? "" : "d-none";
     var urlWrapClass = linkType == "url" ? "" : "d-none";
 
-    // ✅ Match JS guardrails server-side:
-    // - If linkType = page => URL is disabled & cleared
-    // - If linkType = url  => Page is disabled & cleared
     var pageDisabled = linkType == "url";
     var urlDisabled = linkType == "page";
 
@@ -31,14 +28,12 @@
     <div class="node-row border rounded p-2 bg-white">
         <div class="d-flex align-items-start gap-2">
 
-            <!-- Drag handle -->
             <div class="drag-handle text-muted"
                  title="Drag to reorder"
                  style="cursor: grab; user-select: none;">
                 &#x2630;
             </div>
 
-            <!-- Expand / collapse -->
             <button type="button"
                     class="btn btn-sm btn-link toggle-children px-1 @(hasChildren ? "" : "d-none")"
                     aria-label="Toggle children"
@@ -46,18 +41,17 @@
                 ▼
             </button>
 
-            <!-- Sort badge -->
             <span class="badge bg-secondary sort-badge">S?</span>
+
+            @* ✅ this is the badge the JS will control *@
+            <span class="badge bg-warning text-dark d-none node-page-warn-badge" title=""></span>
 
             <div class="flex-grow-1">
                 <div class="row g-2">
-
-                    <!-- Visibility badge -->
                     <div class="col-12">
                         <span class="badge bg-secondary node-visibility-badge" title="Visibility status">…</span>
                     </div>
 
-                    <!-- Label -->
                     <div class="col-12">
                         <label class="form-label mb-1 small">Label</label>
                         <input class="form-control form-control-sm node-label"
@@ -65,7 +59,6 @@
                                maxlength="200" />
                     </div>
 
-                    <!-- Link type -->
                     <div class="col-12">
                         <label class="form-label mb-1 small">Link Type</label>
                         <select class="form-select form-select-sm node-linktype">
@@ -82,7 +75,6 @@
                         </select>
                     </div>
 
-                    <!-- Page -->
                     <div class="col-12 node-pagewrap @pageWrapClass">
                         <label class="form-label mb-1 small">Page</label>
                         <select class="form-select form-select-sm node-pageid" @(pageDisabled ? "disabled" : null)>
@@ -101,7 +93,6 @@
                         </select>
                     </div>
 
-                    <!-- URL -->
                     <div class="col-12 node-urlwrap @urlWrapClass">
                         <label class="form-label mb-1 small">URL</label>
                         <input class="form-control form-control-sm node-url"
@@ -111,7 +102,6 @@
                                @(urlDisabled ? "disabled" : null) />
                     </div>
 
-                    <!-- Toggles -->
                     <div class="col-12 d-flex flex-wrap gap-3 align-items-center">
                         <div class="form-check form-switch">
                             <input class="form-check-input node-newtab"
@@ -135,7 +125,6 @@
                         </div>
                     </div>
 
-                    <!-- Roles -->
                     <div class="col-12">
                         <label class="form-label mb-1 small">Visible to Roles (CSV)</label>
                         <input class="form-control form-control-sm node-roles"
@@ -147,13 +136,14 @@
                 </div>
             </div>
 
-            <!-- Actions -->
             <div class="d-flex flex-column gap-2">
                 <button type="button" class="btn btn-sm btn-outline-secondary add-child">Add Child</button>
 
                 @if (!Model.IsDeleted)
                 {
                     <button type="button" class="btn btn-sm btn-outline-danger delete-node">Delete</button>
+                    <button type="button" class="btn btn-sm btn-outline-success restore-node d-none">Restore</button>
+
                 }
                 else
                 {
@@ -163,7 +153,6 @@
         </div>
     </div>
 
-    <!-- Children -->
     <ul class="nav-children list-unstyled ms-4 mt-2 mb-0">
         @foreach (var child in children)
         {

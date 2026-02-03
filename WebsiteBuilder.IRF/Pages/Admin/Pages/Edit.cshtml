@@ -241,14 +241,22 @@
                         <fieldset disabled>
                             <partial name="_Form" for="Input" />
 
-                            <div class="form-check mt-3">
-                                <input asp-for="Input.ShowInNavigation" class="form-check-input" />
-                                <label asp-for="Input.ShowInNavigation" class="form-check-label"></label>
+                            <div class="form-check form-switch mt-3">
+                                <input asp-for="Input.ShowInNavigation"
+                                       class="form-check-input"
+                                       role="switch"
+                                       data-dirty-scope="page" />
+                                <label asp-for="Input.ShowInNavigation" class="form-check-label">
+                                    Show in navigation
+                                </label>
+                            </div>
+                            <div class="form-text">
+                                If off, this page stays hidden from public navigation even when published.
                             </div>
 
                             <div class="mb-3">
                                 <label asp-for="Input.NavigationOrder" class="form-label"></label>
-                                <input asp-for="Input.NavigationOrder" class="form-control" />
+                                <input asp-for="Input.NavigationOrder" class="form-control" data-dirty-scope="page" />
                                 <span class="text-danger" asp-validation-for="Input.NavigationOrder"></span>
                             </div>
                         </fieldset>
