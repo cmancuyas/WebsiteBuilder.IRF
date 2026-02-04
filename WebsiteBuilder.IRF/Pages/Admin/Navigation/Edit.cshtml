@@ -76,162 +76,11 @@
      style="background:#222;color:#fff;z-index:1050;font-size:0.875rem;max-width:360px;">
 </div>
 
-<style>
-    .node-visibility-badge {
-        font-weight: 600;
-    }
 
-    .nav-tree .node-row {
-        background: #fff;
-    }
-
-    .nav-node {
-        list-style: none;
-    }
-
-    .drag-handle {
-        width: 20px;
-        text-align: center;
-    }
-
-    .toggle-children {
-        width: 28px;
-        text-align: center;
-    }
-
-    .nav-node.is-deleted > .node-row {
-        opacity: .55;
-        filter: grayscale(0.15);
-    }
-
-    .nav-node.is-deleted .drag-handle,
-    .nav-node.is-deleted .toggle-children {
-        pointer-events: none;
-        opacity: .4;
-    }
-
-    .nav-node.deleted-hidden {
-        display: none !important;
-    }
-
-    @@keyframes navPulse {
-        0% {
-            box-shadow: 0 0 0 0 rgba(255,193,7,.65);
-        }
-
-        70% {
-            box-shadow: 0 0 0 8px rgba(255,193,7,0);
-        }
-
-        100% {
-            box-shadow: 0 0 0 0 rgba(255,193,7,0);
-        }
-    }
-
-    .nav-node.pulse-update > .node-row {
-        animation: navPulse 1.2s ease-out 1;
-        border-color: #ffc107 !important;
-    }
-
-    @@keyframes navPulseWarning {
-        0% {
-            box-shadow: 0 0 0 0 rgba(255,193,7,.65);
-        }
-
-        70% {
-            box-shadow: 0 0 0 8px rgba(255,193,7,0);
-        }
-
-        100% {
-            box-shadow: 0 0 0 0 rgba(255,193,7,0);
-        }
-    }
-    @@keyframes navPulseDanger {
-        0% {
-            box-shadow: 0 0 0 0 rgba(220,53,69,.55);
-        }
-
-        70% {
-            box-shadow: 0 0 0 8px rgba(220,53,69,0);
-        }
-
-        100% {
-            box-shadow: 0 0 0 0 rgba(220,53,69,0);
-        }
-    }
-    @@keyframes navPulseInfo {
-        0% {
-            box-shadow: 0 0 0 0 rgba(13,110,253,.45);
-        }
-
-        70% {
-            box-shadow: 0 0 0 8px rgba(13,110,253,0);
-        }
-
-        100% {
-            box-shadow: 0 0 0 0 rgba(13,110,253,0);
-        }
-    }
-
-    .nav-node.pulse-warning > .node-row {
-        animation: navPulseWarning 1.2s ease-out 1;
-        border-color: #ffc107 !important;
-    }
-
-    .nav-node.pulse-danger > .node-row {
-        animation: navPulseDanger 1.2s ease-out 1;
-        border-color: #dc3545 !important;
-    }
-
-    .nav-node.pulse-info > .node-row {
-        animation: navPulseInfo 1.2s ease-out 1;
-        border-color: #0d6efd !important;
-    }
-
-    @@keyframes caretBlink {
-        0%, 100% {
-            transform: scale(1);
-            opacity: 1;
-        }
-
-        35% {
-            transform: scale(1.18);
-            opacity: .65;
-        }
-
-        70% {
-            transform: scale(1.05);
-            opacity: .9;
-        }
-    }
-
-    .toggle-children.auto-expand-blink {
-        animation: caretBlink 900ms ease-in-out 2;
-        color: #dc3545 !important; /* bootstrap danger */
-        font-weight: 700;
-    }
-
-    .auto-expand-pill {
-        display: inline-block;
-        margin-left: 6px;
-        padding: 2px 6px;
-        border-radius: 999px;
-        font-size: 0.72rem;
-        line-height: 1.2;
-        background: rgba(220,53,69,.12);
-        color: #dc3545;
-        border: 1px solid rgba(220,53,69,.35);
-    }
-
-    .node-page-warn-badge {
-        cursor: pointer;
-    }
-
-</style>
 
 @section Scripts {
     <script src="~/lib/jquery-sortablejs/jquery-sortable.min.js"></script>
-
+    <script src="~/lib/sortable/sortable.min.js"></script>
     <script>
         (function () {
             let isDirty = false;
@@ -243,38 +92,71 @@
             const publicBaseUrl = @Html.Raw(JsonSerializer.Serialize(Model.PublicBaseUrl, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
 
             const toastEl = document.getElementById("navToast");
-
             const showDeletedKey = `nav-show-deleted-${menuId}`;
 
-            // pageId -> lastFlagsSnapshotValue (string) that we acknowledged
-            const ackDangerByPageId = new Map();
+            // ---------- Page flags ----------
+            let pages = @Html.Raw(Model.PagesJson);
+            const pageFlagsById = @Html.Raw(Model.PageFlagsJson ?? "{}");
+
+            // Published status id (int)
+            const PAGE_STATUS_PUBLISHED = Number(@PageStatusIds.Published);
+
+            // ---------- Acknowledgement for danger pages (persisted) ----------
+            const ackDangerByPageId = new Map();     // pageId -> snapshotSig
+            const ackStorageKey = `nav-ack-danger-${menuId}`;
+
+            // ---------- Snapshots ----------
+            let lastFlagsSnapshot = {};  // { [id]: "show|status|active|deleted" }
+            let lastPagesSnapshot = {};  // { [id]: "title|slug" }
+            let lastRefreshToastAt = 0;
+
+            function loadAckFromStorage() {
+                try {
+                    const raw = localStorage.getItem(ackStorageKey);
+                    if (!raw) return;
+
+                    const obj = JSON.parse(raw);
+                    if (!obj || typeof obj !== 'object') return;
+
+                    ackDangerByPageId.clear();
+                    for (const [pidStr, sig] of Object.entries(obj)) {
+                        const pid = Number(pidStr);
+                        if (!(pid > 0) || typeof sig !== 'string') continue;
+                        ackDangerByPageId.set(pid, sig);
+                    }
+                } catch { /* ignore */ }
+            }
+
+            function saveAckToStorage() {
+                try {
+                    const obj = {};
+                    for (const [pid, sig] of ackDangerByPageId.entries()) obj[String(pid)] = sig;
+                    localStorage.setItem(ackStorageKey, JSON.stringify(obj));
+                } catch { /* ignore */ }
+            }
 
             function getFlagsSigForPage(pageId) {
-                // lastFlagsSnapshot uses string keys in our snapshot helpers
                 const key = String(pageId);
                 return (lastFlagsSnapshot && lastFlagsSnapshot[key]) ? lastFlagsSnapshot[key] : null;
             }
 
-            function isDangerAcknowledged(pageId) {
+            function isDangerAcked(pageId) {
+                if (!(pageId > 0)) return false;
                 const currentSig = getFlagsSigForPage(pageId);
                 if (!currentSig) return false;
-
-                const ackSig = ackDangerByPageId.get(Number(pageId));
-                return ackSig === currentSig;
+                return ackDangerByPageId.get(Number(pageId)) === currentSig;
             }
 
-            function acknowledgeDanger(pageId) {
-                const currentSig = getFlagsSigForPage(pageId);
-                if (!currentSig) return;
-                ackDangerByPageId.set(Number(pageId), currentSig);
-            }
-
-            function resetAcknowledgementForPage(pageId) {
+            function setDangerAck(pageId, on) {
                 if (!(pageId > 0)) return;
-                ackDangerByPageId.delete(Number(pageId));
+                const sig = getFlagsSigForPage(pageId);
+                if (!sig) return;
+
+                if (on) ackDangerByPageId.set(Number(pageId), sig);
+                else ackDangerByPageId.delete(Number(pageId));
             }
 
-            function wireBadgeAckReset() {
+            function wireBadgeAckToggle() {
                 const root = document.getElementById('navRoot');
                 if (!root) return;
 
@@ -288,218 +170,19 @@
                     const pageId = getSelectedPageId(li);
                     if (!pageId) return;
 
-                    // Only meaningful for danger pages (hard problems)
                     const sev = getPageSeverity(pageId);
                     if (sev !== 'danger') return;
 
-                    // Reset ack and refresh badge state
-                    resetAcknowledgementForPage(pageId);
+                    const currentlyAcked = isDangerAcked(pageId);
+                    setDangerAck(pageId, !currentlyAcked);
+                    saveAckToStorage();
+
                     updatePageWarnBadge(li);
-
-                    // Optional feedback
-                    showToast('Re-alert enabled for this page', 'info');
-
-                    // Optional: pulse immediately to show it’s armed again
-                    // pulseNavNodesForPageIds([pageId]);
+                    showToast(currentlyAcked ? 'Alerts re-enabled for this page' : 'Alerts muted for this page', 'info');
                 });
             }
 
-            function markAutoExpanded(parentLi) {
-                const btn = parentLi.querySelector(':scope .toggle-children');
-                if (!btn) return;
-
-                // Blink caret
-                btn.classList.remove('auto-expand-blink');
-                void btn.offsetWidth; // restart animation
-                btn.classList.add('auto-expand-blink');
-
-                // Add pill once (next to caret)
-                let pill = parentLi.querySelector(':scope .auto-expand-pill');
-                if (!pill) {
-                    pill = document.createElement('span');
-                    pill.className = 'auto-expand-pill';
-                    pill.textContent = 'Auto-expanded';
-                    btn.insertAdjacentElement('afterend', pill);
-                }
-
-                // Cleanup after 2.2s
-                setTimeout(() => {
-                    btn.classList.remove('auto-expand-blink');
-                    pill?.remove();
-                }, 2200);
-            }
-
-
-            function scrollNodeIntoView(li) {
-                // Don’t yank the user around if they are interacting
-                if (isUserInteractingWithEditor()) return;
-
-                li.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            }
-
-
-            function expandAncestors(li) {
-                let current = li;
-
-                while (true) {
-                    const parentLi = current.closest('ul')?.closest('li.nav-node');
-                    if (!parentLi) break;
-
-                    const ul = parentLi.querySelector(':scope > .nav-children');
-                    const btn = parentLi.querySelector(':scope .toggle-children');
-
-                    if (ul) {
-                        const wasCollapsed =
-                            ul.classList.contains('d-none') ||
-                            localStorage.getItem(collapseKeyFor(parentLi)) === 'true';
-
-                        if (wasCollapsed) {
-                            // actually expand
-                            ul.classList.remove('d-none');
-                            localStorage.setItem(collapseKeyFor(parentLi), 'false');
-
-                            if (btn) btn.textContent = '▼';
-
-                            // ✅ only indicate if state changed
-                            markAutoExpanded(parentLi);
-                        }
-                    }
-
-                    // re-sync toggle visibility (children count etc.)
-                    applyCollapseState(parentLi);
-
-                    current = parentLi;
-                }
-            }
-
-
-
-
-            function getPageSeverity(pageId) {
-                const f = pageFlagsById[String(pageId)] || pageFlagsById[pageId];
-                if (!f) return 'info';
-
-                const isDeleted = !!f.isDeleted;
-                const isActive = f.isActive !== false; // default true if missing
-                const isPublished = typeof f.pageStatusId === 'number'
-                    ? (f.pageStatusId === PAGE_STATUS_PUBLISHED)
-                    : true;
-
-                const showInNav = f.showInNavigation !== false; // default true if missing
-
-                const hard = isDeleted || !isActive || !isPublished;
-                if (hard) return 'danger';
-
-                if (!showInNav) return 'warning';
-
-                return 'info';
-            }
-
-
-            function diffChangedIds(prevSnap, nextSnap) {
-                const changedIds = [];
-                const prevKeys = new Set(Object.keys(prevSnap || {}));
-                const nextKeys = new Set(Object.keys(nextSnap || {}));
-
-                // ids that are new or removed aren’t directly linkable, but include anyway
-                nextKeys.forEach(k => { if (!prevKeys.has(k)) changedIds.push(Number(k)); });
-                prevKeys.forEach(k => { if (!nextKeys.has(k)) changedIds.push(Number(k)); });
-
-                // ids that changed
-                nextKeys.forEach(k => {
-                    if (prevKeys.has(k) && prevSnap[k] !== nextSnap[k]) changedIds.push(Number(k));
-                });
-
-                return Array.from(new Set(changedIds.filter(n => !Number.isNaN(n) && n > 0)));
-            }
-
-            function pulseNavNodesForPageIds(pageIds) {
-                if (!pageIds || pageIds.length === 0) return;
-
-                const set = new Set(pageIds.map(Number));
-
-                document.querySelectorAll('#navRoot .nav-node').forEach(li => {
-                    const linkType = (li.querySelector('.node-linktype')?.value || 'page').toLowerCase();
-                    if (linkType !== 'page') return;
-
-                    const raw = li.querySelector('.node-pageid')?.value || '';
-                    const pid = raw ? Number(raw) : 0;
-                    if (!(pid > 0) || !set.has(pid)) return;
-
-                    const sev = getPageSeverity(pid);
-
-                    if (sev === 'danger') {
-                        // ✅ only pulse/expand if not acknowledged for current flags
-                        if (isDangerAcknowledged(pid)) return;
-
-                        expandAncestors(li);
-                        scrollNodeIntoView(li); // optional
-                        acknowledgeDanger(pid);
-                    }
-
-                    if (sev === 'danger' && isDangerAcknowledged(pid)) {
-                        return; // return from this node handler (inside forEach), not whole function
-                    }
-
-                    // restart animation safely
-                    li.classList.remove('pulse-danger', 'pulse-warning', 'pulse-info');
-                    void li.offsetWidth;
-                    li.classList.add(sev === 'danger' ? 'pulse-danger' : sev === 'warning' ? 'pulse-warning' : 'pulse-info');
-
-                    // optional: also pulse warn badge if visible
-                    const badge = li.querySelector('.node-page-warn-badge');
-                    if (badge && !badge.classList.contains('d-none')) {
-                        badge.classList.remove('bg-warning', 'bg-danger', 'text-dark', 'text-white');
-                        if (sev === 'danger') badge.classList.add('bg-danger', 'text-white');
-                        else if (sev === 'warning') badge.classList.add('bg-warning', 'text-dark');
-                        else badge.classList.add('bg-info', 'text-white');
-                    }
-
-                    setTimeout(() => {
-                        li.classList.remove('pulse-danger', 'pulse-warning', 'pulse-info');
-                    }, 1300);
-                });
-            }
-
-
-
-            function getShowDeletedPref() {
-                return localStorage.getItem(showDeletedKey) === 'true';
-            }
-
-            function setShowDeletedPref(val) {
-                localStorage.setItem(showDeletedKey, val ? 'true' : 'false');
-            }
-
-            function applyShowDeletedUi() {
-                const showDeleted = getShowDeletedPref();
-
-                document.querySelectorAll('#navRoot .nav-node').forEach(li => {
-                    const isDel = li.dataset.deleted === 'true';
-                    li.classList.toggle('deleted-hidden', isDel && !showDeleted);
-                });
-
-                // Update button UI
-                const btn = document.getElementById('toggleDeletedBtn');
-                if (btn) {
-                    if (showDeleted) {
-                        btn.textContent = 'Hide deleted';
-                        btn.classList.remove('btn-outline-danger');
-                        btn.classList.add('btn-danger');
-                    } else {
-                        btn.textContent = 'Show deleted';
-                        btn.classList.remove('btn-danger');
-                        btn.classList.add('btn-outline-danger');
-                    }
-                }
-
-                // Recompute toggles + sort badges since visibility changed
-                refreshAllToggles();
-                refreshAllBadges();
-                if (typeof refreshSortBadges === 'function') refreshSortBadges();
-            }
-
-
+            // ---------- UI helpers ----------
             function showToast(text, state) {
                 if (!toastEl) return;
 
@@ -556,15 +239,14 @@
                 };
             }
 
-            // ------------------------------------------------------------
-            // URL + validation helpers
-            // ------------------------------------------------------------
+            // ---------- URL + validation ----------
             function normalizeUrlInput(u) { return (u || '').trim(); }
 
             function isValidUrlForNav(u) {
                 if (!u) return false;
                 return u.startsWith('/') || u.startsWith('http://') || u.startsWith('https://');
             }
+
             function getPageFlags(pageId) {
                 if (!pageId || pageId <= 0) return null;
                 return pageFlagsById[String(pageId)] || pageFlagsById[pageId] || null;
@@ -593,7 +275,6 @@
                             return;
                         }
 
-                        // block save when selected page is deleted/inactive/not published
                         const flags = getPageFlags(pageId);
                         if (!flags) {
                             errors.push({ index: i, message: `Row ${row} (“${label}”): Selected page is unavailable. Choose another page or use External URL.` });
@@ -615,7 +296,7 @@
                             return;
                         }
 
-                        // showInNavigation=false is warning-only (no blocking)
+                        // showInNavigation=false is warning-only
                         return;
                     }
 
@@ -637,14 +318,11 @@
                 return errors;
             }
 
-
             function showValidationErrors(errors, payloadItems) {
                 if (!errors || errors.length === 0) return;
 
-                // show summary
                 alert("Please fix the following before saving:\n\n" + errors.map(e => `• ${e.message}`).join('\n'));
 
-                // focus first error
                 const first = errors[0];
                 const li = document.querySelectorAll('#navRoot .nav-node')[first.index];
                 if (!li) return;
@@ -656,10 +334,7 @@
                 if (item) focusFirstErrorField(li, item);
             }
 
-
-            // ------------------------------------------------------------
-            // Pages JSON + flags JSON
-            // ------------------------------------------------------------
+            // ---------- page option rendering ----------
             function escapeHtml(s) {
                 return String(s)
                     .replaceAll('&', '&amp;')
@@ -668,162 +343,6 @@
                     .replaceAll('"', '&quot;')
                     .replaceAll("'", '&#039;');
             }
-
-            let pages = @Html.Raw(Model.PagesJson);
-
-            // ✅ inject page flags (already camelCased by JsonSerializerDefaults.Web)
-            const pageFlagsById = @Html.Raw(Model.PageFlagsJson ?? "{}");
-
-            // ✅ published status id (int)
-            const PUBLISHED_STATUS_ID = Number(@PageStatusIds.Published);
-
-
-            async function refreshPageOptionsFromServer() {
-                try {
-                    const res = await fetch(`?handler=PageOptions&menuId=${menuId}`, {
-                        method: 'GET',
-                        headers: { 'Accept': 'application/json' }
-                    });
-
-                    const data = await res.json().catch(() => null);
-                    if (!res.ok || !data || !data.success) return null;
-
-                    const nextPages = data.pages || [];
-                    const nextSnap = buildPagesSnapshot(nextPages);
-
-                    const prevSnap = lastPagesSnapshot;
-                    const changedIds = diffChangedIds(prevSnap, nextSnap);
-                    const delta = diffSnapshotCounts(prevSnap, nextSnap);
-
-                    pages = nextPages;
-                    lastPagesSnapshot = nextSnap;
-
-                    if (delta.changed || delta.added || delta.removed) {
-                        document.querySelectorAll('#navRoot .nav-node').forEach(li => {
-                            const sel = li.querySelector('.node-pageid');
-                            if (!sel) return;
-
-                            const current = sel.value || '';
-                            sel.innerHTML = `<option value="">-- Select page --</option>${renderPageOptions(current)}`;
-                        });
-
-                        refreshAllBadges();
-                    }
-
-                    return { delta, changedIds };
-                } catch {
-                    return null;
-                }
-            }
-
-
-
-            let lastFlagsSig = '';
-            let lastPagesSig = '';
-            let lastRefreshToastAt = 0;
-
-            function buildFlagsSignature(flagsObj) {
-                const ids = Object.keys(flagsObj || {}).map(Number).filter(n => !Number.isNaN(n)).sort((a, b) => a - b);
-                // id|show|status|active|deleted
-                return ids.map(id => {
-                    const f = flagsObj[String(id)] || flagsObj[id];
-                    if (!f) return `${id}|?`;
-                    return [
-                        id,
-                        f.showInNavigation ? 1 : 0,
-                        Number(f.pageStatusId ?? -1),
-                        f.isActive ? 1 : 0,
-                        f.isDeleted ? 1 : 0
-                    ].join('|');
-                }).join(';');
-            }
-
-            function buildPagesSignature(pagesArr) {
-                const arr = Array.isArray(pagesArr) ? pagesArr : [];
-                // id|title|slug
-                const norm = arr.map(p => ({
-                    id: Number(p.id ?? p.Id ?? 0),
-                    title: String(p.title ?? p.Title ?? ''),
-                    slug: String(p.slug ?? p.Slug ?? '')
-                })).filter(x => x.id > 0)
-                  .sort((a, b) => a.id - b.id);
-
-                return norm.map(x => `${x.id}|${x.title}|${x.slug}`).join(';');
-            }
-
-            function maybeToastRefreshChanged(message) {
-                const now = Date.now();
-                if (now - lastRefreshToastAt < 6000) return;
-
-                showToast(message || 'Page data updated', 'info');
-                lastRefreshToastAt = now;
-            }
-
-
-            function getSelectedPageId(li) {
-                const linkType = (li.querySelector('.node-linktype')?.value || 'page').toLowerCase();
-                if (linkType !== 'page') return null;
-
-                const raw = li.querySelector('.node-pageid')?.value || '';
-                const id = raw ? Number(raw) : null;
-                return (id && id > 0) ? id : null;
-            }
-
-            function updatePageWarnBadge(li) {
-                const badge = li.querySelector('.node-page-warn-badge');
-                if (!badge) return;
-
-                const linkType = (li.querySelector('.node-linktype')?.value || 'page').toLowerCase();
-                const pageId = getSelectedPageId(li);
-
-                // show only for internal page links with a selected page
-                if (linkType !== 'page' || !pageId) {
-                    badge.classList.add('d-none');
-                    badge.textContent = '';
-                    badge.title = '';
-                    return;
-                }
-
-                const flags = pageFlagsById[String(pageId)] || pageFlagsById[pageId];
-                if (!flags) {
-                    badge.classList.add('d-none');
-                    badge.textContent = '';
-                    badge.title = '';
-                    return;
-                }
-
-                const problems = [];
-
-                if (flags.isDeleted) problems.push('Page is deleted');
-                if (flags.isActive === false) problems.push('Page is inactive');
-                if (typeof flags.pageStatusId === 'number' && flags.pageStatusId !== PAGE_STATUS_PUBLISHED) problems.push('Page is not published');
-                if (flags.showInNavigation === false) problems.push('Page.ShowInNavigation is false');
-
-                if (problems.length === 0) {
-                    badge.classList.add('d-none');
-                    badge.textContent = '';
-                    badge.title = '';
-                    return;
-                }
-
-                const hard = problems.some(p =>
-                    p.includes('deleted') || p.includes('inactive') || p.includes('not published')
-                );
-
-                badge.classList.remove('d-none');
-                badge.textContent = '⚠';
-                badge.title = problems.join('\n');
-
-                if (hard) badge.title += '\n\nClick ⚠ to re-enable alerts for this page';
-
-
-                badge.classList.remove('bg-warning', 'bg-danger', 'text-dark', 'text-white');
-                if (hard) badge.classList.add('bg-danger', 'text-white');
-                else badge.classList.add('bg-warning', 'text-dark');
-            }
-
-
-
 
             function renderPageOptions(selectedId) {
                 const sel = selectedId ? String(selectedId) : '';
@@ -838,9 +357,7 @@
                 }).join('');
             }
 
-            // ------------------------------------------------------------
-            // Collapse logic
-            // ------------------------------------------------------------
+            // ---------- Collapse ----------
             function hasChildren(li) {
                 const ul = li.querySelector(':scope > .nav-children');
                 if (!ul) return false;
@@ -872,9 +389,7 @@
                 document.querySelectorAll('.nav-node').forEach(applyCollapseState);
             }
 
-            // ------------------------------------------------------------
-            // Visibility badge logic
-            // ------------------------------------------------------------
+            // ---------- Visibility badge ----------
             function normalizeRolesCsv(s) {
                 return (s || '')
                     .split(',')
@@ -909,12 +424,100 @@
                 badge.title = s.title;
             }
 
+            // ---------- Page warn badge ----------
+            function getSelectedPageId(li) {
+                const linkType = (li.querySelector('.node-linktype')?.value || 'page').toLowerCase();
+                if (linkType !== 'page') return null;
+
+                const raw = li.querySelector('.node-pageid')?.value || '';
+                const id = raw ? Number(raw) : null;
+                return (id && id > 0) ? id : null;
+            }
+
+            function getPageSeverity(pageId) {
+                const f = pageFlagsById[String(pageId)] || pageFlagsById[pageId];
+                if (!f) return 'info';
+
+                const isDeleted = !!f.isDeleted;
+                const isActive = f.isActive !== false;
+                const isPublished = (typeof f.pageStatusId === 'number')
+                    ? (f.pageStatusId === PAGE_STATUS_PUBLISHED)
+                    : true;
+
+                const showInNav = f.showInNavigation !== false;
+
+                const hard = isDeleted || !isActive || !isPublished;
+                if (hard) return 'danger';
+                if (!showInNav) return 'warning';
+                return 'info';
+            }
+
+            function updatePageWarnBadge(li) {
+                const badge = li.querySelector('.node-page-warn-badge');
+                if (!badge) return;
+
+                const linkType = (li.querySelector('.node-linktype')?.value || 'page').toLowerCase();
+                const pageId = getSelectedPageId(li);
+
+                if (linkType !== 'page' || !pageId) {
+                    badge.classList.add('d-none');
+                    badge.textContent = '';
+                    badge.title = '';
+                    return;
+                }
+
+                const flags = pageFlagsById[String(pageId)] || pageFlagsById[pageId];
+                if (!flags) {
+                    badge.classList.add('d-none');
+                    badge.textContent = '';
+                    badge.title = '';
+                    return;
+                }
+
+                const problems = [];
+                if (flags.isDeleted) problems.push('Page is deleted');
+                if (flags.isActive === false) problems.push('Page is inactive');
+                if (typeof flags.pageStatusId === 'number' && flags.pageStatusId !== PAGE_STATUS_PUBLISHED) problems.push('Page is not published');
+                if (flags.showInNavigation === false) problems.push('Page.ShowInNavigation is false');
+
+                if (problems.length === 0) {
+                    badge.classList.add('d-none');
+                    badge.textContent = '';
+                    badge.title = '';
+                    return;
+                }
+
+                const hard = problems.some(p =>
+                    p.includes('deleted') || p.includes('inactive') || p.includes('not published')
+                );
+
+                badge.classList.remove('d-none');
+                badge.textContent = '⚠';
+                badge.title = problems.join('\n');
+
+                if (hard) {
+                    const acked = isDangerAcked(pageId);
+                    badge.style.opacity = acked ? '0.6' : '1';
+                    badge.title += acked
+                        ? '\n\nClick ⚠ to re-enable alerts for this page'
+                        : '\n\nClick ⚠ to mute alerts for this page';
+                } else {
+                    badge.style.opacity = '1';
+                }
+
+                badge.classList.remove('bg-warning', 'bg-danger', 'text-dark', 'text-white');
+                if (hard) badge.classList.add('bg-danger', 'text-white');
+                else badge.classList.add('bg-warning', 'text-dark');
+            }
+
             function refreshAllBadges() {
                 document.querySelectorAll('#navRoot .nav-node').forEach(li => {
                     updateVisibilityBadge(li);
                     updatePageWarnBadge(li);
                 });
             }
+
+            // ---------- Sort badges ----------
             function refreshSortBadges(rootUl = document.getElementById('navRoot')) {
                 if (!rootUl) return;
 
@@ -922,7 +525,6 @@
                     const nodes = Array.from(ul.children)
                         .filter(x => x.classList && x.classList.contains('nav-node'));
 
-                    // Only count non-deleted nodes for S1..Sn
                     let n = 0;
 
                     nodes.forEach(li => {
@@ -932,7 +534,6 @@
                         const isDel = li.dataset.deleted === 'true';
 
                         if (isDel) {
-                            // Deleted nodes don’t need an order; show a neutral marker
                             badge.textContent = 'Del';
                             badge.classList.remove('bg-secondary');
                             badge.classList.add('bg-danger');
@@ -947,7 +548,6 @@
                         badge.title = `Sort order: ${n}`;
                     });
 
-                    // Recurse into child lists
                     nodes.forEach(li => {
                         const childUl = li.querySelector(':scope > .nav-children');
                         if (childUl) updateUl(childUl);
@@ -957,9 +557,7 @@
                 updateUl(rootUl);
             }
 
-            // ------------------------------------------------------------
-            // LinkType rules
-            // ------------------------------------------------------------
+            // ---------- LinkType rules ----------
             function setLinkType(li, type) {
                 const linkType = li.querySelector('.node-linktype');
                 const pageWrap = li.querySelector('.node-pagewrap');
@@ -993,13 +591,45 @@
 
             function normalizeLinkInputs(li) {
                 const urlVal = (li.querySelector('.node-url')?.value || '').trim();
-                if (urlVal) setLinkType(li, 'url');  // url wins
+                if (urlVal) setLinkType(li, 'url');
                 else setLinkType(li, 'page');
             }
 
-            // ------------------------------------------------------------
-            // Node creation
-            // ------------------------------------------------------------
+            // ---------- Deleted show/hide ----------
+            function getShowDeletedPref() {
+                return localStorage.getItem(showDeletedKey) === 'true';
+            }
+            function setShowDeletedPref(val) {
+                localStorage.setItem(showDeletedKey, val ? 'true' : 'false');
+            }
+
+            function applyShowDeletedUi() {
+                const showDeleted = getShowDeletedPref();
+
+                document.querySelectorAll('#navRoot .nav-node').forEach(li => {
+                    const isDel = li.dataset.deleted === 'true';
+                    li.classList.toggle('deleted-hidden', isDel && !showDeleted);
+                });
+
+                const btn = document.getElementById('toggleDeletedBtn');
+                if (btn) {
+                    if (showDeleted) {
+                        btn.textContent = 'Hide deleted';
+                        btn.classList.remove('btn-outline-danger');
+                        btn.classList.add('btn-danger');
+                    } else {
+                        btn.textContent = 'Show deleted';
+                        btn.classList.remove('btn-danger');
+                        btn.classList.add('btn-outline-danger');
+                    }
+                }
+
+                refreshAllToggles();
+                refreshAllBadges();
+                refreshSortBadges();
+            }
+
+            // ---------- Node creation ----------
             function uniqueTempId() {
                 return -Math.floor(Math.random() * 1000000000) - 1;
             }
@@ -1008,21 +638,19 @@
                 const li = document.createElement('li');
                 li.className = 'nav-node mb-2';
                 li.dataset.id = String(dto.id);
+                li.dataset.deleted = 'false';
 
-                // ✅ includes warn badge element
                 li.innerHTML = `
                     <div class="node-row border rounded p-2 bg-white">
                         <div class="d-flex align-items-start gap-2">
-                            <div class="drag-handle text-muted" title="Drag to reorder" style="cursor: grab; user-select: none;">
-                                &#x2630;
-                            </div>
+                            <div class="drag-handle text-muted" title="Drag to reorder" style="cursor: grab; user-select: none;">&#x2630;</div>
 
                             <button type="button"
                                     class="btn btn-sm btn-link toggle-children px-1 d-none"
                                     aria-label="Toggle children"
-                                    style="text-decoration:none;">
-                                ▼
-                            </button>
+                                    style="text-decoration:none;">▼</button>
+
+                            <span class="badge bg-secondary sort-badge">S?</span>
 
                             <span class="badge bg-warning text-dark d-none node-page-warn-badge" title=""></span>
 
@@ -1086,7 +714,6 @@
                                 <button type="button" class="btn btn-sm btn-outline-secondary add-child">Add Child</button>
                                 <button type="button" class="btn btn-sm btn-outline-danger delete-node">Delete</button>
                                 <button type="button" class="btn btn-sm btn-outline-success restore-node d-none">Restore</button>
-
                             </div>
                         </div>
                     </div>
@@ -1108,11 +735,10 @@
                 return li;
             }
 
-            // ------------------------------------------------------------
-            // Sortable
-            // ------------------------------------------------------------
+            // ---------- Sortable ----------
             function initSortable(ul) {
                 if (!ul) return;
+
                 if (!window.Sortable) {
                     showMsg('SortableJS is not loaded. Ensure SortableJS is available as window.Sortable.', 'error');
                     return;
@@ -1141,9 +767,7 @@
                 document.querySelectorAll('.nav-children').forEach(initSortable);
             }
 
-            // ------------------------------------------------------------
-            // Build payload
-            // ------------------------------------------------------------
+            // ---------- Build payload ----------
             function buildFlatList(rootUl) {
                 const items = [];
 
@@ -1204,9 +828,7 @@
                 return items;
             }
 
-            // ------------------------------------------------------------
-            // Save
-            // ------------------------------------------------------------
+            // ---------- Save ----------
             let saveInFlight = false;
             let saveQueued = false;
 
@@ -1301,10 +923,11 @@
 
                     refreshAllToggles();
                     refreshAllBadges();
+                    refreshSortBadges();
 
+                    // Optional refresh calls (keep your existing handlers)
                     await refreshPageFlagsFromServer();
                     await refreshPageOptionsFromServer();
-
 
                     if (saveQueued) {
                         saveQueued = false;
@@ -1325,9 +948,7 @@
                 }
             }
 
-            // ------------------------------------------------------------
-            // Node wiring
-            // ------------------------------------------------------------
+            // ---------- Node wiring ----------
             function wireAutosaveOnFieldChange(li) {
                 const inputs = li.querySelectorAll('input, select');
                 inputs.forEach(el => {
@@ -1364,7 +985,6 @@
                 li.dataset.deleted = deleted ? 'true' : 'false';
                 li.classList.toggle('is-deleted', !!deleted);
 
-                // Disable/enable fields (don’t disable restore button)
                 li.querySelectorAll('input, select, textarea').forEach(el => {
                     el.disabled = !!deleted;
                 });
@@ -1375,111 +995,12 @@
                 const delBtn = li.querySelector('.delete-node');
                 const restoreBtn = li.querySelector('.restore-node');
 
-                // If both exist, swap visibility. If only restore exists, just ensure it’s visible.
                 if (delBtn) delBtn.classList.toggle('d-none', !!deleted);
                 if (restoreBtn) restoreBtn.classList.toggle('d-none', !deleted);
 
                 updateVisibilityBadge(li);
                 updatePageWarnBadge(li);
-
             }
-
-            async function refreshPageFlagsFromServer() {
-                try {
-                    const res = await fetch(`?handler=PageFlags&menuId=${menuId}`, {
-                        method: 'GET',
-                        headers: { 'Accept': 'application/json' }
-                    });
-
-                    const data = await res.json().catch(() => null);
-                    if (!res.ok || !data || !data.success) return null;
-
-                    const nextFlags = data.flags || {};
-                    const nextSnap = buildFlagsSnapshot(nextFlags);
-
-                    const prevSnap = lastFlagsSnapshot;
-                    const changedIds = diffChangedIds(prevSnap, nextSnap);
-                    const delta = diffSnapshotCounts(prevSnap, nextSnap);
-
-                    // mutate const object
-                    Object.keys(pageFlagsById).forEach(k => delete pageFlagsById[k]);
-                    Object.entries(nextFlags).forEach(([k, v]) => pageFlagsById[k] = v);
-
-                    lastFlagsSnapshot = nextSnap;
-
-                    if (delta.changed || delta.added || delta.removed) {
-                        refreshAllBadges();
-                    }
-
-                    return { delta, changedIds };
-                } catch {
-                    return null;
-                }
-            }
-
-
-
-
-            const REFRESH_MS = 45000;
-
-            function isUserInteractingWithEditor() {
-                const el = document.activeElement;
-                if (!el) return false;
-
-                // If focused anywhere inside a nav node editor, assume interaction
-                const inNode = el.closest && el.closest('#navRoot .nav-node');
-                return !!inNode;
-            }
-
-            async function periodicRefreshTick() {
-                if (isSaving || saveInFlight) return;
-                if (isDirty) return;
-                if (document.hidden) return;
-                if (isUserInteractingWithEditor()) return;
-
-                const flagsRes = await refreshPageFlagsFromServer();
-                const pagesRes = await refreshPageOptionsFromServer();
-
-                if (!flagsRes && !pagesRes) return;
-
-                const f = flagsRes?.delta || { changed: 0, added: 0, removed: 0 };
-                const p = pagesRes?.delta || { changed: 0, added: 0, removed: 0 };
-
-                // union of changed ids (flags + option changes)
-                const ids = Array.from(new Set([
-                    ...(flagsRes?.changedIds || []),
-                    ...(pagesRes?.changedIds || [])
-                ]));
-
-                if ((f.changed + f.added + f.removed + p.changed + p.added + p.removed) > 0) {
-                    const msg = formatRefreshToast(f, p);
-                    maybeToastRefreshChanged(msg);
-
-                    // ✅ highlight nav items that link to affected pages
-                    pulseNavNodesForPageIds(ids);
-                }
-            }
-
-
-
-            function startPeriodicRefresh() {
-                // Initial “quiet” refresh shortly after load (optional)
-                setTimeout(() => { periodicRefreshTick(); }, 2500);
-
-                // Interval refresh
-                setInterval(() => { periodicRefreshTick(); }, REFRESH_MS);
-
-                // When user returns to tab, refresh once
-                document.addEventListener('visibilitychange', () => {
-                    if (!document.hidden) periodicRefreshTick();
-                });
-
-                // When window regains focus, refresh once
-                window.addEventListener('focus', () => {
-                    periodicRefreshTick();
-                });
-            }
-
 
             function wireNodeUi(li) {
                 const toggleBtn = li.querySelector('.toggle-children');
@@ -1513,6 +1034,8 @@
                     applyCollapseState(li);
                     applyCollapseState(childLi);
 
+                    refreshSortBadges();
+
                     setDirty(true);
                     autoSaveDebounced();
                 });
@@ -1520,29 +1043,28 @@
                 li.querySelector('.delete-node')?.addEventListener('click', () => {
                     setDeletedState(li, true);
                     applyShowDeletedUi();
+
                     const parentLi = li.closest('ul')?.closest('li.nav-node');
                     if (parentLi) applyCollapseState(parentLi);
 
-                    refreshSortBadges();   // ✅ THIS is the missing line
+                    refreshSortBadges();
 
                     setDirty(true);
                     autoSaveDebounced();
                 });
-
 
                 li.querySelector('.restore-node')?.addEventListener('click', () => {
                     setDeletedState(li, false);
                     applyShowDeletedUi();
+
                     const parentLi = li.closest('ul')?.closest('li.nav-node');
                     if (parentLi) applyCollapseState(parentLi);
 
-                    refreshSortBadges();   // ✅ ADD THIS
+                    refreshSortBadges();
 
                     setDirty(true);
                     autoSaveDebounced();
                 });
-
-
 
                 updateVisibilityBadge(li);
                 updatePageWarnBadge(li);
@@ -1558,6 +1080,14 @@
 
                     normalizeLinkInputs(li);
                     applyCollapseState(li);
+
+                    // Ensure initial deleted render is consistent
+                    if (li.dataset.deleted === 'true') {
+                        li.classList.add('is-deleted');
+                        li.querySelectorAll('input, select, textarea').forEach(el => el.disabled = true);
+                        li.querySelector('.add-child')?.setAttribute('disabled', 'disabled');
+                    }
+
                     updateVisibilityBadge(li);
                     updatePageWarnBadge(li);
                 });
@@ -1565,10 +1095,10 @@
                 refreshAllToggles();
                 refreshAllBadges();
                 refreshSortBadges();
-
             }
+
+            // ---------- Validation focus helpers ----------
             function expandNodeAndAncestors(li) {
-                // Walk up through parent nav-node elements and expand their child ULs
                 let cur = li;
                 while (cur) {
                     const childUl = cur.querySelector(':scope > .nav-children');
@@ -1580,7 +1110,6 @@
                         localStorage.setItem(collapseKeyFor(cur), 'false');
                     }
 
-                    // next ancestor nav-node
                     const parentUl = cur.closest('ul');
                     const parentLi = parentUl?.closest('li.nav-node') || null;
                     cur = parentLi;
@@ -1610,7 +1139,6 @@
                     }
                 }
 
-                // fallback: label field
                 const label = li.querySelector('.node-label');
                 if (label) {
                     label.focus({ preventScroll: true });
@@ -1620,10 +1148,10 @@
             }
 
             function scrollToNode(li) {
-                // smooth scroll, but keep focus control separate
                 li.scrollIntoView({ behavior: 'smooth', block: 'center' });
             }
 
+            // ---------- Snapshots + refresh ----------
             function buildFlagsSnapshot(flagsObj) {
                 const snap = {};
                 Object.entries(flagsObj || {}).forEach(([k, f]) => {
@@ -1639,27 +1167,6 @@
                 return snap;
             }
 
-            function diffSnapshotCounts(prev, next) {
-                // returns { changed, added, removed }
-                let changed = 0, added = 0, removed = 0;
-
-                const prevKeys = new Set(Object.keys(prev || {}));
-                const nextKeys = new Set(Object.keys(next || {}));
-
-                // added
-                nextKeys.forEach(k => { if (!prevKeys.has(k)) added++; });
-
-                // removed
-                prevKeys.forEach(k => { if (!nextKeys.has(k)) removed++; });
-
-                // changed
-                nextKeys.forEach(k => {
-                    if (prevKeys.has(k) && prev[k] !== next[k]) changed++;
-                });
-
-                return { changed, added, removed };
-            }
-
             function buildPagesSnapshot(pagesArr) {
                 const snap = {};
                 (Array.isArray(pagesArr) ? pagesArr : []).forEach(p => {
@@ -1672,11 +1179,46 @@
                 return snap;
             }
 
+            function diffSnapshotCounts(prev, next) {
+                let changed = 0, added = 0, removed = 0;
+
+                const prevKeys = new Set(Object.keys(prev || {}));
+                const nextKeys = new Set(Object.keys(next || {}));
+
+                nextKeys.forEach(k => { if (!prevKeys.has(k)) added++; });
+                prevKeys.forEach(k => { if (!nextKeys.has(k)) removed++; });
+                nextKeys.forEach(k => { if (prevKeys.has(k) && prev[k] !== next[k]) changed++; });
+
+                return { changed, added, removed };
+            }
+
+            function diffChangedIds(prevSnap, nextSnap) {
+                const changedIds = [];
+                const prevKeys = new Set(Object.keys(prevSnap || {}));
+                const nextKeys = new Set(Object.keys(nextSnap || {}));
+
+                nextKeys.forEach(k => { if (!prevKeys.has(k)) changedIds.push(Number(k)); });
+                prevKeys.forEach(k => { if (!nextKeys.has(k)) changedIds.push(Number(k)); });
+
+                nextKeys.forEach(k => {
+                    if (prevKeys.has(k) && prevSnap[k] !== nextSnap[k]) changedIds.push(Number(k));
+                });
+
+                return Array.from(new Set(changedIds.filter(n => !Number.isNaN(n) && n > 0)));
+            }
+
+            function maybeToastRefreshChanged(message) {
+                const now = Date.now();
+                if (now - lastRefreshToastAt < 6000) return;
+
+                showToast(message || 'Page data updated', 'info');
+                lastRefreshToastAt = now;
+            }
+
             function formatRefreshToast(flagsDelta, pagesDelta) {
                 const parts = [];
 
                 if ((flagsDelta.changed + flagsDelta.added + flagsDelta.removed) > 0) {
-                    // Most useful is "changed"
                     const bits = [];
                     if (flagsDelta.changed) bits.push(`${flagsDelta.changed} status changed`);
                     if (flagsDelta.added) bits.push(`${flagsDelta.added} new`);
@@ -1695,15 +1237,184 @@
                 return parts.length ? parts.join(' • ') : 'Page data updated';
             }
 
+            async function refreshPageFlagsFromServer() {
+                try {
+                    const res = await fetch(`?handler=PageFlags&menuId=${menuId}`, {
+                        method: 'GET',
+                        headers: { 'Accept': 'application/json' }
+                    });
 
-            // ------------------------------------------------------------
-            // Init
-            // ------------------------------------------------------------
+                    const data = await res.json().catch(() => null);
+                    if (!res.ok || !data || !data.success) return null;
+
+                    const nextFlags = data.flags || {};
+                    const nextSnap = buildFlagsSnapshot(nextFlags);
+
+                    const prevSnap = lastFlagsSnapshot;
+                    const changedIds = diffChangedIds(prevSnap, nextSnap);
+                    const delta = diffSnapshotCounts(prevSnap, nextSnap);
+
+                    Object.keys(pageFlagsById).forEach(k => delete pageFlagsById[k]);
+                    Object.entries(nextFlags).forEach(([k, v]) => pageFlagsById[k] = v);
+
+                    lastFlagsSnapshot = nextSnap;
+
+                    if (delta.changed || delta.added || delta.removed) {
+                        refreshAllBadges();
+                    }
+
+                    // prune ack if signature changed
+                    for (const [pid, sig] of ackDangerByPageId.entries()) {
+                        const nowSig = nextSnap[String(pid)];
+                        if (!nowSig || nowSig !== sig) {
+                            ackDangerByPageId.delete(pid);
+                        }
+                    }
+                    saveAckToStorage();
+
+                    return { delta, changedIds };
+                } catch {
+                    return null;
+                }
+            }
+
+            async function refreshPageOptionsFromServer() {
+                try {
+                    const res = await fetch(`?handler=PageOptions&menuId=${menuId}`, {
+                        method: 'GET',
+                        headers: { 'Accept': 'application/json' }
+                    });
+
+                    const data = await res.json().catch(() => null);
+                    if (!res.ok || !data || !data.success) return null;
+
+                    const nextPages = data.pages || [];
+                    const nextSnap = buildPagesSnapshot(nextPages);
+
+                    const prevSnap = lastPagesSnapshot;
+                    const changedIds = diffChangedIds(prevSnap, nextSnap);
+                    const delta = diffSnapshotCounts(prevSnap, nextSnap);
+
+                    pages = nextPages;
+                    lastPagesSnapshot = nextSnap;
+
+                    if (delta.changed || delta.added || delta.removed) {
+                        document.querySelectorAll('#navRoot .nav-node').forEach(li => {
+                            const sel = li.querySelector('.node-pageid');
+                            if (!sel) return;
+
+                            const current = sel.value || '';
+                            sel.innerHTML = `<option value="">-- Select page --</option>${renderPageOptions(current)}`;
+                        });
+
+                        refreshAllBadges();
+                    }
+
+                    return { delta, changedIds };
+                } catch {
+                    return null;
+                }
+            }
+
+            function pulseNavNodesForPageIds(pageIds) {
+                if (!pageIds || pageIds.length === 0) return;
+
+                const set = new Set(pageIds.map(Number));
+
+                document.querySelectorAll('#navRoot .nav-node').forEach(li => {
+                    const linkType = (li.querySelector('.node-linktype')?.value || 'page').toLowerCase();
+                    if (linkType !== 'page') return;
+
+                    const raw = li.querySelector('.node-pageid')?.value || '';
+                    const pid = raw ? Number(raw) : 0;
+                    if (!(pid > 0) || !set.has(pid)) return;
+
+                    const sev = getPageSeverity(pid);
+
+                    if (sev === 'danger') {
+                        if (isDangerAcked(pid)) return;
+                        setDangerAck(pid, true);
+                        saveAckToStorage();
+                    }
+
+                    li.classList.remove('pulse-danger', 'pulse-warning', 'pulse-info');
+                    void li.offsetWidth;
+                    li.classList.add(sev === 'danger' ? 'pulse-danger' : sev === 'warning' ? 'pulse-warning' : 'pulse-info');
+
+                    setTimeout(() => {
+                        li.classList.remove('pulse-danger', 'pulse-warning', 'pulse-info');
+                    }, 1300);
+                });
+            }
+
+            const REFRESH_MS = 45000;
+
+            function isUserInteractingWithEditor() {
+                const el = document.activeElement;
+                if (!el) return false;
+                return !!(el.closest && el.closest('#navRoot .nav-node'));
+            }
+
+            async function periodicRefreshTick() {
+                if (isSaving || saveInFlight) return;
+                if (isDirty) return;
+                if (document.hidden) return;
+                if (isUserInteractingWithEditor()) return;
+
+                const flagsRes = await refreshPageFlagsFromServer();
+                const pagesRes = await refreshPageOptionsFromServer();
+
+                if (!flagsRes && !pagesRes) return;
+
+                const f = flagsRes?.delta || { changed: 0, added: 0, removed: 0 };
+                const p = pagesRes?.delta || { changed: 0, added: 0, removed: 0 };
+
+                const ids = Array.from(new Set([
+                    ...(flagsRes?.changedIds || []),
+                    ...(pagesRes?.changedIds || [])
+                ]));
+
+                if ((f.changed + f.added + f.removed + p.changed + p.added + p.removed) > 0) {
+                    const msg = formatRefreshToast(f, p);
+                    maybeToastRefreshChanged(msg);
+                    pulseNavNodesForPageIds(ids);
+                }
+            }
+
+            function startPeriodicRefresh() {
+                setTimeout(() => { periodicRefreshTick(); }, 2500);
+                setInterval(() => { periodicRefreshTick(); }, REFRESH_MS);
+
+                document.addEventListener('visibilitychange', () => {
+                    if (!document.hidden) periodicRefreshTick();
+                });
+
+                window.addEventListener('focus', () => {
+                    periodicRefreshTick();
+                });
+            }
+
+            // ---------- Init ----------
             document.addEventListener('DOMContentLoaded', () => {
                 updateSaveButtonUi();
 
                 initAllSortables();
                 wireExistingNodes();
+
+                // snapshots init
+                lastFlagsSnapshot = buildFlagsSnapshot(pageFlagsById);
+                lastPagesSnapshot = buildPagesSnapshot(pages);
+
+                loadAckFromStorage();
+
+                // prune ack entries that don't match current snapshot
+                for (const [pid, sig] of ackDangerByPageId.entries()) {
+                    const nowSig = lastFlagsSnapshot[String(pid)];
+                    if (!nowSig || nowSig !== sig) ackDangerByPageId.delete(pid);
+                }
+                saveAckToStorage();
+
+                wireBadgeAckToggle();
 
                 document.getElementById('toggleDeletedBtn')?.addEventListener('click', () => {
                     const next = !getShowDeletedPref();
@@ -1747,19 +1458,8 @@
                     window.open(publicBaseUrl, '_blank');
                 });
 
-                lastFlagsSig = buildFlagsSignature(pageFlagsById);
-                lastPagesSig = buildPagesSignature(pages);
-
-                let lastFlagsSnapshot = {};   // { [id]: "show|status|active|deleted" }
-                let lastPagesSnapshot = {};   // { [id]: "title|slug" }
-
-                lastFlagsSnapshot = buildFlagsSnapshot(pageFlagsById);
-                lastPagesSnapshot = buildPagesSnapshot(pages);
-
-                wireBadgeAckReset();
-               applyShowDeletedUi();
-               startPeriodicRefresh();
-
+                applyShowDeletedUi();
+                startPeriodicRefresh();
             });
 
             window.addEventListener('beforeunload', (e) => {

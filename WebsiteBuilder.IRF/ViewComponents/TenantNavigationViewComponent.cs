@@ -18,18 +18,42 @@ namespace WebsiteBuilder.IRF.ViewComponents
         {
             var items = await _nav.GetMenuAsync(menuId, ct);
 
-            // Pass raw Request.Path; VM handles normalization (slashes, /home, casing, etc.)
-            var currentPath = HttpContext?.Request?.Path.Value ?? "/";
+            // Optional defensive deep clone (safe even if someone changes NavItem later)
+            var safeItems = Clone(items);
 
+            var currentPath = HttpContext?.Request?.Path.Value ?? "/";
             var resolvedVariant = variant ?? (menuId == 2 ? "footer" : "header");
 
-            var vm = TenantNavigationVm.From(
-                items,
-                currentPath,
-                menuId,
-                resolvedVariant);
+            var vm = TenantNavigationVm.From(safeItems, currentPath, menuId, resolvedVariant);
 
-            return View(vm); // Pages/Shared/Components/TenantNavigation/Default.cshtml
+            return View(vm);
+        }
+
+        private static IReadOnlyList<NavItem> Clone(IReadOnlyList<NavItem>? src)
+        {
+            if (src == null || src.Count == 0)
+                return Array.Empty<NavItem>();
+
+            var list = new List<NavItem>(src.Count);
+            for (var i = 0; i < src.Count; i++)
+                list.Add(CloneItem(src[i]));
+
+            return list;
+        }
+
+        private static NavItem CloneItem(NavItem n)
+        {
+            IReadOnlyList<NavItem> kids = (n.Children != null && n.Children.Count > 0)
+                ? Clone(n.Children)
+                : Array.Empty<NavItem>();
+
+            return new NavItem(
+                n.Title,
+                n.Url,
+                n.Order,
+                n.OpenInNewTab,
+                kids
+            );
         }
     }
 }

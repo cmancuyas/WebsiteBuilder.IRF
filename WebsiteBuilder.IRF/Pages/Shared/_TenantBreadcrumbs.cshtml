@@ -9,13 +9,13 @@
         if (string.IsNullOrWhiteSpace(p))
             return "/";
 
-        // Only normalize app-relative paths; do not touch absolute URLs
-        if (!p.StartsWith("/", StringComparison.Ordinal))
-            return p;
-
         // Strip query/hash if present
         var q = p.IndexOfAny(new[] { '?', '#' });
         if (q >= 0) p = p.Substring(0, q);
+
+        // Only normalize app-relative paths; do not touch absolute URLs
+        if (!p.StartsWith("/", StringComparison.Ordinal))
+            return p;
 
         // Normalize trailing slash (except root)
         p = p.TrimEnd('/');
@@ -33,98 +33,119 @@
            (url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
             url.StartsWith("https://", StringComparison.OrdinalIgnoreCase));
 
+    private static bool IsAppRelativeUrl(string? url)
+        => !string.IsNullOrWhiteSpace(url) &&
+           url.StartsWith("/", StringComparison.Ordinal) &&
+           !IsAbsoluteUrl(url);
+
     private static bool IsMeaningfulCrumbUrl(string? url)
         => !string.IsNullOrWhiteSpace(url) &&
            !url.Equals("#", StringComparison.Ordinal) &&
-           !IsAbsoluteUrl(url);
+           IsAppRelativeUrl(url);
 
-    private static bool MatchCurrent(string currentPath, string itemUrl)
+    // Section-aware match: exact or prefix (/about/team activates /about)
+    private static bool MatchCurrentOrSection(string currentPath, string itemUrl)
     {
-        if (IsAbsoluteUrl(itemUrl))
-            return false;
+        if (!IsAppRelativeUrl(itemUrl)) return false;
 
-        return string.Equals(
-            NormalizePath(currentPath),
-            NormalizePath(itemUrl),
-            StringComparison.OrdinalIgnoreCase);
+        var cur = NormalizePath(currentPath);
+        var url = NormalizePath(itemUrl);
+
+        if (url == "/") return cur == "/";
+        if (string.Equals(cur, url, StringComparison.OrdinalIgnoreCase)) return true;
+
+        return cur.StartsWith(url + "/", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool TryFindPath(
+    // Find the BEST trail = deepest match (longest matching URL)
+    private static void FindBestTrail(
         IReadOnlyList<NavItem> items,
         string currentPath,
-        List<NavItem> trail)
+        List<NavItem> working,
+        ref List<NavItem>? best,
+        ref int bestScore)
     {
         foreach (var item in items)
         {
-            trail.Add(item);
+            working.Add(item);
 
-            if (MatchCurrent(currentPath, item.Url))
-                return true;
+            // Score by normalized URL length (deeper wins)
+            if (MatchCurrentOrSection(currentPath, item.Url))
+            {
+                var score = NormalizePath(item.Url).Length;
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    best = new List<NavItem>(working);
+                }
+            }
 
             if (item.Children != null && item.Children.Count > 0)
             {
-                if (TryFindPath(item.Children, currentPath, trail))
-                    return true;
+                FindBestTrail(item.Children, currentPath, working, ref best, ref bestScore);
             }
 
-            trail.RemoveAt(trail.Count - 1);
+            working.RemoveAt(working.Count - 1);
         }
-
-        return false;
     }
 }
 
 @if (TenantContext.IsResolved)
 {
     var currentPath = NormalizePath(Context?.Request?.Path.Value ?? "/");
-    var headerItems = await NavService.GetHeaderAsync();
 
-    var trail = new List<NavItem>();
-    var found = TryFindPath(headerItems, currentPath, trail);
-
-    // Hide breadcrumbs on home/root or when current page isn't in the header nav.
-    if (found && trail.Count > 0 && currentPath != "/")
+    // Hide breadcrumbs on home/root
+    if (currentPath != "/")
     {
-        // If trail begins with a "Home" entry (Url "/" or "/home"), remove it to prevent "Home > Home".
-        var firstUrl = NormalizePath(trail[0].Url);
-        if (firstUrl == "/")
-            trail.RemoveAt(0);
+        var headerItems = await NavService.GetHeaderAsync();
 
-        // If nothing remains after trimming, don't render breadcrumbs.
-        if (trail.Count > 0)
+        List<NavItem>? bestTrail = null;
+        var bestScore = -1;
+
+        FindBestTrail(headerItems, currentPath, new List<NavItem>(), ref bestTrail, ref bestScore);
+
+        // Only render when we found a matching nav path
+        if (bestTrail != null && bestTrail.Count > 0)
         {
-            <nav aria-label="breadcrumb" class="mb-3">
-                <ol class="breadcrumb mb-0">
-                    <li class="breadcrumb-item">
-                        <a href="/" class="text-decoration-none">Home</a>
-                    </li>
+            // If trail begins with a "Home" entry (Url "/" or "/home"), remove it to prevent "Home > Home".
+            var firstUrl = NormalizePath(bestTrail[0].Url);
+            if (firstUrl == "/")
+                bestTrail.RemoveAt(0);
 
-                    @for (int i = 0; i < trail.Count; i++)
-                    {
-                        var item = trail[i];
-                        var isLast = (i == trail.Count - 1);
+            if (bestTrail.Count > 0)
+            {
+                <nav aria-label="breadcrumb" class="mb-3">
+                    <ol class="breadcrumb mb-0">
+                        <li class="breadcrumb-item">
+                            <a href="/" class="text-decoration-none">Home</a>
+                        </li>
 
-                        if (isLast)
+                        @for (int i = 0; i < bestTrail.Count; i++)
                         {
-                            <li class="breadcrumb-item active" aria-current="page">@item.Title</li>
-                        }
-                        else
-                        {
-                            // Only link intermediate crumbs when URL is an app-relative meaningful URL (not absolute, not "#").
-                            if (IsMeaningfulCrumbUrl(item.Url))
+                            var item = bestTrail[i];
+                            var isLast = (i == bestTrail.Count - 1);
+
+                            if (isLast)
                             {
-                                <li class="breadcrumb-item">
-                                    <a class="text-decoration-none" href="@item.Url">@item.Title</a>
-                                </li>
+                                <li class="breadcrumb-item active" aria-current="page">@item.Title</li>
                             }
                             else
                             {
-                                <li class="breadcrumb-item">@item.Title</li>
+                                if (IsMeaningfulCrumbUrl(item.Url))
+                                {
+                                    <li class="breadcrumb-item">
+                                        <a class="text-decoration-none" href="@item.Url">@item.Title</a>
+                                    </li>
+                                }
+                                else
+                                {
+                                    <li class="breadcrumb-item">@item.Title</li>
+                                }
                             }
                         }
-                    }
-                </ol>
-            </nav>
+                    </ol>
+                </nav>
+            }
         }
     }
 }
