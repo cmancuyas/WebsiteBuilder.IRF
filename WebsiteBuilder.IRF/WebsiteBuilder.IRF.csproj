@@ -29,7 +29,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Folder Include="Infrastructure\ViewComponents\" />
     <Folder Include="wwwroot\uploads\" />
   </ItemGroup>
 

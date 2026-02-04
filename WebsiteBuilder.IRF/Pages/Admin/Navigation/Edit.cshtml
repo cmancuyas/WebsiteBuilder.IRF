@@ -20,6 +20,9 @@
     <div class="d-flex gap-2">
         <a asp-page="/Admin/Navigation/Index" class="btn btn-outline-secondary">Back</a>
         <button id="addRootBtn" type="button" class="btn btn-outline-primary">Add Item</button>
+        <button type="button" id="undoBtn" class="btn btn-outline-secondary btn-sm" disabled>Undo</button>
+        <button type="button" id="redoBtn" class="btn btn-outline-secondary btn-sm" disabled>Redo</button>
+
         <button id="saveBtn" type="button" class="btn btn-primary">Save Changes</button>
         <button id="toggleDeletedBtn" type="button" class="btn btn-outline-danger">
             Show deleted
@@ -76,261 +79,77 @@
      style="background:#222;color:#fff;z-index:1050;font-size:0.875rem;max-width:360px;">
 </div>
 
-<style>
-    .node-visibility-badge {
-        font-weight: 600;
-    }
-
-    .nav-tree .node-row {
-        background: #fff;
-    }
-
-    .nav-node {
-        list-style: none;
-    }
-
-    .drag-handle {
-        width: 20px;
-        text-align: center;
-    }
-
-    .toggle-children {
-        width: 28px;
-        text-align: center;
-    }
-
-    .nav-node.is-deleted > .node-row {
-        opacity: .55;
-        filter: grayscale(0.15);
-    }
-
-    .nav-node.is-deleted .drag-handle,
-    .nav-node.is-deleted .toggle-children {
-        pointer-events: none;
-        opacity: .4;
-    }
-
-    .nav-node.deleted-hidden {
-        display: none !important;
-    }
-
-    @@keyframes navPulse {
-        0% {
-            box-shadow: 0 0 0 0 rgba(255,193,7,.65);
-        }
-
-        70% {
-            box-shadow: 0 0 0 8px rgba(255,193,7,0);
-        }
-
-        100% {
-            box-shadow: 0 0 0 0 rgba(255,193,7,0);
-        }
-    }
-
-    .nav-node.pulse-update > .node-row {
-        animation: navPulse 1.2s ease-out 1;
-        border-color: #ffc107 !important;
-    }
-
-    @@keyframes navPulseWarning {
-        0% {
-            box-shadow: 0 0 0 0 rgba(255,193,7,.65);
-        }
-
-        70% {
-            box-shadow: 0 0 0 8px rgba(255,193,7,0);
-        }
-
-        100% {
-            box-shadow: 0 0 0 0 rgba(255,193,7,0);
-        }
-    }
-    @@keyframes navPulseDanger {
-        0% {
-            box-shadow: 0 0 0 0 rgba(220,53,69,.55);
-        }
-
-        70% {
-            box-shadow: 0 0 0 8px rgba(220,53,69,0);
-        }
-
-        100% {
-            box-shadow: 0 0 0 0 rgba(220,53,69,0);
-        }
-    }
-    @@keyframes navPulseInfo {
-        0% {
-            box-shadow: 0 0 0 0 rgba(13,110,253,.45);
-        }
-
-        70% {
-            box-shadow: 0 0 0 8px rgba(13,110,253,0);
-        }
-
-        100% {
-            box-shadow: 0 0 0 0 rgba(13,110,253,0);
-        }
-    }
-
-    .nav-node.pulse-warning > .node-row {
-        animation: navPulseWarning 1.2s ease-out 1;
-        border-color: #ffc107 !important;
-    }
-
-    .nav-node.pulse-danger > .node-row {
-        animation: navPulseDanger 1.2s ease-out 1;
-        border-color: #dc3545 !important;
-    }
-
-    .nav-node.pulse-info > .node-row {
-        animation: navPulseInfo 1.2s ease-out 1;
-        border-color: #0d6efd !important;
-    }
-
-</style>
 
 @section Scripts {
     <script src="~/lib/jquery-sortablejs/jquery-sortable.min.js"></script>
+    <script src="~/lib/sortable/sortable.min.js"></script>
 
     <script>
-        (function () {
+        (() => {
+            'use strict';
+
+            // -----------------------------
+            // State
+            // -----------------------------
             let isDirty = false;
-            let isSaving = false;
-            let lastSavedAt = new Date();
+            let isSaving = false;          // UI state
+            let saveInFlight = false;      // network state
+            let saveQueued = false;
+
+            let lastSavedAt = null;
 
             const menuId = @Model.MenuId;
             const sortableGroupName = 'nav-menu-' + menuId;
-            const publicBaseUrl = @Html.Raw(JsonSerializer.Serialize(Model.PublicBaseUrl, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
 
-            const toastEl = document.getElementById("navToast");
+            const publicBaseUrl = @Html.Raw(JsonSerializer.Serialize(Model.PublicBaseUrl, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+            const toastEl = document.getElementById('navToast');
+            const navRoot = document.getElementById('navRoot');
 
             const showDeletedKey = `nav-show-deleted-${menuId}`;
 
-            function getPageSeverity(pageId) {
-                const f = pageFlagsById[String(pageId)] || pageFlagsById[pageId];
-                if (!f) return 'info';
+            // ✅ server-provided numeric ID (do not hardcode)
+            const PAGE_STATUS_PUBLISHED = Number(@PageStatusIds.Published);
 
-                const isDeleted = !!f.isDeleted;
-                const isActive = f.isActive !== false; // default true if missing
-                const isPublished = typeof f.pageStatusId === 'number'
-                    ? (f.pageStatusId === PAGE_STATUS_PUBLISHED)
-                    : true;
+            // pages/options
+            let pages = @Html.Raw(Model.PagesJson);
 
-                const showInNav = f.showInNavigation !== false; // default true if missing
+            // flags (mutated on refresh)
+            const pageFlagsById = @Html.Raw(Model.PageFlagsJson ?? "{}");
 
-                const hard = isDeleted || !isActive || !isPublished;
-                if (hard) return 'danger';
+            // periodic refresh snapshots
+            let lastFlagsSnapshot = {}; // { [id]: "show|status|active|deleted" }
+            let lastPagesSnapshot = {}; // { [id]: "title|slug" }
+            let lastRefreshToastAt = 0;
 
-                if (!showInNav) return 'warning';
+            // danger ack (persisted)
+            const ackDangerByPageId = new Map(); // pageId -> lastSig
+            const ackStorageKey = `nav-ack-danger-${menuId}`;
 
-                return 'info';
+            const REFRESH_MS = 45000;
+
+            // -----------------------------
+            // Small utilities
+            // -----------------------------
+            function debounce(fn, ms) {
+                let t = null;
+                return function (...args) {
+                    clearTimeout(t);
+                    t = setTimeout(() => fn.apply(this, args), ms);
+                };
             }
-
-
-            function diffChangedIds(prevSnap, nextSnap) {
-                const changedIds = [];
-                const prevKeys = new Set(Object.keys(prevSnap || {}));
-                const nextKeys = new Set(Object.keys(nextSnap || {}));
-
-                // ids that are new or removed aren’t directly linkable, but include anyway
-                nextKeys.forEach(k => { if (!prevKeys.has(k)) changedIds.push(Number(k)); });
-                prevKeys.forEach(k => { if (!nextKeys.has(k)) changedIds.push(Number(k)); });
-
-                // ids that changed
-                nextKeys.forEach(k => {
-                    if (prevKeys.has(k) && prevSnap[k] !== nextSnap[k]) changedIds.push(Number(k));
-                });
-
-                return Array.from(new Set(changedIds.filter(n => !Number.isNaN(n) && n > 0)));
-            }
-
-            function pulseNavNodesForPageIds(pageIds) {
-                if (!pageIds || pageIds.length === 0) return;
-
-                const set = new Set(pageIds.map(Number));
-
-                document.querySelectorAll('#navRoot .nav-node').forEach(li => {
-                    const linkType = (li.querySelector('.node-linktype')?.value || 'page').toLowerCase();
-                    if (linkType !== 'page') return;
-
-                    const raw = li.querySelector('.node-pageid')?.value || '';
-                    const pid = raw ? Number(raw) : 0;
-                    if (!(pid > 0) || !set.has(pid)) return;
-
-                    const sev = getPageSeverity(pid);
-
-                    // restart animation safely
-                    li.classList.remove('pulse-danger', 'pulse-warning', 'pulse-info');
-                    void li.offsetWidth;
-                    li.classList.add(sev === 'danger' ? 'pulse-danger' : sev === 'warning' ? 'pulse-warning' : 'pulse-info');
-
-                    // optional: also pulse warn badge if visible
-                    const badge = li.querySelector('.node-page-warn-badge');
-                    if (badge && !badge.classList.contains('d-none')) {
-                        badge.classList.remove('bg-warning', 'bg-danger', 'text-dark', 'text-white');
-                        if (sev === 'danger') badge.classList.add('bg-danger', 'text-white');
-                        else if (sev === 'warning') badge.classList.add('bg-warning', 'text-dark');
-                        else badge.classList.add('bg-info', 'text-white');
-                    }
-
-                    setTimeout(() => {
-                        li.classList.remove('pulse-danger', 'pulse-warning', 'pulse-info');
-                    }, 1300);
-                });
-            }
-
-
-
-            function getShowDeletedPref() {
-                return localStorage.getItem(showDeletedKey) === 'true';
-            }
-
-            function setShowDeletedPref(val) {
-                localStorage.setItem(showDeletedKey, val ? 'true' : 'false');
-            }
-
-            function applyShowDeletedUi() {
-                const showDeleted = getShowDeletedPref();
-
-                document.querySelectorAll('#navRoot .nav-node').forEach(li => {
-                    const isDel = li.dataset.deleted === 'true';
-                    li.classList.toggle('deleted-hidden', isDel && !showDeleted);
-                });
-
-                // Update button UI
-                const btn = document.getElementById('toggleDeletedBtn');
-                if (btn) {
-                    if (showDeleted) {
-                        btn.textContent = 'Hide deleted';
-                        btn.classList.remove('btn-outline-danger');
-                        btn.classList.add('btn-danger');
-                    } else {
-                        btn.textContent = 'Show deleted';
-                        btn.classList.remove('btn-danger');
-                        btn.classList.add('btn-outline-danger');
-                    }
-                }
-
-                // Recompute toggles + sort badges since visibility changed
-                refreshAllToggles();
-                refreshAllBadges();
-                if (typeof refreshSortBadges === 'function') refreshSortBadges();
-            }
-
 
             function showToast(text, state) {
                 if (!toastEl) return;
 
                 toastEl.textContent = text;
-                toastEl.classList.remove("d-none", "bg-success", "bg-danger", "bg-secondary", "bg-info");
+                toastEl.classList.remove('d-none', 'bg-success', 'bg-danger', 'bg-secondary', 'bg-info');
 
-                if (state === "ok") toastEl.classList.add("bg-success");
-                else if (state === "error") toastEl.classList.add("bg-danger");
-                else if (state === "info") toastEl.classList.add("bg-info");
-                else toastEl.classList.add("bg-secondary");
+                if (state === 'ok') toastEl.classList.add('bg-success');
+                else if (state === 'error') toastEl.classList.add('bg-danger');
+                else if (state === 'info') toastEl.classList.add('bg-info');
+                else toastEl.classList.add('bg-secondary');
 
-                setTimeout(() => toastEl.classList.add("d-none"), 1400);
+                setTimeout(() => toastEl.classList.add('d-none'), 1400);
             }
 
             function showMsg(text, kind) {
@@ -347,6 +166,12 @@
                 return el ? el.value : null;
             }
 
+            function setDirty(on = true) {
+                isDirty = !!on;
+                if (isDirty) lastSavedAt = null;
+                updateSaveButtonUi();
+            }
+
             function updateSaveButtonUi() {
                 const btn = document.getElementById('saveBtn');
                 if (!btn) return;
@@ -361,124 +186,6 @@
                 btn.textContent = isDirty ? 'Save Changes*' : 'Save Changes';
             }
 
-            function setDirty(on = true) {
-                isDirty = !!on;
-                if (isDirty) lastSavedAt = null;
-                updateSaveButtonUi();
-            }
-
-            function debounce(fn, ms) {
-                let t = null;
-                return function (...args) {
-                    clearTimeout(t);
-                    t = setTimeout(() => fn.apply(this, args), ms);
-                };
-            }
-
-            // ------------------------------------------------------------
-            // URL + validation helpers
-            // ------------------------------------------------------------
-            function normalizeUrlInput(u) { return (u || '').trim(); }
-
-            function isValidUrlForNav(u) {
-                if (!u) return false;
-                return u.startsWith('/') || u.startsWith('http://') || u.startsWith('https://');
-            }
-            function getPageFlags(pageId) {
-                if (!pageId || pageId <= 0) return null;
-                return pageFlagsById[String(pageId)] || pageFlagsById[pageId] || null;
-            }
-
-            function validatePayload(items) {
-                const errors = [];
-
-                items.forEach((x, i) => {
-                    const row = i + 1;
-                    if (x.isDeleted === true) return;
-
-                    const label = (x.label || '').trim();
-                    if (!label) {
-                        errors.push({ index: i, message: `Row ${row}: Label is required.` });
-                        return;
-                    }
-
-                    const linkType = (x.linkType || 'page').toLowerCase();
-                    const pageId = Number(x.pageId || 0);
-                    const url = normalizeUrlInput(x.url);
-
-                    if (linkType === 'page') {
-                        if (!(pageId > 0)) {
-                            errors.push({ index: i, message: `Row ${row} (“${label}”): Please select an internal page.` });
-                            return;
-                        }
-
-                        // block save when selected page is deleted/inactive/not published
-                        const flags = getPageFlags(pageId);
-                        if (!flags) {
-                            errors.push({ index: i, message: `Row ${row} (“${label}”): Selected page is unavailable. Choose another page or use External URL.` });
-                            return;
-                        }
-
-                        if (flags.isDeleted) {
-                            errors.push({ index: i, message: `Row ${row} (“${label}”): Selected page is deleted. Choose another page or use External URL.` });
-                            return;
-                        }
-
-                        if (flags.isActive === false) {
-                            errors.push({ index: i, message: `Row ${row} (“${label}”): Selected page is inactive. Choose another page or use External URL.` });
-                            return;
-                        }
-
-                        if (typeof flags.pageStatusId === 'number' && flags.pageStatusId !== PAGE_STATUS_PUBLISHED) {
-                            errors.push({ index: i, message: `Row ${row} (“${label}”): Selected page is not published. Choose another page or use External URL.` });
-                            return;
-                        }
-
-                        // showInNavigation=false is warning-only (no blocking)
-                        return;
-                    }
-
-                    if (linkType === 'url') {
-                        if (!url) {
-                            errors.push({ index: i, message: `Row ${row} (“${label}”): URL is required when Link Type is External URL.` });
-                            return;
-                        }
-                        if (!isValidUrlForNav(url)) {
-                            errors.push({ index: i, message: `Row ${row} (“${label}”): URL must start with “/” or “http(s)://”.` });
-                            return;
-                        }
-                        return;
-                    }
-
-                    errors.push({ index: i, message: `Row ${row} (“${label}”): Invalid Link Type.` });
-                });
-
-                return errors;
-            }
-
-
-            function showValidationErrors(errors, payloadItems) {
-                if (!errors || errors.length === 0) return;
-
-                // show summary
-                alert("Please fix the following before saving:\n\n" + errors.map(e => `• ${e.message}`).join('\n'));
-
-                // focus first error
-                const first = errors[0];
-                const li = document.querySelectorAll('#navRoot .nav-node')[first.index];
-                if (!li) return;
-
-                expandNodeAndAncestors(li);
-                scrollToNode(li);
-
-                const item = payloadItems?.[first.index];
-                if (item) focusFirstErrorField(li, item);
-            }
-
-
-            // ------------------------------------------------------------
-            // Pages JSON + flags JSON
-            // ------------------------------------------------------------
             function escapeHtml(s) {
                 return String(s)
                     .replaceAll('&', '&amp;')
@@ -488,182 +195,65 @@
                     .replaceAll("'", '&#039;');
             }
 
-            let pages = @Html.Raw(Model.PagesJson);
+            function normalizeUrlInput(u) { return (u || '').trim(); }
 
-            // ✅ inject page flags (already camelCased by JsonSerializerDefaults.Web)
-            const pageFlagsById = @Html.Raw(Model.PageFlagsJson ?? "{}");
+            function isValidUrlForNav(u) {
+                if (!u) return false;
+                return u.startsWith('/') || u.startsWith('http://') || u.startsWith('https://');
+            }
 
-            // ✅ published status id (int)
-            const PUBLISHED_STATUS_ID = Number(@PageStatusIds.Published);
+            // -----------------------------
+            // Deleted toggle
+            // -----------------------------
+            function getShowDeletedPref() {
+                return localStorage.getItem(showDeletedKey) === 'true';
+            }
 
+            function setShowDeletedPref(val) {
+                localStorage.setItem(showDeletedKey, val ? 'true' : 'false');
+            }
 
-            async function refreshPageOptionsFromServer() {
-                try {
-                    const res = await fetch(`?handler=PageOptions&menuId=${menuId}`, {
-                        method: 'GET',
-                        headers: { 'Accept': 'application/json' }
-                    });
+            function applyShowDeletedUi() {
+                const showDeleted = getShowDeletedPref();
 
-                    const data = await res.json().catch(() => null);
-                    if (!res.ok || !data || !data.success) return null;
+                navRoot?.querySelectorAll('.nav-node').forEach(li => {
+                    const isDel = li.dataset.deleted === 'true';
+                    li.classList.toggle('deleted-hidden', isDel && !showDeleted);
+                });
 
-                    const nextPages = data.pages || [];
-                    const nextSnap = buildPagesSnapshot(nextPages);
-
-                    const prevSnap = lastPagesSnapshot;
-                    const changedIds = diffChangedIds(prevSnap, nextSnap);
-                    const delta = diffSnapshotCounts(prevSnap, nextSnap);
-
-                    pages = nextPages;
-                    lastPagesSnapshot = nextSnap;
-
-                    if (delta.changed || delta.added || delta.removed) {
-                        document.querySelectorAll('#navRoot .nav-node').forEach(li => {
-                            const sel = li.querySelector('.node-pageid');
-                            if (!sel) return;
-
-                            const current = sel.value || '';
-                            sel.innerHTML = `<option value="">-- Select page --</option>${renderPageOptions(current)}`;
-                        });
-
-                        refreshAllBadges();
+                const btn = document.getElementById('toggleDeletedBtn');
+                if (btn) {
+                    if (showDeleted) {
+                        btn.textContent = 'Hide deleted';
+                        btn.classList.remove('btn-outline-danger');
+                        btn.classList.add('btn-danger');
+                    } else {
+                        btn.textContent = 'Show deleted';
+                        btn.classList.remove('btn-danger');
+                        btn.classList.add('btn-outline-danger');
                     }
-
-                    return { delta, changedIds };
-                } catch {
-                    return null;
-                }
-            }
-
-
-
-            let lastFlagsSig = '';
-            let lastPagesSig = '';
-            let lastRefreshToastAt = 0;
-
-            function buildFlagsSignature(flagsObj) {
-                const ids = Object.keys(flagsObj || {}).map(Number).filter(n => !Number.isNaN(n)).sort((a, b) => a - b);
-                // id|show|status|active|deleted
-                return ids.map(id => {
-                    const f = flagsObj[String(id)] || flagsObj[id];
-                    if (!f) return `${id}|?`;
-                    return [
-                        id,
-                        f.showInNavigation ? 1 : 0,
-                        Number(f.pageStatusId ?? -1),
-                        f.isActive ? 1 : 0,
-                        f.isDeleted ? 1 : 0
-                    ].join('|');
-                }).join(';');
-            }
-
-            function buildPagesSignature(pagesArr) {
-                const arr = Array.isArray(pagesArr) ? pagesArr : [];
-                // id|title|slug
-                const norm = arr.map(p => ({
-                    id: Number(p.id ?? p.Id ?? 0),
-                    title: String(p.title ?? p.Title ?? ''),
-                    slug: String(p.slug ?? p.Slug ?? '')
-                })).filter(x => x.id > 0)
-                  .sort((a, b) => a.id - b.id);
-
-                return norm.map(x => `${x.id}|${x.title}|${x.slug}`).join(';');
-            }
-
-            function maybeToastRefreshChanged(message) {
-                const now = Date.now();
-                if (now - lastRefreshToastAt < 6000) return;
-
-                showToast(message || 'Page data updated', 'info');
-                lastRefreshToastAt = now;
-            }
-
-
-            function getSelectedPageId(li) {
-                const linkType = (li.querySelector('.node-linktype')?.value || 'page').toLowerCase();
-                if (linkType !== 'page') return null;
-
-                const raw = li.querySelector('.node-pageid')?.value || '';
-                const id = raw ? Number(raw) : null;
-                return (id && id > 0) ? id : null;
-            }
-
-            function updatePageWarnBadge(li) {
-                const badge = li.querySelector('.node-page-warn-badge');
-                if (!badge) return;
-
-                const linkType = (li.querySelector('.node-linktype')?.value || 'page').toLowerCase();
-                const pageId = getSelectedPageId(li);
-
-                // show only for internal page links with a selected page
-                if (linkType !== 'page' || !pageId) {
-                    badge.classList.add('d-none');
-                    badge.textContent = '';
-                    badge.title = '';
-                    return;
                 }
 
-                const flags = pageFlagsById[String(pageId)] || pageFlagsById[pageId];
-                if (!flags) {
-                    badge.classList.add('d-none');
-                    badge.textContent = '';
-                    badge.title = '';
-                    return;
-                }
-
-                const problems = [];
-
-                if (flags.isDeleted) problems.push('Page is deleted');
-                if (flags.isActive === false) problems.push('Page is inactive');
-                if (typeof flags.pageStatusId === 'number' && flags.pageStatusId !== PAGE_STATUS_PUBLISHED) problems.push('Page is not published');
-                if (flags.showInNavigation === false) problems.push('Page.ShowInNavigation is false');
-
-                if (problems.length === 0) {
-                    badge.classList.add('d-none');
-                    badge.textContent = '';
-                    badge.title = '';
-                    return;
-                }
-
-                const hard = problems.some(p =>
-                    p.includes('deleted') || p.includes('inactive') || p.includes('not published')
-                );
-
-                badge.classList.remove('d-none');
-                badge.textContent = '⚠';
-                badge.title = problems.join('\n');
-
-                badge.classList.remove('bg-warning', 'bg-danger', 'text-dark', 'text-white');
-                if (hard) badge.classList.add('bg-danger', 'text-white');
-                else badge.classList.add('bg-warning', 'text-dark');
+                refreshAllToggles();
+                refreshAllBadges();
+                refreshSortBadges();
             }
 
-
-
-
-            function renderPageOptions(selectedId) {
-                const sel = selectedId ? String(selectedId) : '';
-                return pages.map(p => {
-                    const id = p.id ?? p.Id;
-                    const title = p.title ?? p.Title ?? '';
-                    const slug = p.slug ?? p.Slug ?? '';
-                    if (!id) return '';
-
-                    const selected = sel && sel === String(id) ? 'selected' : '';
-                    return `<option value="${id}" ${selected}>${escapeHtml(title)} (${escapeHtml(slug)})</option>`;
-                }).join('');
-            }
-
-            // ------------------------------------------------------------
+            // -----------------------------
             // Collapse logic
-            // ------------------------------------------------------------
+            // -----------------------------
+            function collapseKeyFor(li) { return `nav-collapse-${menuId}-${li.dataset.id}`; }
+
             function hasChildren(li) {
                 const ul = li.querySelector(':scope > .nav-children');
                 if (!ul) return false;
-                return Array.from(ul.children).some(x => x.classList && x.classList.contains('nav-node') && x.dataset.deleted !== 'true');
-            }
 
-            function collapseKeyFor(li) { return `nav-collapse-${menuId}-${li.dataset.id}`; }
+                return Array.from(ul.children).some(x =>
+                    x.classList &&
+                    x.classList.contains('nav-node') &&
+                    x.dataset.deleted !== 'true'
+                );
+            }
 
             function applyCollapseState(li) {
                 const ul = li.querySelector(':scope > .nav-children');
@@ -685,12 +275,12 @@
             }
 
             function refreshAllToggles() {
-                document.querySelectorAll('.nav-node').forEach(applyCollapseState);
+                navRoot?.querySelectorAll('.nav-node').forEach(applyCollapseState);
             }
 
-            // ------------------------------------------------------------
-            // Visibility badge logic
-            // ------------------------------------------------------------
+            // -----------------------------
+            // Visibility badge + warn badge
+            // -----------------------------
             function normalizeRolesCsv(s) {
                 return (s || '')
                     .split(',')
@@ -725,20 +315,169 @@
                 badge.title = s.title;
             }
 
+            function getSelectedPageId(li) {
+                const linkType = (li.querySelector('.node-linktype')?.value || 'page').toLowerCase();
+                if (linkType !== 'page') return null;
+
+                const raw = li.querySelector('.node-pageid')?.value || '';
+                const id = raw ? Number(raw) : null;
+                return (id && id > 0) ? id : null;
+            }
+
+            function getFlagsSigForPage(pageId) {
+                const key = String(pageId);
+                return (lastFlagsSnapshot && lastFlagsSnapshot[key]) ? lastFlagsSnapshot[key] : null;
+            }
+
+            function isDangerAcked(pageId) {
+                if (!(pageId > 0)) return false;
+                const sig = getFlagsSigForPage(pageId);
+                if (!sig) return false;
+                return ackDangerByPageId.get(Number(pageId)) === sig;
+            }
+
+            function setDangerAck(pageId, on) {
+                if (!(pageId > 0)) return;
+                const sig = getFlagsSigForPage(pageId);
+                if (!sig) return;
+
+                if (on) ackDangerByPageId.set(Number(pageId), sig);
+                else ackDangerByPageId.delete(Number(pageId));
+            }
+
+            function loadAckFromStorage() {
+                try {
+                    const raw = localStorage.getItem(ackStorageKey);
+                    if (!raw) return;
+
+                    const obj = JSON.parse(raw);
+                    if (!obj || typeof obj !== 'object') return;
+
+                    ackDangerByPageId.clear();
+                    for (const [pidStr, sig] of Object.entries(obj)) {
+                        const pid = Number(pidStr);
+                        if (!(pid > 0) || typeof sig !== 'string') continue;
+                        ackDangerByPageId.set(pid, sig);
+                    }
+                } catch { /* ignore */ }
+            }
+
+            function saveAckToStorage() {
+                try {
+                    const obj = {};
+                    for (const [pid, sig] of ackDangerByPageId.entries()) {
+                        obj[String(pid)] = sig;
+                    }
+                    localStorage.setItem(ackStorageKey, JSON.stringify(obj));
+                } catch { /* ignore */ }
+            }
+
+            function updatePageWarnBadge(li) {
+                const badge = li.querySelector('.node-page-warn-badge');
+                if (!badge) return;
+
+                const linkType = (li.querySelector('.node-linktype')?.value || 'page').toLowerCase();
+                const pageId = getSelectedPageId(li);
+
+                if (linkType !== 'page' || !pageId) {
+                    badge.classList.add('d-none');
+                    badge.textContent = '';
+                    badge.title = '';
+                    return;
+                }
+
+                const flags = pageFlagsById[String(pageId)] || pageFlagsById[pageId];
+                if (!flags) {
+                    badge.classList.add('d-none');
+                    badge.textContent = '';
+                    badge.title = '';
+                    return;
+                }
+
+                const problems = [];
+                if (flags.isDeleted) problems.push('Page is deleted');
+                if (flags.isActive === false) problems.push('Page is inactive');
+                if (typeof flags.pageStatusId === 'number' && flags.pageStatusId !== PAGE_STATUS_PUBLISHED) problems.push('Page is not published');
+                if (flags.showInNavigation === false) problems.push('Page.ShowInNavigation is false');
+
+                if (problems.length === 0) {
+                    badge.classList.add('d-none');
+                    badge.textContent = '';
+                    badge.title = '';
+                    return;
+                }
+
+                const hard = problems.some(p =>
+                    p.includes('deleted') || p.includes('inactive') || p.includes('not published')
+                );
+
+                badge.classList.remove('d-none');
+                badge.textContent = '⚠';
+                badge.title = problems.join('\n');
+
+                if (hard) {
+                    const acked = isDangerAcked(pageId);
+                    badge.style.opacity = acked ? '0.6' : '1';
+                    badge.title += acked
+                        ? '\n\nClick ⚠ to re-enable alerts for this page'
+                        : '\n\nClick ⚠ to mute alerts for this page';
+                } else {
+                    badge.style.opacity = '1';
+                }
+
+                badge.classList.remove('bg-warning', 'bg-danger', 'text-dark', 'text-white');
+                if (hard) badge.classList.add('bg-danger', 'text-white');
+                else badge.classList.add('bg-warning', 'text-dark');
+            }
+
             function refreshAllBadges() {
-                document.querySelectorAll('#navRoot .nav-node').forEach(li => {
+                navRoot?.querySelectorAll('.nav-node').forEach(li => {
                     updateVisibilityBadge(li);
                     updatePageWarnBadge(li);
                 });
             }
-            function refreshSortBadges(rootUl = document.getElementById('navRoot')) {
+
+            function wireBadgeAckToggle() {
+                if (!navRoot) return;
+
+                navRoot.addEventListener('click', (e) => {
+                    const badge = e.target?.closest?.('.node-page-warn-badge');
+                    if (!badge) return;
+
+                    const li = badge.closest('.nav-node');
+                    if (!li) return;
+
+                    const pageId = getSelectedPageId(li);
+                    if (!pageId) return;
+
+                    const flags = pageFlagsById[String(pageId)] || pageFlagsById[pageId];
+                    if (!flags) return;
+
+                    const hard = !!flags.isDeleted
+                        || flags.isActive === false
+                        || (typeof flags.pageStatusId === 'number' && flags.pageStatusId !== PAGE_STATUS_PUBLISHED);
+
+                    if (!hard) return;
+
+                    const currentlyAcked = isDangerAcked(pageId);
+                    setDangerAck(pageId, !currentlyAcked);
+                    saveAckToStorage();
+
+                    updatePageWarnBadge(li);
+                    showToast(currentlyAcked ? 'Alerts re-enabled for this page' : 'Alerts muted for this page', 'info');
+                });
+            }
+
+            // -----------------------------
+            // Sort badges
+            // -----------------------------
+            function refreshSortBadges(rootUl = navRoot) {
                 if (!rootUl) return;
 
                 function updateUl(ul) {
                     const nodes = Array.from(ul.children)
                         .filter(x => x.classList && x.classList.contains('nav-node'));
 
-                    // Only count non-deleted nodes for S1..Sn
                     let n = 0;
 
                     nodes.forEach(li => {
@@ -748,7 +487,6 @@
                         const isDel = li.dataset.deleted === 'true';
 
                         if (isDel) {
-                            // Deleted nodes don’t need an order; show a neutral marker
                             badge.textContent = 'Del';
                             badge.classList.remove('bg-secondary');
                             badge.classList.add('bg-danger');
@@ -763,7 +501,6 @@
                         badge.title = `Sort order: ${n}`;
                     });
 
-                    // Recurse into child lists
                     nodes.forEach(li => {
                         const childUl = li.querySelector(':scope > .nav-children');
                         if (childUl) updateUl(childUl);
@@ -773,9 +510,9 @@
                 updateUl(rootUl);
             }
 
-            // ------------------------------------------------------------
-            // LinkType rules
-            // ------------------------------------------------------------
+            // -----------------------------
+            // LinkType rules (AUTHORITATIVE: linkType drives fields)
+            // -----------------------------
             function setLinkType(li, type) {
                 const linkType = li.querySelector('.node-linktype');
                 const pageWrap = li.querySelector('.node-pagewrap');
@@ -807,126 +544,48 @@
                 }
             }
 
+            // ✅ LinkType is the authority; never infer type from URL value.
             function normalizeLinkInputs(li) {
-                const urlVal = (li.querySelector('.node-url')?.value || '').trim();
-                if (urlVal) setLinkType(li, 'url');  // url wins
-                else setLinkType(li, 'page');
+                const type = (li.querySelector('.node-linktype')?.value || 'page').toLowerCase();
+
+                const pageSelect = li.querySelector('.node-pageid');
+                const urlInput = li.querySelector('.node-url');
+
+                if (type === 'page') {
+                    if (urlInput) urlInput.value = '';
+                    setLinkType(li, 'page');
+                    return;
+                }
+
+                if (type === 'url') {
+                    if (pageSelect) pageSelect.value = '';
+                    setLinkType(li, 'url');
+                    return;
+                }
+
+                setLinkType(li, 'page');
             }
 
-            // ------------------------------------------------------------
-            // Node creation
-            // ------------------------------------------------------------
-            function uniqueTempId() {
-                return -Math.floor(Math.random() * 1000000000) - 1;
+            // -----------------------------
+            // Page option rendering
+            // -----------------------------
+            function renderPageOptions(selectedId) {
+                const sel = selectedId ? String(selectedId) : '';
+
+                return (pages || []).map(p => {
+                    const id = p.id ?? p.Id;
+                    const title = p.title ?? p.Title ?? '';
+                    const slug = p.slug ?? p.Slug ?? '';
+                    if (!id) return '';
+
+                    const selected = sel && sel === String(id) ? 'selected' : '';
+                    return `<option value="${id}" ${selected}>${escapeHtml(title)} (${escapeHtml(slug)})</option>`;
+                }).join('');
             }
 
-            function createNodeLi(dto) {
-                const li = document.createElement('li');
-                li.className = 'nav-node mb-2';
-                li.dataset.id = String(dto.id);
-
-                // ✅ includes warn badge element
-                li.innerHTML = `
-                    <div class="node-row border rounded p-2 bg-white">
-                        <div class="d-flex align-items-start gap-2">
-                            <div class="drag-handle text-muted" title="Drag to reorder" style="cursor: grab; user-select: none;">
-                                &#x2630;
-                            </div>
-
-                            <button type="button"
-                                    class="btn btn-sm btn-link toggle-children px-1 d-none"
-                                    aria-label="Toggle children"
-                                    style="text-decoration:none;">
-                                ▼
-                            </button>
-
-                            <span class="badge bg-warning text-dark d-none node-page-warn-badge" title=""></span>
-
-                            <div class="flex-grow-1">
-                                <div class="row g-2">
-                                    <div class="col-12">
-                                        <span class="badge node-visibility-badge bg-secondary" title=""></span>
-                                    </div>
-
-                                    <div class="col-12">
-                                        <label class="form-label mb-1 small">Label</label>
-                                        <input class="form-control form-control-sm node-label" value="${escapeHtml(dto.label || '')}" maxlength="200" />
-                                    </div>
-
-                                    <div class="col-12">
-                                        <label class="form-label mb-1 small">Link Type</label>
-                                        <select class="form-select form-select-sm node-linktype">
-                                            <option value="page">Internal Page</option>
-                                            <option value="url">External URL</option>
-                                        </select>
-                                    </div>
-
-                                    <div class="col-12 node-pagewrap">
-                                        <label class="form-label mb-1 small">Page</label>
-                                        <select class="form-select form-select-sm node-pageid">
-                                            <option value="">-- Select page --</option>
-                                            ${renderPageOptions(dto.pageId)}
-                                        </select>
-                                    </div>
-
-                                    <div class="col-12 node-urlwrap d-none">
-                                        <label class="form-label mb-1 small">URL</label>
-                                        <input class="form-control form-control-sm node-url" value="${escapeHtml(dto.url || '')}" maxlength="500" placeholder="https://..." />
-                                    </div>
-
-                                    <div class="col-12">
-                                        <label class="form-label mb-1 small">Allowed Roles (CSV)</label>
-                                        <input class="form-control form-control-sm node-roles" value="${escapeHtml(dto.allowedRolesCsv || '')}" placeholder="e.g. Admin,Editor" />
-                                    </div>
-
-                                    <div class="col-12 d-flex flex-wrap gap-3 align-items-center">
-                                        <div class="form-check form-switch">
-                                            <input class="form-check-input node-newtab" type="checkbox" ${dto.openInNewTab ? 'checked' : ''}>
-                                            <label class="form-check-label small">Open in new tab</label>
-                                        </div>
-
-                                        <div class="form-check form-switch">
-                                            <input class="form-check-input node-active" type="checkbox" ${dto.isActive ? 'checked' : ''}>
-                                            <label class="form-check-label small">Active</label>
-                                        </div>
-
-                                        <div class="form-check form-switch">
-                                            <input class="form-check-input node-published" type="checkbox" ${dto.isPublished ? 'checked' : ''}>
-                                            <label class="form-check-label small">Published</label>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div class="d-flex flex-column gap-2">
-                                <button type="button" class="btn btn-sm btn-outline-secondary add-child">Add Child</button>
-                                <button type="button" class="btn btn-sm btn-outline-danger delete-node">Delete</button>
-                                <button type="button" class="btn btn-sm btn-outline-success restore-node d-none">Restore</button>
-
-                            </div>
-                        </div>
-                    </div>
-
-                    <ul class="nav-children list-unstyled ms-4 mt-2 mb-0"></ul>
-                `;
-
-                wireNodeUi(li);
-                initSortable(li.querySelector('.nav-children'));
-
-                const initialType = (dto.linkType === 'url') ? 'url' : 'page';
-                setLinkType(li, initialType);
-                normalizeLinkInputs(li);
-
-                applyCollapseState(li);
-                updateVisibilityBadge(li);
-                updatePageWarnBadge(li);
-
-                return li;
-            }
-
-            // ------------------------------------------------------------
+            // -----------------------------
             // Sortable
-            // ------------------------------------------------------------
+            // -----------------------------
             function initSortable(ul) {
                 if (!ul) return;
                 if (!window.Sortable) {
@@ -934,7 +593,13 @@
                     return;
                 }
 
-                Sortable.create(ul, {
+                // ✅ prevent duplicates: destroy old instance if present
+                if (ul._sortable) {
+                    try { ul._sortable.destroy(); } catch { /* ignore */ }
+                    ul._sortable = null;
+                }
+
+                ul._sortable = Sortable.create(ul, {
                     group: { name: sortableGroupName, pull: true, put: true },
                     animation: 150,
                     handle: '.drag-handle',
@@ -942,24 +607,30 @@
                     fallbackOnBody: true,
                     swapThreshold: 0.65,
                     onEnd: function () {
+                        if (historyApplying) return;
+
                         setDirty(true);
+                        pushHistory('drag');
+
                         refreshAllToggles();
                         refreshAllBadges();
                         refreshSortBadges();
+
                         showToast('Saving…', 'info');
                         autoSaveDebounced();
                     }
                 });
             }
 
+
             function initAllSortables() {
-                initSortable(document.getElementById('navRoot'));
+                initSortable(navRoot);
                 document.querySelectorAll('.nav-children').forEach(initSortable);
             }
 
-            // ------------------------------------------------------------
-            // Build payload
-            // ------------------------------------------------------------
+            // -----------------------------
+            // Build payload (normalized)
+            // -----------------------------
             function buildFlatList(rootUl) {
                 const items = [];
 
@@ -971,7 +642,7 @@
                         const deleted = li.dataset.deleted === 'true';
 
                         const label = li.querySelector('.node-label')?.value?.trim() || '';
-                        const linkType = li.querySelector('.node-linktype')?.value || 'page';
+                        const linkType = (li.querySelector('.node-linktype')?.value || 'page').toLowerCase();
 
                         const pageIdRaw = li.querySelector('.node-pageid')?.value || '';
                         const pageId = pageIdRaw ? Number(pageIdRaw) : null;
@@ -984,7 +655,7 @@
                         const isPublished = !!li.querySelector('.node-published')?.checked;
 
                         const rolesCsv = li.querySelector('.node-roles')?.value?.trim() || '';
-                        const allowedRolesCsv = rolesCsv.length ? rolesCsv : null;
+                        const allowedRolesCsv = rolesCsv.length ? normalizeRolesCsv(rolesCsv) : null;
 
                         const payloadItem = {
                             id,
@@ -1002,11 +673,15 @@
                         };
 
                         if (linkType === 'page') {
-                            payloadItem.pageId = pageId;
+                            payloadItem.pageId = (pageId && pageId > 0) ? pageId : null;
                             payloadItem.url = null;
-                        } else {
+                        } else if (linkType === 'url') {
                             payloadItem.pageId = null;
-                            payloadItem.url = url;
+                            payloadItem.url = url ? url : null;
+                        } else {
+                            payloadItem.linkType = 'page';
+                            payloadItem.pageId = (pageId && pageId > 0) ? pageId : null;
+                            payloadItem.url = null;
                         }
 
                         items.push(payloadItem);
@@ -1020,12 +695,153 @@
                 return items;
             }
 
-            // ------------------------------------------------------------
-            // Save
-            // ------------------------------------------------------------
-            let saveInFlight = false;
-            let saveQueued = false;
+            // -----------------------------
+            // Validation
+            // -----------------------------
+            function getPageFlags(pageId) {
+                if (!pageId || pageId <= 0) return null;
+                return pageFlagsById[String(pageId)] || pageFlagsById[pageId] || null;
+            }
 
+            function validatePayload(items) {
+                const errors = [];
+
+                items.forEach((x, i) => {
+                    const row = i + 1;
+                    if (x.isDeleted === true) return;
+
+                    const label = (x.label || '').trim();
+                    if (!label) {
+                        errors.push({ index: i, message: `Row ${row}: Label is required.` });
+                        return;
+                    }
+
+                    const linkType = (x.linkType || 'page').toLowerCase();
+                    const pageId = Number(x.pageId || 0);
+                    const url = normalizeUrlInput(x.url);
+
+                    if (linkType === 'page') {
+                        if (!(pageId > 0)) {
+                            errors.push({ index: i, message: `Row ${row} (“${label}”): Please select an internal page.` });
+                            return;
+                        }
+
+                        const flags = getPageFlags(pageId);
+                        if (!flags) {
+                            errors.push({ index: i, message: `Row ${row} (“${label}”): Selected page is unavailable. Choose another page or use External URL.` });
+                            return;
+                        }
+
+                        if (flags.isDeleted) {
+                            errors.push({ index: i, message: `Row ${row} (“${label}”): Selected page is deleted. Choose another page or use External URL.` });
+                            return;
+                        }
+
+                        if (flags.isActive === false) {
+                            errors.push({ index: i, message: `Row ${row} (“${label}”): Selected page is inactive. Choose another page or use External URL.` });
+                            return;
+                        }
+
+                        if (typeof flags.pageStatusId === 'number' && flags.pageStatusId !== PAGE_STATUS_PUBLISHED) {
+                            errors.push({ index: i, message: `Row ${row} (“${label}”): Selected page is not published. Choose another page or use External URL.` });
+                            return;
+                        }
+
+                        return;
+                    }
+
+                    if (linkType === 'url') {
+                        if (!url) {
+                            errors.push({ index: i, message: `Row ${row} (“${label}”): URL is required when Link Type is External URL.` });
+                            return;
+                        }
+                        if (!isValidUrlForNav(url)) {
+                            errors.push({ index: i, message: `Row ${row} (“${label}”): URL must start with “/” or “http(s)://”.` });
+                            return;
+                        }
+                        return;
+                    }
+
+                    errors.push({ index: i, message: `Row ${row} (“${label}”): Invalid Link Type.` });
+                });
+
+                return errors;
+            }
+
+            function expandNodeAndAncestors(li) {
+                let cur = li;
+                while (cur) {
+                    const childUl = cur.querySelector(':scope > .nav-children');
+                    const toggleBtn = cur.querySelector(':scope .toggle-children');
+
+                    if (childUl && childUl.classList.contains('d-none')) {
+                        childUl.classList.remove('d-none');
+                        if (toggleBtn) toggleBtn.textContent = '▼';
+                        localStorage.setItem(collapseKeyFor(cur), 'false');
+                    }
+
+                    const parentUl = cur.closest('ul');
+                    const parentLi = parentUl?.closest('li.nav-node') || null;
+                    cur = parentLi;
+                }
+            }
+
+            function scrollToNode(li) {
+                li.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+
+            function focusFirstErrorField(li, payloadItem) {
+                const linkType = (payloadItem.linkType || 'page').toLowerCase();
+
+                if (linkType === 'page') {
+                    const sel = li.querySelector('.node-pageid');
+                    if (sel && !sel.disabled) {
+                        sel.focus({ preventScroll: true });
+                        sel.classList.add('is-invalid');
+                        setTimeout(() => sel.classList.remove('is-invalid'), 1500);
+                        return;
+                    }
+                }
+
+                if (linkType === 'url') {
+                    const inp = li.querySelector('.node-url');
+                    if (inp && !inp.disabled) {
+                        inp.focus({ preventScroll: true });
+                        inp.classList.add('is-invalid');
+                        setTimeout(() => inp.classList.remove('is-invalid'), 1500);
+                        return;
+                    }
+                }
+
+                const label = li.querySelector('.node-label');
+                if (label) {
+                    label.focus({ preventScroll: true });
+                    label.classList.add('is-invalid');
+                    setTimeout(() => label.classList.remove('is-invalid'), 1500);
+                }
+            }
+
+            // ✅ locate error node by payload item id (not NodeList index)
+            function showValidationErrors(errors, payloadItems) {
+                if (!errors || errors.length === 0) return;
+
+                alert("Please fix the following before saving:\n\n" + errors.map(e => `• ${e.message}`).join('\n'));
+
+                const first = errors[0];
+                const item = payloadItems?.[first.index];
+                if (!item) return;
+
+                const li = navRoot?.querySelector(`.nav-node[data-id="${item.id}"]`);
+                if (!li) return;
+
+                expandNodeAndAncestors(li);
+                scrollToNode(li);
+                focusFirstErrorField(li, item);
+            }
+
+            // -----------------------------
+            // Save
+            // -----------------------------
             const autoSaveDebounced = debounce(() => {
                 if (!isDirty || isSaving) return;
                 save().catch(err => {
@@ -1037,7 +853,6 @@
             async function save() {
                 if (!isDirty) { updateSaveButtonUi(); return true; }
                 if (isSaving) return false;
-
                 if (saveInFlight) { saveQueued = true; return false; }
 
                 isSaving = true;
@@ -1051,10 +866,9 @@
                         return false;
                     }
 
-                    const root = document.getElementById('navRoot');
-                    if (!root) return false;
+                    if (!navRoot) return false;
 
-                    const payload = { menuId, items: buildFlatList(root) };
+                    const payload = { menuId, items: buildFlatList(navRoot) };
 
                     const errors = validatePayload(payload.items);
                     if (errors.length) {
@@ -1090,9 +904,10 @@
                         return false;
                     }
 
+                    // remap temp ids to real ids
                     if (data.idMap) {
                         for (const [tempIdStr, realId] of Object.entries(data.idMap)) {
-                            const li = document.querySelector(`.nav-node[data-id="${tempIdStr}"]`);
+                            const li = navRoot.querySelector(`.nav-node[data-id="${tempIdStr}"]`);
                             if (!li) continue;
 
                             const oldKey = `nav-collapse-${menuId}-${tempIdStr}`;
@@ -1117,70 +932,375 @@
 
                     refreshAllToggles();
                     refreshAllBadges();
+                    refreshSortBadges();
 
                     await refreshPageFlagsFromServer();
                     await refreshPageOptionsFromServer();
-
 
                     if (saveQueued) {
                         saveQueued = false;
                         autoSaveDebounced();
                     }
 
+                    // Baseline snapshot after a successful save (so undo doesn't jump before server id remap)
+                    pushHistory('post-save');
+
                     return true;
-                }
-                catch (err) {
+                } catch (err) {
                     const msg = err?.message || 'Unexpected error';
                     showToast(msg, 'error');
                     showMsg(msg, 'error');
                     return false;
-                }
-                finally {
+                } finally {
                     isSaving = false;
                     updateSaveButtonUi();
                 }
             }
 
-            // ------------------------------------------------------------
-            // Node wiring
-            // ------------------------------------------------------------
-            function wireAutosaveOnFieldChange(li) {
-                const inputs = li.querySelectorAll('input, select');
-                inputs.forEach(el => {
-                    el.addEventListener('input', () => {
-                        setDirty(true);
+            // -----------------------------
+            // Undo / Redo (DOM snapshot)
+            // -----------------------------
+            const HISTORY_LIMIT = 50;
+            let undoStack = [];
+            let redoStack = [];
+            let historyApplying = false;
 
-                        if (el.classList.contains('node-url') || el.classList.contains('node-pageid')) {
-                            normalizeLinkInputs(li);
-                        }
-
-                        updateVisibilityBadge(li);
-                        updatePageWarnBadge(li);
-                        autoSaveDebounced();
-                    });
-
-                    el.addEventListener('change', () => {
-                        setDirty(true);
-
-                        if (el.classList.contains('node-linktype')) {
-                            setLinkType(li, el.value);
-                        }
-                        if (el.classList.contains('node-pageid') || el.classList.contains('node-url')) {
-                            normalizeLinkInputs(li);
-                        }
-
-                        updateVisibilityBadge(li);
-                        updatePageWarnBadge(li);
-                        autoSaveDebounced();
-                    });
-                });
+            function updateUndoRedoUi() {
+                const u = document.getElementById('undoBtn');
+                const r = document.getElementById('redoBtn');
+                if (u) u.disabled = undoStack.length <= 1 || isSaving || saveInFlight;
+                if (r) r.disabled = redoStack.length === 0 || isSaving || saveInFlight;
             }
 
+            function captureSnapshot() {
+                if (!navRoot) return null;
+
+                function readUl(ul) {
+                    const children = Array.from(ul.children).filter(x => x.classList.contains('nav-node'));
+                    return children.map(li => {
+                        const id = String(li.dataset.id || '');
+                        return {
+                            id,
+                            deleted: li.dataset.deleted === 'true',
+                            label: li.querySelector('.node-label')?.value ?? '',
+                            linkType: li.querySelector('.node-linktype')?.value ?? 'page',
+                            pageId: li.querySelector('.node-pageid')?.value ?? '',
+                            url: li.querySelector('.node-url')?.value ?? '',
+                            openInNewTab: !!li.querySelector('.node-newtab')?.checked,
+                            isActive: !!li.querySelector('.node-active')?.checked,
+                            isPublished: !!li.querySelector('.node-published')?.checked,
+                            rolesCsv: li.querySelector('.node-roles')?.value ?? '',
+                            children: (() => {
+                                const childUl = li.querySelector(':scope > .nav-children');
+                                return childUl ? readUl(childUl) : [];
+                            })()
+                        };
+                    });
+                }
+
+                return {
+                    v: 1,
+                    menuId,
+                    showDeleted: getShowDeletedPref(),
+                    tree: readUl(navRoot)
+                };
+            }
+
+            function pushHistory(reason = '') {
+                if (historyApplying) return;
+                const snap = captureSnapshot();
+                if (!snap) return;
+
+                const snapJson = JSON.stringify(snap);
+                const last = undoStack.length ? undoStack[undoStack.length - 1].json : null;
+
+                if (last === snapJson) return;
+
+                undoStack.push({ json: snapJson, reason, at: Date.now() });
+
+                if (undoStack.length > HISTORY_LIMIT) {
+                    // keep baseline at index 0
+                    undoStack.splice(1, undoStack.length - HISTORY_LIMIT);
+                }
+
+                redoStack = [];
+                updateUndoRedoUi();
+            }
+
+            // -----------------------------
+            // Node factory (createNodeLi)
+            // -----------------------------
+            let nextTempId = -1;
+
+            function createNodeLi(forcedId) {
+                const id = (typeof forcedId !== 'undefined' && forcedId !== null)
+                    ? String(forcedId)
+                    : String(nextTempId--);
+
+                const li = document.createElement('li');
+                li.className = 'nav-node mb-2';
+                li.dataset.id = id;
+                li.dataset.deleted = 'false';
+
+                // Use the same child UL class set you have in _NavNode.cshtml
+                const childUlHtml = `<ul class="nav-children list-unstyled ms-4 mt-2 mb-0"></ul>`;
+
+                li.innerHTML = `
+            <div class="node-row border rounded p-2 bg-white">
+              <div class="d-flex align-items-start gap-2">
+
+                <div class="drag-handle text-muted" title="Drag to reorder" style="cursor: grab; user-select: none;">
+                  &#x2630;
+                </div>
+
+                <button type="button"
+                        class="btn btn-sm btn-link toggle-children px-1 d-none"
+                        aria-label="Toggle children"
+                        style="text-decoration:none;">
+                  ▼
+                </button>
+
+                <span class="badge bg-secondary sort-badge">S?</span>
+
+                <span class="badge bg-warning text-dark d-none node-page-warn-badge" title=""></span>
+
+                <div class="flex-grow-1">
+                  <div class="row g-2">
+                    <div class="col-12">
+                      <span class="badge bg-secondary node-visibility-badge" title="Visibility status">…</span>
+                    </div>
+
+                    <div class="col-12">
+                      <label class="form-label mb-1 small">Label</label>
+                      <input class="form-control form-control-sm node-label" value="" maxlength="200" />
+                    </div>
+
+                    <div class="col-12">
+                      <label class="form-label mb-1 small">Link Type</label>
+                      <select class="form-select form-select-sm node-linktype">
+                        <option value="page" selected>Internal Page</option>
+                        <option value="url">External URL</option>
+                      </select>
+                    </div>
+
+                    <div class="col-12 node-pagewrap">
+                      <label class="form-label mb-1 small">Page</label>
+                      <select class="form-select form-select-sm node-pageid">
+                        <option value="">-- Select page --</option>
+                        ${renderPageOptions('')}
+                      </select>
+                    </div>
+
+                    <div class="col-12 node-urlwrap d-none">
+                      <label class="form-label mb-1 small">URL</label>
+                      <input class="form-control form-control-sm node-url"
+                             value=""
+                             maxlength="500"
+                             placeholder="https://..." disabled />
+                    </div>
+
+                    <div class="col-12 d-flex flex-wrap gap-3 align-items-center">
+                      <div class="form-check form-switch">
+                        <input class="form-check-input node-newtab" type="checkbox" />
+                        <label class="form-check-label small">Open in new tab</label>
+                      </div>
+
+                      <div class="form-check form-switch">
+                        <input class="form-check-input node-active" type="checkbox" checked />
+                        <label class="form-check-label small">Active</label>
+                      </div>
+
+                      <div class="form-check form-switch">
+                        <input class="form-check-input node-published" type="checkbox" checked />
+                        <label class="form-check-label small">Published</label>
+                      </div>
+                    </div>
+
+                    <div class="col-12">
+                      <label class="form-label mb-1 small">Visible to Roles (CSV)</label>
+                      <input class="form-control form-control-sm node-roles"
+                             value=""
+                             maxlength="400"
+                             placeholder="e.g. Admin,Agent (leave blank for everyone)" />
+                    </div>
+
+                  </div>
+                </div>
+
+                <div class="d-flex flex-column gap-2">
+                  <button type="button" class="btn btn-sm btn-outline-secondary add-child">Add Child</button>
+
+                  <button type="button" class="btn btn-sm btn-outline-danger delete-node">Delete</button>
+                  <button type="button" class="btn btn-sm btn-outline-success restore-node d-none">Restore</button>
+                </div>
+
+              </div>
+            </div>
+
+            ${childUlHtml}
+            `.trim();
+
+                // IMPORTANT: new node has no handlers until wired
+                // We intentionally do NOT call wireNodeUi here so caller controls timing,
+                // but it's safe to do it here too if you prefer.
+                wireNodeUi(li);
+
+                // Ensure its children UL becomes sortable
+                const childUl = li.querySelector(':scope > .nav-children');
+                if (childUl) initSortable(childUl);
+
+                // Initial derived UI
+                normalizeLinkInputs(li);
+                applyCollapseState(li);
+                updateVisibilityBadge(li);
+                updatePageWarnBadge(li);
+
+                return li;
+            }
+
+
+
+
+            function applySnapshot(snapshotJson) {
+                if (!navRoot) return;
+
+                const snap = JSON.parse(snapshotJson);
+                if (!snap || snap.v !== 1) return;
+
+                historyApplying = true;
+                try {
+                    // restore preference first
+                    setShowDeletedPref(!!snap.showDeleted);
+
+                    // cache existing nodes so we can reuse DOM elements
+                    const existingById = new Map();
+                    navRoot.querySelectorAll('.nav-node').forEach(li => {
+                        const id = String(li.dataset.id || '');
+                        if (id) existingById.set(id, li);
+                    });
+
+                    // track which ones we had to create so we can wire them
+                    const newlyCreated = [];
+
+                    function ensureChildrenUl(li) {
+                        let ul = li.querySelector(':scope > .nav-children');
+                        if (!ul) {
+                            ul = document.createElement('ul');
+                            ul.className = 'nav-children list-unstyled ms-4 mt-2 mb-0';
+                            li.appendChild(ul);
+                        }
+                        return ul;
+                    }
+
+                    function setFields(li, node) {
+                        // IMPORTANT: keep the snapshot id (can be temp id like "-1")
+                        li.dataset.id = String(node.id ?? '');
+                        li.dataset.deleted = node.deleted ? 'true' : 'false';
+
+                        const label = li.querySelector('.node-label'); if (label) label.value = node.label ?? '';
+                        const lt = li.querySelector('.node-linktype'); if (lt) lt.value = node.linkType ?? 'page';
+
+                        const pageSel = li.querySelector('.node-pageid'); if (pageSel) pageSel.value = node.pageId ?? '';
+                        const urlInp = li.querySelector('.node-url'); if (urlInp) urlInp.value = node.url ?? '';
+
+                        const nt = li.querySelector('.node-newtab'); if (nt) nt.checked = !!node.openInNewTab;
+                        const ia = li.querySelector('.node-active'); if (ia) ia.checked = !!node.isActive;
+                        const ip = li.querySelector('.node-published'); if (ip) ip.checked = !!node.isPublished;
+
+                        const roles = li.querySelector('.node-roles'); if (roles) roles.value = node.rolesCsv ?? '';
+
+                        // enforce your editor rules
+                        normalizeLinkInputs(li);
+                        setDeletedState(li, !!node.deleted);
+
+                        // badges depend on flags + current state
+                        updateVisibilityBadge(li);
+                        updatePageWarnBadge(li);
+
+                        // collapse UI needs re-eval after children are built
+                        // (we call refreshAllToggles() after full rebuild)
+                    }
+
+                    function buildUl(ul, nodes) {
+                        // Rebuild order exactly
+                        ul.innerHTML = '';
+
+                        (nodes || []).forEach(node => {
+                            const nodeId = String(node.id ?? '');
+
+                            let li = existingById.get(nodeId);
+                            if (!li) {
+                                // ✅ recreate missing nodes (Undo/Redo add/remove)
+                                li = createNodeLi();                // <-- no args
+                                li.dataset.id = nodeId;             // enforce snapshot id
+                                newlyCreated.push(li);
+                            }
+
+                            setFields(li, node);
+                            ul.appendChild(li);
+
+                            const childUl = ensureChildrenUl(li);
+                            buildUl(childUl, node.children || []);
+                        });
+                    }
+
+                    buildUl(navRoot, snap.tree || []);
+
+                    // ✅ wire new nodes (events + link rules + etc.)
+                    // Reused nodes already have handlers, new ones do not.
+                    newlyCreated.forEach(li => {
+                        wireNodeUi(li);
+
+                        // init sortable for its child UL (if any)
+                        const childUl = li.querySelector(':scope > .nav-children');
+                        if (childUl) initSortable(childUl);
+                    });
+
+                    // ✅ safest: re-init sortables globally (in case structure changed)
+                    initAllSortables();
+
+                    // refresh derived UI
+                    applyShowDeletedUi();
+                    refreshAllToggles();
+                    refreshAllBadges();
+                    refreshSortBadges();
+
+                    setDirty(true);
+                } finally {
+                    historyApplying = false;
+                    updateUndoRedoUi();
+                }
+            }
+
+
+            function undo() {
+                if (undoStack.length <= 1) return;
+                const current = undoStack.pop();
+                redoStack.push(current);
+
+                const prev = undoStack[undoStack.length - 1];
+                applySnapshot(prev.json);
+
+                showToast('Undo', 'info');
+            }
+
+            function redo() {
+                if (redoStack.length === 0) return;
+                const next = redoStack.pop();
+                undoStack.push(next);
+
+                applySnapshot(next.json);
+
+                showToast('Redo', 'info');
+            }
+
+            // -----------------------------
+            // Node wiring
+            // -----------------------------
             function setDeletedState(li, deleted) {
                 li.dataset.deleted = deleted ? 'true' : 'false';
                 li.classList.toggle('is-deleted', !!deleted);
 
-                // Disable/enable fields (don’t disable restore button)
                 li.querySelectorAll('input, select, textarea').forEach(el => {
                     el.disabled = !!deleted;
                 });
@@ -1191,13 +1311,251 @@
                 const delBtn = li.querySelector('.delete-node');
                 const restoreBtn = li.querySelector('.restore-node');
 
-                // If both exist, swap visibility. If only restore exists, just ensure it’s visible.
                 if (delBtn) delBtn.classList.toggle('d-none', !!deleted);
                 if (restoreBtn) restoreBtn.classList.toggle('d-none', !deleted);
 
                 updateVisibilityBadge(li);
                 updatePageWarnBadge(li);
+            }
 
+            // ✅ Reduced duplicate autosave triggers:
+            // - label autosaves on input
+            // - other controls autosave on change
+            function wireAutosaveOnFieldChange(li) {
+                // label typing
+                li.querySelectorAll('input.node-label').forEach(el => {
+                    let enterCommitted = false;
+
+                    el.addEventListener('input', () => {
+                        if (historyApplying) return;
+                        setDirty(true);
+                        updateVisibilityBadge(li);
+                        updatePageWarnBadge(li);
+                        autoSaveDebounced();
+                    });
+
+                    el.addEventListener('keydown', (e) => {
+                        if (e.key !== 'Enter') return;
+
+                        e.preventDefault();
+                        if (historyApplying) return;
+
+                        enterCommitted = true;
+                        pushHistory('label');
+                        el.blur();
+                    });
+
+                    el.addEventListener('blur', () => {
+                        if (historyApplying) return;
+
+                        if (enterCommitted) {
+                            enterCommitted = false;
+                            return;
+                        }
+                        pushHistory('label');
+                    });
+                });
+
+                // change-based controls
+                li.querySelectorAll('select, input[type="checkbox"], input[type="radio"], input.node-url').forEach(el => {
+                    el.addEventListener('change', () => {
+                        if (historyApplying) return;
+
+                        setDirty(true);
+
+                        if (el.classList.contains('node-linktype')) {
+                            setLinkType(li, el.value);
+                        }
+                        if (el.classList.contains('node-pageid') || el.classList.contains('node-url')) {
+                            normalizeLinkInputs(li);
+                        }
+
+                        pushHistory('change');
+
+                        updateVisibilityBadge(li);
+                        updatePageWarnBadge(li);
+                        autoSaveDebounced();
+                    });
+                });
+            }
+
+            function wireNodeUi(li) {
+                const toggleBtn = li.querySelector('.toggle-children');
+                if (toggleBtn) {
+                    toggleBtn.addEventListener('click', () => {
+                        const ul = li.querySelector(':scope > .nav-children');
+                        if (!ul) return;
+
+                        ul.classList.toggle('d-none');
+                        const collapsed = ul.classList.contains('d-none');
+                        toggleBtn.textContent = collapsed ? '▶' : '▼';
+                        localStorage.setItem(collapseKeyFor(li), collapsed ? 'true' : 'false');
+                    });
+                }
+
+                li.querySelector('.add-child')?.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    if (historyApplying) return;
+
+                    const parentChildUl = li.querySelector(':scope > .nav-children');
+                    if (!parentChildUl) return;
+
+                    const childLi = createNodeLi();
+                    parentChildUl.appendChild(childLi);
+
+                    // ensure parent toggle shows
+                    applyCollapseState(li);
+
+                    refreshSortBadges();
+                    refreshAllBadges();
+
+                    setDirty(true);
+                    pushHistory('add-child');
+                    autoSaveDebounced();
+
+                    childLi.querySelector('.node-label')?.focus({ preventScroll: true });
+                    childLi.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                });
+
+
+                li.querySelector('.delete-node')?.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    if (historyApplying) return;
+
+                    setDeletedState(li, true);
+                    pushHistory('delete');
+                    applyShowDeletedUi();
+
+                    const parentLi = li.closest('ul')?.closest('li.nav-node');
+                    if (parentLi) applyCollapseState(parentLi);
+
+                    refreshSortBadges();
+                    setDirty(true);
+                    autoSaveDebounced();
+                });
+
+                li.querySelector('.restore-node')?.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    if (historyApplying) return;
+
+                    setDeletedState(li, false);
+                    pushHistory('restore');
+                    applyShowDeletedUi();
+
+                    const parentLi = li.closest('ul')?.closest('li.nav-node');
+                    if (parentLi) applyCollapseState(parentLi);
+
+                    refreshSortBadges();
+                    setDirty(true);
+                    autoSaveDebounced();
+                });
+
+                normalizeLinkInputs(li);
+                applyCollapseState(li);
+                updateVisibilityBadge(li);
+                updatePageWarnBadge(li);
+                wireAutosaveOnFieldChange(li);
+            }
+
+            function wireExistingNodes() {
+                navRoot?.querySelectorAll('.nav-node').forEach(li => {
+                    wireNodeUi(li);
+                    const childrenUl = li.querySelector(':scope > .nav-children');
+                    initSortable(childrenUl);
+                });
+
+                refreshAllToggles();
+                refreshAllBadges();
+                refreshSortBadges();
+            }
+
+            // -----------------------------
+            // Refresh helpers
+            // -----------------------------
+            function buildFlagsSnapshot(flagsObj) {
+                const snap = {};
+                Object.entries(flagsObj || {}).forEach(([k, f]) => {
+                    const id = Number(k);
+                    if (!id) return;
+                    snap[id] = [
+                        (f?.showInNavigation ? 1 : 0),
+                        Number(f?.pageStatusId ?? -1),
+                        (f?.isActive ? 1 : 0),
+                        (f?.isDeleted ? 1 : 0)
+                    ].join('|');
+                });
+                return snap;
+            }
+
+            function buildPagesSnapshot(pagesArr) {
+                const snap = {};
+                (Array.isArray(pagesArr) ? pagesArr : []).forEach(p => {
+                    const id = Number(p.id ?? p.Id ?? 0);
+                    if (!id) return;
+                    const title = String(p.title ?? p.Title ?? '');
+                    const slug = String(p.slug ?? p.Slug ?? '');
+                    snap[id] = `${title}|${slug}`;
+                });
+                return snap;
+            }
+
+            function diffSnapshotCounts(prev, next) {
+                let changed = 0, added = 0, removed = 0;
+
+                const prevKeys = new Set(Object.keys(prev || {}));
+                const nextKeys = new Set(Object.keys(next || {}));
+
+                nextKeys.forEach(k => { if (!prevKeys.has(k)) added++; });
+                prevKeys.forEach(k => { if (!nextKeys.has(k)) removed++; });
+                nextKeys.forEach(k => {
+                    if (prevKeys.has(k) && prev[k] !== next[k]) changed++;
+                });
+
+                return { changed, added, removed };
+            }
+
+            function diffChangedIds(prevSnap, nextSnap) {
+                const changedIds = [];
+                const prevKeys = new Set(Object.keys(prevSnap || {}));
+                const nextKeys = new Set(Object.keys(nextSnap || {}));
+
+                nextKeys.forEach(k => { if (!prevKeys.has(k)) changedIds.push(Number(k)); });
+                prevKeys.forEach(k => { if (!nextKeys.has(k)) changedIds.push(Number(k)); });
+
+                nextKeys.forEach(k => {
+                    if (prevKeys.has(k) && prevSnap[k] !== nextSnap[k]) changedIds.push(Number(k));
+                });
+
+                return Array.from(new Set(changedIds.filter(n => !Number.isNaN(n) && n > 0)));
+            }
+
+            function maybeToastRefreshChanged(message) {
+                const now = Date.now();
+                if (now - lastRefreshToastAt < 6000) return;
+                showToast(message || 'Page data updated', 'info');
+                lastRefreshToastAt = now;
+            }
+
+            function formatRefreshToast(flagsDelta, pagesDelta) {
+                const parts = [];
+
+                if ((flagsDelta.changed + flagsDelta.added + flagsDelta.removed) > 0) {
+                    const bits = [];
+                    if (flagsDelta.changed) bits.push(`${flagsDelta.changed} status changed`);
+                    if (flagsDelta.added) bits.push(`${flagsDelta.added} new`);
+                    if (flagsDelta.removed) bits.push(`${flagsDelta.removed} removed`);
+                    parts.push(`Pages: ${bits.join(', ')}`);
+                }
+
+                if ((pagesDelta.changed + pagesDelta.added + pagesDelta.removed) > 0) {
+                    const bits = [];
+                    if (pagesDelta.added) bits.push(`${pagesDelta.added} added`);
+                    if (pagesDelta.removed) bits.push(`${pagesDelta.removed} removed`);
+                    if (pagesDelta.changed) bits.push(`${pagesDelta.changed} renamed`);
+                    parts.push(`Options: ${bits.join(', ')}`);
+                }
+
+                return parts.length ? parts.join(' • ') : 'Page data updated';
             }
 
             async function refreshPageFlagsFromServer() {
@@ -1217,7 +1575,6 @@
                     const changedIds = diffChangedIds(prevSnap, nextSnap);
                     const delta = diffSnapshotCounts(prevSnap, nextSnap);
 
-                    // mutate const object
                     Object.keys(pageFlagsById).forEach(k => delete pageFlagsById[k]);
                     Object.entries(nextFlags).forEach(([k, v]) => pageFlagsById[k] = v);
 
@@ -1227,24 +1584,159 @@
                         refreshAllBadges();
                     }
 
+                    for (const [pid, sig] of ackDangerByPageId.entries()) {
+                        const nowSig = nextSnap[String(pid)];
+                        if (!nowSig || nowSig !== sig) ackDangerByPageId.delete(pid);
+                    }
+                    saveAckToStorage();
+
                     return { delta, changedIds };
                 } catch {
                     return null;
                 }
             }
 
+            async function refreshPageOptionsFromServer() {
+                try {
+                    const res = await fetch(`?handler=PageOptions&menuId=${menuId}`, {
+                        method: 'GET',
+                        headers: { 'Accept': 'application/json' }
+                    });
 
+                    const data = await res.json().catch(() => null);
+                    if (!res.ok || !data || !data.success) return null;
 
+                    const nextPages = data.pages || [];
+                    const nextSnap = buildPagesSnapshot(nextPages);
 
-            const REFRESH_MS = 45000;
+                    const prevSnap = lastPagesSnapshot;
+                    const changedIds = diffChangedIds(prevSnap, nextSnap);
+                    const delta = diffSnapshotCounts(prevSnap, nextSnap);
+
+                    pages = nextPages;
+                    lastPagesSnapshot = nextSnap;
+
+                    if (delta.changed || delta.added || delta.removed) {
+                        navRoot?.querySelectorAll('.nav-node').forEach(li => {
+                            const sel = li.querySelector('.node-pageid');
+                            if (!sel) return;
+                            const current = sel.value || '';
+                            sel.innerHTML = `<option value="">-- Select page --</option>${renderPageOptions(current)}`;
+                        });
+
+                        refreshAllBadges();
+                    }
+
+                    return { delta, changedIds };
+                } catch {
+                    return null;
+                }
+            }
 
             function isUserInteractingWithEditor() {
                 const el = document.activeElement;
                 if (!el) return false;
+                return !!(el.closest && el.closest('#navRoot .nav-node'));
+            }
 
-                // If focused anywhere inside a nav node editor, assume interaction
-                const inNode = el.closest && el.closest('#navRoot .nav-node');
-                return !!inNode;
+            function markAutoExpanded(parentLi) {
+                const btn = parentLi.querySelector(':scope .toggle-children');
+                if (!btn) return;
+
+                btn.classList.remove('auto-expand-blink');
+                void btn.offsetWidth;
+                btn.classList.add('auto-expand-blink');
+
+                let pill = parentLi.querySelector(':scope .auto-expand-pill');
+                if (!pill) {
+                    pill = document.createElement('span');
+                    pill.className = 'auto-expand-pill';
+                    pill.textContent = 'Auto-expanded';
+                    btn.insertAdjacentElement('afterend', pill);
+                }
+
+                setTimeout(() => {
+                    btn.classList.remove('auto-expand-blink');
+                    pill?.remove();
+                }, 2200);
+            }
+
+            function expandAncestors(li) {
+                let current = li;
+
+                while (true) {
+                    const parentLi = current.closest('ul')?.closest('li.nav-node');
+                    if (!parentLi) break;
+
+                    const ul = parentLi.querySelector(':scope > .nav-children');
+                    const btn = parentLi.querySelector(':scope .toggle-children');
+
+                    if (ul) {
+                        const wasCollapsed =
+                            ul.classList.contains('d-none') ||
+                            localStorage.getItem(collapseKeyFor(parentLi)) === 'true';
+
+                        if (wasCollapsed) {
+                            ul.classList.remove('d-none');
+                            localStorage.setItem(collapseKeyFor(parentLi), 'false');
+                            if (btn) btn.textContent = '▼';
+                            markAutoExpanded(parentLi);
+                        }
+                    }
+
+                    applyCollapseState(parentLi);
+                    current = parentLi;
+                }
+            }
+
+            function getPageSeverity(pageId) {
+                const f = pageFlagsById[String(pageId)] || pageFlagsById[pageId];
+                if (!f) return 'info';
+
+                const isDeleted = !!f.isDeleted;
+                const isActive = f.isActive !== false;
+                const isPublished = (typeof f.pageStatusId === 'number')
+                    ? (f.pageStatusId === PAGE_STATUS_PUBLISHED)
+                    : true;
+
+                const showInNav = f.showInNavigation !== false;
+
+                const hard = isDeleted || !isActive || !isPublished;
+                if (hard) return 'danger';
+                if (!showInNav) return 'warning';
+                return 'info';
+            }
+
+            function pulseNavNodesForPageIds(pageIds) {
+                if (!pageIds || pageIds.length === 0) return;
+
+                const set = new Set(pageIds.map(Number));
+
+                navRoot?.querySelectorAll('.nav-node').forEach(li => {
+                    const linkType = (li.querySelector('.node-linktype')?.value || 'page').toLowerCase();
+                    if (linkType !== 'page') return;
+
+                    const raw = li.querySelector('.node-pageid')?.value || '';
+                    const pid = raw ? Number(raw) : 0;
+                    if (!(pid > 0) || !set.has(pid)) return;
+
+                    const sev = getPageSeverity(pid);
+
+                    if (sev === 'danger') {
+                        if (isDangerAcked(pid)) return;
+                        expandAncestors(li);
+                        setDangerAck(pid, true);
+                        saveAckToStorage();
+                    }
+
+                    li.classList.remove('pulse-danger', 'pulse-warning', 'pulse-info');
+                    void li.offsetWidth;
+                    li.classList.add(sev === 'danger' ? 'pulse-danger' : sev === 'warning' ? 'pulse-warning' : 'pulse-info');
+
+                    setTimeout(() => {
+                        li.classList.remove('pulse-danger', 'pulse-warning', 'pulse-info');
+                    }, 1300);
+                });
             }
 
             async function periodicRefreshTick() {
@@ -1261,292 +1753,91 @@
                 const f = flagsRes?.delta || { changed: 0, added: 0, removed: 0 };
                 const p = pagesRes?.delta || { changed: 0, added: 0, removed: 0 };
 
-                // union of changed ids (flags + option changes)
                 const ids = Array.from(new Set([
                     ...(flagsRes?.changedIds || []),
                     ...(pagesRes?.changedIds || [])
                 ]));
 
                 if ((f.changed + f.added + f.removed + p.changed + p.added + p.removed) > 0) {
-                    const msg = formatRefreshToast(f, p);
-                    maybeToastRefreshChanged(msg);
-
-                    // ✅ highlight nav items that link to affected pages
+                    maybeToastRefreshChanged(formatRefreshToast(f, p));
                     pulseNavNodesForPageIds(ids);
                 }
             }
 
-
-
             function startPeriodicRefresh() {
-                // Initial “quiet” refresh shortly after load (optional)
                 setTimeout(() => { periodicRefreshTick(); }, 2500);
-
-                // Interval refresh
                 setInterval(() => { periodicRefreshTick(); }, REFRESH_MS);
 
-                // When user returns to tab, refresh once
                 document.addEventListener('visibilitychange', () => {
                     if (!document.hidden) periodicRefreshTick();
                 });
 
-                // When window regains focus, refresh once
                 window.addEventListener('focus', () => {
                     periodicRefreshTick();
                 });
             }
 
+        // -----------------------------
+        // Init
+        // -----------------------------
+        document.addEventListener('DOMContentLoaded', () => {
+            updateSaveButtonUi();
 
-            function wireNodeUi(li) {
-                const toggleBtn = li.querySelector('.toggle-children');
-                if (toggleBtn) {
-                    toggleBtn.addEventListener('click', () => {
-                        const ul = li.querySelector(':scope > .nav-children');
-                        if (!ul) return;
+            initAllSortables();
+            wireExistingNodes();
 
-                        ul.classList.toggle('d-none');
-                        const collapsed = ul.classList.contains('d-none');
-                        toggleBtn.textContent = collapsed ? '▶' : '▼';
-                        localStorage.setItem(collapseKeyFor(li), collapsed ? 'true' : 'false');
-                    });
-                }
+            // snapshots
+            lastFlagsSnapshot = buildFlagsSnapshot(pageFlagsById);
+            lastPagesSnapshot = buildPagesSnapshot(pages);
 
-                li.querySelector('.add-child')?.addEventListener('click', () => {
-                    const childLi = createNodeLi({
-                        id: uniqueTempId(),
-                        label: 'New Item',
-                        linkType: 'page',
-                        pageId: null,
-                        url: '',
-                        allowedRolesCsv: '',
-                        openInNewTab: false,
-                        isActive: true,
-                        isPublished: true
-                    });
-
-                    li.querySelector('.nav-children')?.appendChild(childLi);
-
-                    applyCollapseState(li);
-                    applyCollapseState(childLi);
-
-                    setDirty(true);
-                    autoSaveDebounced();
-                });
-
-                li.querySelector('.delete-node')?.addEventListener('click', () => {
-                    setDeletedState(li, true);
-                    applyShowDeletedUi();
-                    const parentLi = li.closest('ul')?.closest('li.nav-node');
-                    if (parentLi) applyCollapseState(parentLi);
-
-                    refreshSortBadges();   // ✅ THIS is the missing line
-
-                    setDirty(true);
-                    autoSaveDebounced();
-                });
-
-
-                li.querySelector('.restore-node')?.addEventListener('click', () => {
-                    setDeletedState(li, false);
-                    applyShowDeletedUi();
-                    const parentLi = li.closest('ul')?.closest('li.nav-node');
-                    if (parentLi) applyCollapseState(parentLi);
-
-                    refreshSortBadges();   // ✅ ADD THIS
-
-                    setDirty(true);
-                    autoSaveDebounced();
-                });
-
-
-
-                updateVisibilityBadge(li);
-                updatePageWarnBadge(li);
-                wireAutosaveOnFieldChange(li);
+            // load + prune ack
+            loadAckFromStorage();
+            for (const [pid, sig] of ackDangerByPageId.entries()) {
+                const nowSig = lastFlagsSnapshot[String(pid)];
+                if (!nowSig || nowSig !== sig) ackDangerByPageId.delete(pid);
             }
+            saveAckToStorage();
 
-            function wireExistingNodes() {
-                document.querySelectorAll('.nav-node').forEach(li => {
-                    wireNodeUi(li);
+            // deleted toggle
+            document.getElementById('toggleDeletedBtn')?.addEventListener('click', () => {
+                const next = !getShowDeletedPref();
+                setShowDeletedPref(next);
+                applyShowDeletedUi();
+            });
 
-                    const childrenUl = li.querySelector(':scope > .nav-children');
-                    initSortable(childrenUl);
+                // -----------------------------
+                // Add Root
+                // -----------------------------
+                document.getElementById('addRootBtn')?.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    if (!navRoot) return;
+                    if (historyApplying) return;
 
-                    normalizeLinkInputs(li);
-                    applyCollapseState(li);
-                    updateVisibilityBadge(li);
-                    updatePageWarnBadge(li);
-                });
+                    // snapshot BEFORE change (so Undo returns to previous state)
+                    pushHistory('pre-add-root');
 
-                refreshAllToggles();
-                refreshAllBadges();
-                refreshSortBadges();
+                    const li = createNodeLi();      // your factory returns <li>
+                    navRoot.appendChild(li);
 
-            }
-            function expandNodeAndAncestors(li) {
-                // Walk up through parent nav-node elements and expand their child ULs
-                let cur = li;
-                while (cur) {
-                    const childUl = cur.querySelector(':scope > .nav-children');
-                    const toggleBtn = cur.querySelector(':scope .toggle-children');
-
-                    if (childUl && childUl.classList.contains('d-none')) {
-                        childUl.classList.remove('d-none');
-                        if (toggleBtn) toggleBtn.textContent = '▼';
-                        localStorage.setItem(collapseKeyFor(cur), 'false');
-                    }
-
-                    // next ancestor nav-node
-                    const parentUl = cur.closest('ul');
-                    const parentLi = parentUl?.closest('li.nav-node') || null;
-                    cur = parentLi;
-                }
-            }
-
-            function focusFirstErrorField(li, payloadItem) {
-                const linkType = (payloadItem.linkType || 'page').toLowerCase();
-
-                if (linkType === 'page') {
-                    const sel = li.querySelector('.node-pageid');
-                    if (sel && !sel.disabled) {
-                        sel.focus({ preventScroll: true });
-                        sel.classList.add('is-invalid');
-                        setTimeout(() => sel.classList.remove('is-invalid'), 1500);
-                        return;
-                    }
-                }
-
-                if (linkType === 'url') {
-                    const inp = li.querySelector('.node-url');
-                    if (inp && !inp.disabled) {
-                        inp.focus({ preventScroll: true });
-                        inp.classList.add('is-invalid');
-                        setTimeout(() => inp.classList.remove('is-invalid'), 1500);
-                        return;
-                    }
-                }
-
-                // fallback: label field
-                const label = li.querySelector('.node-label');
-                if (label) {
-                    label.focus({ preventScroll: true });
-                    label.classList.add('is-invalid');
-                    setTimeout(() => label.classList.remove('is-invalid'), 1500);
-                }
-            }
-
-            function scrollToNode(li) {
-                // smooth scroll, but keep focus control separate
-                li.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            }
-
-            function buildFlagsSnapshot(flagsObj) {
-                const snap = {};
-                Object.entries(flagsObj || {}).forEach(([k, f]) => {
-                    const id = Number(k);
-                    if (!id) return;
-                    snap[id] = [
-                        (f?.showInNavigation ? 1 : 0),
-                        Number(f?.pageStatusId ?? -1),
-                        (f?.isActive ? 1 : 0),
-                        (f?.isDeleted ? 1 : 0)
-                    ].join('|');
-                });
-                return snap;
-            }
-
-            function diffSnapshotCounts(prev, next) {
-                // returns { changed, added, removed }
-                let changed = 0, added = 0, removed = 0;
-
-                const prevKeys = new Set(Object.keys(prev || {}));
-                const nextKeys = new Set(Object.keys(next || {}));
-
-                // added
-                nextKeys.forEach(k => { if (!prevKeys.has(k)) added++; });
-
-                // removed
-                prevKeys.forEach(k => { if (!nextKeys.has(k)) removed++; });
-
-                // changed
-                nextKeys.forEach(k => {
-                    if (prevKeys.has(k) && prev[k] !== next[k]) changed++;
-                });
-
-                return { changed, added, removed };
-            }
-
-            function buildPagesSnapshot(pagesArr) {
-                const snap = {};
-                (Array.isArray(pagesArr) ? pagesArr : []).forEach(p => {
-                    const id = Number(p.id ?? p.Id ?? 0);
-                    if (!id) return;
-                    const title = String(p.title ?? p.Title ?? '');
-                    const slug = String(p.slug ?? p.Slug ?? '');
-                    snap[id] = `${title}|${slug}`;
-                });
-                return snap;
-            }
-
-            function formatRefreshToast(flagsDelta, pagesDelta) {
-                const parts = [];
-
-                if ((flagsDelta.changed + flagsDelta.added + flagsDelta.removed) > 0) {
-                    // Most useful is "changed"
-                    const bits = [];
-                    if (flagsDelta.changed) bits.push(`${flagsDelta.changed} status changed`);
-                    if (flagsDelta.added) bits.push(`${flagsDelta.added} new`);
-                    if (flagsDelta.removed) bits.push(`${flagsDelta.removed} removed`);
-                    parts.push(`Pages: ${bits.join(', ')}`);
-                }
-
-                if ((pagesDelta.changed + pagesDelta.added + pagesDelta.removed) > 0) {
-                    const bits = [];
-                    if (pagesDelta.added) bits.push(`${pagesDelta.added} added`);
-                    if (pagesDelta.removed) bits.push(`${pagesDelta.removed} removed`);
-                    if (pagesDelta.changed) bits.push(`${pagesDelta.changed} renamed`);
-                    parts.push(`Options: ${bits.join(', ')}`);
-                }
-
-                return parts.length ? parts.join(' • ') : 'Page data updated';
-            }
-
-
-            // ------------------------------------------------------------
-            // Init
-            // ------------------------------------------------------------
-            document.addEventListener('DOMContentLoaded', () => {
-                updateSaveButtonUi();
-
-                initAllSortables();
-                wireExistingNodes();
-
-                document.getElementById('toggleDeletedBtn')?.addEventListener('click', () => {
-                    const next = !getShowDeletedPref();
-                    setShowDeletedPref(next);
-                    applyShowDeletedUi();
-                });
-
-                document.getElementById('addRootBtn')?.addEventListener('click', () => {
-                    const li = createNodeLi({
-                        id: uniqueTempId(),
-                        label: 'New Item',
-                        linkType: 'page',
-                        pageId: null,
-                        url: '',
-                        allowedRolesCsv: '',
-                        openInNewTab: false,
-                        isActive: true,
-                        isPublished: true
-                    });
-
-                    document.getElementById('navRoot')?.appendChild(li);
-
+                    // keep derived UI consistent
                     refreshSortBadges();
+                    refreshAllBadges();
+                    refreshAllToggles();
+
                     setDirty(true);
+
+                    // snapshot AFTER change (so Redo can re-apply)
+                    pushHistory('add-root');
+
                     autoSaveDebounced();
+
+                    li.querySelector('.node-label')?.focus({ preventScroll: true });
+                    li.scrollIntoView({ behavior: 'smooth', block: 'center' });
                 });
 
+                // -----------------------------
+                // Save buttons
+                // -----------------------------
                 document.getElementById('saveBtn')?.addEventListener('click', async (e) => {
                     e.preventDefault();
                     if (isSaving) return;
@@ -1563,19 +1854,48 @@
                     window.open(publicBaseUrl, '_blank');
                 });
 
-                lastFlagsSig = buildFlagsSignature(pageFlagsById);
-                lastPagesSig = buildPagesSignature(pages);
+                // -----------------------------
+                // Undo/Redo baseline + wiring
+                // -----------------------------
+                pushHistory('baseline');
+                updateUndoRedoUi();
 
-                let lastFlagsSnapshot = {};   // { [id]: "show|status|active|deleted" }
-                let lastPagesSnapshot = {};   // { [id]: "title|slug" }
+                document.getElementById('undoBtn')?.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    if (historyApplying) return;
+                    undo();
+                });
 
-                lastFlagsSnapshot = buildFlagsSnapshot(pageFlagsById);
-                lastPagesSnapshot = buildPagesSnapshot(pages);
+                document.getElementById('redoBtn')?.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    if (historyApplying) return;
+                    redo();
+                });
 
+                // Keyboard shortcuts (Ctrl/Cmd+Z, Ctrl/Cmd+Y / Shift+Ctrl+Z)
+                document.addEventListener('keydown', (e) => {
+                    if (historyApplying) return;
 
-               applyShowDeletedUi();
-               startPeriodicRefresh();
+                    const isMac = navigator.platform.toUpperCase().includes('MAC');
+                    const mod = isMac ? e.metaKey : e.ctrlKey;
+                    if (!mod) return;
 
+                    // avoid stealing shortcuts while typing in inputs
+                    const tag = (document.activeElement?.tagName || '').toLowerCase();
+                    const isTyping = tag === 'input' || tag === 'textarea' || tag === 'select';
+                    if (isTyping) return;
+
+                    const key = (e.key || '').toLowerCase();
+                    if (key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
+                    else if (key === 'y' || (key === 'z' && e.shiftKey)) { e.preventDefault(); redo(); }
+                });
+
+                // -----------------------------
+                // Other init steps
+                // -----------------------------
+                wireBadgeAckToggle();
+                applyShowDeletedUi();
+                startPeriodicRefresh();
             });
 
             window.addEventListener('beforeunload', (e) => {
@@ -1584,6 +1904,7 @@
                 e.preventDefault();
                 e.returnValue = '';
             });
+
 
         })();
     </script>

@@ -5,6 +5,10 @@
     {
       "library": "jquery-sortablejs@1.6.1",
       "destination": "wwwroot/lib/jquery-sortablejs/"
+    },
+    {
+      "library": "Sortable@1.15.6",
+      "destination": "wwwroot/lib/Sortable/"
     }
   ]
 }

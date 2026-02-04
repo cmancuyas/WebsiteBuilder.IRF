@@ -3,5 +3,7 @@
 
 @if (TenantContext.IsResolved)
 {
-    @await Component.InvokeAsync("TenantNavigation", new { menuId = 2, variant = "footer" })
+    <nav aria-label="Footer navigation">
+        @await Component.InvokeAsync("TenantNavigation", new { menuId = 2, variant = "footer" })
+    </nav>
 }

@@ -1,6 +1,5 @@
-﻿@using WebsiteBuilder.IRF.Infrastructure.Tenancy﻿
+﻿@using WebsiteBuilder.IRF.Infrastructure.Tenancy
 @model WebsiteBuilder.IRF.Infrastructure.Tenancy.TenantNavigationVm
-
 
 @{
     var idx = 0;
@@ -8,6 +7,78 @@
 
     static string SafeHref(string url)
         => string.IsNullOrWhiteSpace(url) ? "#" : url;
+
+    // -----------------------------
+    // Active detection (merged)
+    // -----------------------------
+    string NormalizePath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return "/";
+
+        var p = path.Trim();
+
+        // strip query if present (defensive)
+        var q = p.IndexOf('?', StringComparison.Ordinal);
+        if (q >= 0) p = p[..q];
+
+        // ensure leading slash for internal
+        if (!p.StartsWith("/", StringComparison.Ordinal)) p = "/" + p;
+
+        // normalize trailing slash (except root)
+        if (p.Length > 1 && p.EndsWith("/", StringComparison.Ordinal))
+            p = p.TrimEnd('/');
+
+        return p.ToLowerInvariant();
+    }
+
+    bool IsExternal(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return false;
+        return url.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            || url.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
+    }
+
+    bool IsActiveUrl(string currentPath, string itemUrl)
+    {
+        var cur = NormalizePath(currentPath);
+        var url = NormalizePath(itemUrl);
+
+        if (url == "/") return cur == "/";
+        if (cur == url) return true;
+
+        // section match
+        return cur.StartsWith(url + "/", StringComparison.Ordinal);
+    }
+
+    // Compute IsActive / IsAncestorOfActive on the VM nodes for this request
+    void ComputeActiveFlags(TenantNavigationVm.Node node, string currentPath)
+    {
+        // reset (important if VM is reused/cached)
+        node.IsActive = false;
+        node.IsAncestorOfActive = false;
+
+        if (!string.IsNullOrWhiteSpace(node.Url) && !IsExternal(node.Url))
+        {
+            node.IsActive = IsActiveUrl(currentPath, node.Url);
+        }
+
+        foreach (var child in node.Children)
+        {
+            ComputeActiveFlags(child, currentPath);
+        }
+
+        // ancestor flag if any descendant active (or ancestor of active)
+        if (node.Children.Count > 0)
+        {
+            node.IsAncestorOfActive = node.Children.Any(c => c.IsActive || c.IsAncestorOfActive);
+        }
+    }
+
+    var current = NormalizePath(Context?.Request?.Path.Value ?? "/");
+    foreach (var root in Model.Items)
+    {
+        ComputeActiveFlags(root, current);
+    }
 
     // =========================
     // FOOTER RENDERER (recursive)
@@ -46,7 +117,7 @@
             if (child.Children.Count > 0)
             {
                 <li>
-                    <h6 class="dropdown-header @(child.IsActive ? "text-primary" : "")">
+                    <h6 class="dropdown-header @(child.IsActive || child.IsAncestorOfActive ? "text-primary" : "")">
                         @child.Title
                     </h6>
                 </li>
@@ -57,7 +128,8 @@
                         <a class="dropdown-item @(gc.IsActive ? "active" : "")"
                            href="@SafeHref(gc.Url)"
                            target="@(gc.OpenInNewTab ? "_blank" : null)"
-                           rel="@(gc.OpenInNewTab ? "noopener noreferrer" : null)">
+                           rel="@(gc.OpenInNewTab ? "noopener noreferrer" : null)"
+                           @(gc.IsActive ? "aria-current=\"page\"" : null)>
                             — @gc.Title
                         </a>
                     </li>
@@ -71,7 +143,8 @@
                     <a class="dropdown-item @(child.IsActive ? "active" : "")"
                        href="@SafeHref(child.Url)"
                        target="@(child.OpenInNewTab ? "_blank" : null)"
-                       rel="@(child.OpenInNewTab ? "noopener noreferrer" : null)">
+                       rel="@(child.OpenInNewTab ? "noopener noreferrer" : null)"
+                       @(child.IsActive ? "aria-current=\"page\"" : null)>
                         @child.Title
                     </a>
                 </li>
@@ -96,7 +169,7 @@
 }
 else
 {
-@* ======================
+    @* ======================
    HEADER NAVIGATION
    ====================== *@
     <ul class="navbar-nav me-auto mb-2 mb-lg-0">
@@ -111,7 +184,8 @@ else
                     <a class="nav-link text-dark @(isActive ? "active" : "")"
                        href="@SafeHref(item.Url)"
                        target="@(item.OpenInNewTab ? "_blank" : null)"
-                       rel="@(item.OpenInNewTab ? "noopener noreferrer" : null)">
+                       rel="@(item.OpenInNewTab ? "noopener noreferrer" : null)"
+                       @(item.IsActive ? "aria-current=\"page\"" : null)>
                         @item.Title
                     </a>
                 </li>
@@ -119,6 +193,7 @@ else
             else
             {
                 var ddId = $"tenant-nav-dd-{idx++}";
+                var menuShow = isActive ? "show" : ""; // optional: keep dropdown open if child active
 
                 <li class="nav-item dropdown">
                     <a class="nav-link dropdown-toggle text-dark @(isActive ? "active" : "")"
@@ -130,7 +205,7 @@ else
                         @item.Title
                     </a>
 
-                    <ul class="dropdown-menu" aria-labelledby="@ddId">
+                    <ul class="dropdown-menu @menuShow" aria-labelledby="@ddId">
                         @{
                             RenderHeaderDropdownItems(item.Children);
                         }
