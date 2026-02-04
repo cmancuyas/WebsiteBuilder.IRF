@@ -20,6 +20,9 @@
     <div class="d-flex gap-2">
         <a asp-page="/Admin/Navigation/Index" class="btn btn-outline-secondary">Back</a>
         <button id="addRootBtn" type="button" class="btn btn-outline-primary">Add Item</button>
+        <button type="button" id="undoBtn" class="btn btn-outline-secondary btn-sm" disabled>Undo</button>
+        <button type="button" id="redoBtn" class="btn btn-outline-secondary btn-sm" disabled>Redo</button>
+
         <button id="saveBtn" type="button" class="btn btn-primary">Save Changes</button>
         <button id="toggleDeletedBtn" type="button" class="btn btn-outline-danger">
             Show deleted
@@ -89,11 +92,11 @@
             // State
             // -----------------------------
             let isDirty = false;
-            let isSaving = false;
-            let lastSavedAt = new Date();
-
-            let saveInFlight = false;
+            let isSaving = false;          // UI state
+            let saveInFlight = false;      // network state
             let saveQueued = false;
+
+            let lastSavedAt = null;
 
             const menuId = @Model.MenuId;
             const sortableGroupName = 'nav-menu-' + menuId;
@@ -104,13 +107,13 @@
 
             const showDeletedKey = `nav-show-deleted-${menuId}`;
 
-            // ✅ use server-provided numeric ID (THIS IS CORRECT)
+            // ✅ server-provided numeric ID (do not hardcode)
             const PAGE_STATUS_PUBLISHED = Number(@PageStatusIds.Published);
 
             // pages/options
             let pages = @Html.Raw(Model.PagesJson);
 
-            // flags (object is mutated on refresh; that's fine even if const)
+            // flags (mutated on refresh)
             const pageFlagsById = @Html.Raw(Model.PageFlagsJson ?? "{}");
 
             // periodic refresh snapshots
@@ -447,7 +450,6 @@
                     const pageId = getSelectedPageId(li);
                     if (!pageId) return;
 
-                    // only toggle acks for HARD problems (danger)
                     const flags = pageFlagsById[String(pageId)] || pageFlagsById[pageId];
                     if (!flags) return;
 
@@ -509,7 +511,7 @@
             }
 
             // -----------------------------
-            // LinkType rules
+            // LinkType rules (AUTHORITATIVE: linkType drives fields)
             // -----------------------------
             function setLinkType(li, type) {
                 const linkType = li.querySelector('.node-linktype');
@@ -542,10 +544,26 @@
                 }
             }
 
+            // ✅ LinkType is the authority; never infer type from URL value.
             function normalizeLinkInputs(li) {
-                const urlVal = (li.querySelector('.node-url')?.value || '').trim();
-                if (urlVal) setLinkType(li, 'url');  // url wins
-                else setLinkType(li, 'page');
+                const type = (li.querySelector('.node-linktype')?.value || 'page').toLowerCase();
+
+                const pageSelect = li.querySelector('.node-pageid');
+                const urlInput = li.querySelector('.node-url');
+
+                if (type === 'page') {
+                    if (urlInput) urlInput.value = '';
+                    setLinkType(li, 'page');
+                    return;
+                }
+
+                if (type === 'url') {
+                    if (pageSelect) pageSelect.value = '';
+                    setLinkType(li, 'url');
+                    return;
+                }
+
+                setLinkType(li, 'page');
             }
 
             // -----------------------------
@@ -575,7 +593,13 @@
                     return;
                 }
 
-                Sortable.create(ul, {
+                // ✅ prevent duplicates: destroy old instance if present
+                if (ul._sortable) {
+                    try { ul._sortable.destroy(); } catch { /* ignore */ }
+                    ul._sortable = null;
+                }
+
+                ul._sortable = Sortable.create(ul, {
                     group: { name: sortableGroupName, pull: true, put: true },
                     animation: 150,
                     handle: '.drag-handle',
@@ -583,15 +607,21 @@
                     fallbackOnBody: true,
                     swapThreshold: 0.65,
                     onEnd: function () {
+                        if (historyApplying) return;
+
                         setDirty(true);
+                        pushHistory('drag');
+
                         refreshAllToggles();
                         refreshAllBadges();
                         refreshSortBadges();
+
                         showToast('Saving…', 'info');
                         autoSaveDebounced();
                     }
                 });
             }
+
 
             function initAllSortables() {
                 initSortable(navRoot);
@@ -599,7 +629,7 @@
             }
 
             // -----------------------------
-            // Build payload
+            // Build payload (normalized)
             // -----------------------------
             function buildFlatList(rootUl) {
                 const items = [];
@@ -612,7 +642,7 @@
                         const deleted = li.dataset.deleted === 'true';
 
                         const label = li.querySelector('.node-label')?.value?.trim() || '';
-                        const linkType = li.querySelector('.node-linktype')?.value || 'page';
+                        const linkType = (li.querySelector('.node-linktype')?.value || 'page').toLowerCase();
 
                         const pageIdRaw = li.querySelector('.node-pageid')?.value || '';
                         const pageId = pageIdRaw ? Number(pageIdRaw) : null;
@@ -625,7 +655,7 @@
                         const isPublished = !!li.querySelector('.node-published')?.checked;
 
                         const rolesCsv = li.querySelector('.node-roles')?.value?.trim() || '';
-                        const allowedRolesCsv = rolesCsv.length ? rolesCsv : null;
+                        const allowedRolesCsv = rolesCsv.length ? normalizeRolesCsv(rolesCsv) : null;
 
                         const payloadItem = {
                             id,
@@ -643,11 +673,15 @@
                         };
 
                         if (linkType === 'page') {
-                            payloadItem.pageId = pageId;
+                            payloadItem.pageId = (pageId && pageId > 0) ? pageId : null;
                             payloadItem.url = null;
-                        } else {
+                        } else if (linkType === 'url') {
                             payloadItem.pageId = null;
-                            payloadItem.url = url;
+                            payloadItem.url = url ? url : null;
+                        } else {
+                            payloadItem.linkType = 'page';
+                            payloadItem.pageId = (pageId && pageId > 0) ? pageId : null;
+                            payloadItem.url = null;
                         }
 
                         items.push(payloadItem);
@@ -787,20 +821,22 @@
                 }
             }
 
+            // ✅ locate error node by payload item id (not NodeList index)
             function showValidationErrors(errors, payloadItems) {
                 if (!errors || errors.length === 0) return;
 
                 alert("Please fix the following before saving:\n\n" + errors.map(e => `• ${e.message}`).join('\n'));
 
                 const first = errors[0];
-                const li = navRoot?.querySelectorAll('.nav-node')?.[first.index];
+                const item = payloadItems?.[first.index];
+                if (!item) return;
+
+                const li = navRoot?.querySelector(`.nav-node[data-id="${item.id}"]`);
                 if (!li) return;
 
                 expandNodeAndAncestors(li);
                 scrollToNode(li);
-
-                const item = payloadItems?.[first.index];
-                if (item) focusFirstErrorField(li, item);
+                focusFirstErrorField(li, item);
             }
 
             // -----------------------------
@@ -906,6 +942,9 @@
                         autoSaveDebounced();
                     }
 
+                    // Baseline snapshot after a successful save (so undo doesn't jump before server id remap)
+                    pushHistory('post-save');
+
                     return true;
                 } catch (err) {
                     const msg = err?.message || 'Unexpected error';
@@ -919,40 +958,345 @@
             }
 
             // -----------------------------
-            // Node wiring
+            // Undo / Redo (DOM snapshot)
             // -----------------------------
-            function wireAutosaveOnFieldChange(li) {
-                const inputs = li.querySelectorAll('input, select');
-                inputs.forEach(el => {
-                    el.addEventListener('input', () => {
-                        setDirty(true);
+            const HISTORY_LIMIT = 50;
+            let undoStack = [];
+            let redoStack = [];
+            let historyApplying = false;
 
-                        if (el.classList.contains('node-url') || el.classList.contains('node-pageid')) {
-                            normalizeLinkInputs(li);
-                        }
-
-                        updateVisibilityBadge(li);
-                        updatePageWarnBadge(li);
-                        autoSaveDebounced();
-                    });
-
-                    el.addEventListener('change', () => {
-                        setDirty(true);
-
-                        if (el.classList.contains('node-linktype')) {
-                            setLinkType(li, el.value);
-                        }
-                        if (el.classList.contains('node-pageid') || el.classList.contains('node-url')) {
-                            normalizeLinkInputs(li);
-                        }
-
-                        updateVisibilityBadge(li);
-                        updatePageWarnBadge(li);
-                        autoSaveDebounced();
-                    });
-                });
+            function updateUndoRedoUi() {
+                const u = document.getElementById('undoBtn');
+                const r = document.getElementById('redoBtn');
+                if (u) u.disabled = undoStack.length <= 1 || isSaving || saveInFlight;
+                if (r) r.disabled = redoStack.length === 0 || isSaving || saveInFlight;
             }
 
+            function captureSnapshot() {
+                if (!navRoot) return null;
+
+                function readUl(ul) {
+                    const children = Array.from(ul.children).filter(x => x.classList.contains('nav-node'));
+                    return children.map(li => {
+                        const id = String(li.dataset.id || '');
+                        return {
+                            id,
+                            deleted: li.dataset.deleted === 'true',
+                            label: li.querySelector('.node-label')?.value ?? '',
+                            linkType: li.querySelector('.node-linktype')?.value ?? 'page',
+                            pageId: li.querySelector('.node-pageid')?.value ?? '',
+                            url: li.querySelector('.node-url')?.value ?? '',
+                            openInNewTab: !!li.querySelector('.node-newtab')?.checked,
+                            isActive: !!li.querySelector('.node-active')?.checked,
+                            isPublished: !!li.querySelector('.node-published')?.checked,
+                            rolesCsv: li.querySelector('.node-roles')?.value ?? '',
+                            children: (() => {
+                                const childUl = li.querySelector(':scope > .nav-children');
+                                return childUl ? readUl(childUl) : [];
+                            })()
+                        };
+                    });
+                }
+
+                return {
+                    v: 1,
+                    menuId,
+                    showDeleted: getShowDeletedPref(),
+                    tree: readUl(navRoot)
+                };
+            }
+
+            function pushHistory(reason = '') {
+                if (historyApplying) return;
+                const snap = captureSnapshot();
+                if (!snap) return;
+
+                const snapJson = JSON.stringify(snap);
+                const last = undoStack.length ? undoStack[undoStack.length - 1].json : null;
+
+                if (last === snapJson) return;
+
+                undoStack.push({ json: snapJson, reason, at: Date.now() });
+
+                if (undoStack.length > HISTORY_LIMIT) {
+                    // keep baseline at index 0
+                    undoStack.splice(1, undoStack.length - HISTORY_LIMIT);
+                }
+
+                redoStack = [];
+                updateUndoRedoUi();
+            }
+
+            // -----------------------------
+            // Node factory (createNodeLi)
+            // -----------------------------
+            let nextTempId = -1;
+
+            function createNodeLi(forcedId) {
+                const id = (typeof forcedId !== 'undefined' && forcedId !== null)
+                    ? String(forcedId)
+                    : String(nextTempId--);
+
+                const li = document.createElement('li');
+                li.className = 'nav-node mb-2';
+                li.dataset.id = id;
+                li.dataset.deleted = 'false';
+
+                // Use the same child UL class set you have in _NavNode.cshtml
+                const childUlHtml = `<ul class="nav-children list-unstyled ms-4 mt-2 mb-0"></ul>`;
+
+                li.innerHTML = `
+            <div class="node-row border rounded p-2 bg-white">
+              <div class="d-flex align-items-start gap-2">
+
+                <div class="drag-handle text-muted" title="Drag to reorder" style="cursor: grab; user-select: none;">
+                  &#x2630;
+                </div>
+
+                <button type="button"
+                        class="btn btn-sm btn-link toggle-children px-1 d-none"
+                        aria-label="Toggle children"
+                        style="text-decoration:none;">
+                  ▼
+                </button>
+
+                <span class="badge bg-secondary sort-badge">S?</span>
+
+                <span class="badge bg-warning text-dark d-none node-page-warn-badge" title=""></span>
+
+                <div class="flex-grow-1">
+                  <div class="row g-2">
+                    <div class="col-12">
+                      <span class="badge bg-secondary node-visibility-badge" title="Visibility status">…</span>
+                    </div>
+
+                    <div class="col-12">
+                      <label class="form-label mb-1 small">Label</label>
+                      <input class="form-control form-control-sm node-label" value="" maxlength="200" />
+                    </div>
+
+                    <div class="col-12">
+                      <label class="form-label mb-1 small">Link Type</label>
+                      <select class="form-select form-select-sm node-linktype">
+                        <option value="page" selected>Internal Page</option>
+                        <option value="url">External URL</option>
+                      </select>
+                    </div>
+
+                    <div class="col-12 node-pagewrap">
+                      <label class="form-label mb-1 small">Page</label>
+                      <select class="form-select form-select-sm node-pageid">
+                        <option value="">-- Select page --</option>
+                        ${renderPageOptions('')}
+                      </select>
+                    </div>
+
+                    <div class="col-12 node-urlwrap d-none">
+                      <label class="form-label mb-1 small">URL</label>
+                      <input class="form-control form-control-sm node-url"
+                             value=""
+                             maxlength="500"
+                             placeholder="https://..." disabled />
+                    </div>
+
+                    <div class="col-12 d-flex flex-wrap gap-3 align-items-center">
+                      <div class="form-check form-switch">
+                        <input class="form-check-input node-newtab" type="checkbox" />
+                        <label class="form-check-label small">Open in new tab</label>
+                      </div>
+
+                      <div class="form-check form-switch">
+                        <input class="form-check-input node-active" type="checkbox" checked />
+                        <label class="form-check-label small">Active</label>
+                      </div>
+
+                      <div class="form-check form-switch">
+                        <input class="form-check-input node-published" type="checkbox" checked />
+                        <label class="form-check-label small">Published</label>
+                      </div>
+                    </div>
+
+                    <div class="col-12">
+                      <label class="form-label mb-1 small">Visible to Roles (CSV)</label>
+                      <input class="form-control form-control-sm node-roles"
+                             value=""
+                             maxlength="400"
+                             placeholder="e.g. Admin,Agent (leave blank for everyone)" />
+                    </div>
+
+                  </div>
+                </div>
+
+                <div class="d-flex flex-column gap-2">
+                  <button type="button" class="btn btn-sm btn-outline-secondary add-child">Add Child</button>
+
+                  <button type="button" class="btn btn-sm btn-outline-danger delete-node">Delete</button>
+                  <button type="button" class="btn btn-sm btn-outline-success restore-node d-none">Restore</button>
+                </div>
+
+              </div>
+            </div>
+
+            ${childUlHtml}
+            `.trim();
+
+                // IMPORTANT: new node has no handlers until wired
+                // We intentionally do NOT call wireNodeUi here so caller controls timing,
+                // but it's safe to do it here too if you prefer.
+                wireNodeUi(li);
+
+                // Ensure its children UL becomes sortable
+                const childUl = li.querySelector(':scope > .nav-children');
+                if (childUl) initSortable(childUl);
+
+                // Initial derived UI
+                normalizeLinkInputs(li);
+                applyCollapseState(li);
+                updateVisibilityBadge(li);
+                updatePageWarnBadge(li);
+
+                return li;
+            }
+
+
+
+
+            function applySnapshot(snapshotJson) {
+                if (!navRoot) return;
+
+                const snap = JSON.parse(snapshotJson);
+                if (!snap || snap.v !== 1) return;
+
+                historyApplying = true;
+                try {
+                    // restore preference first
+                    setShowDeletedPref(!!snap.showDeleted);
+
+                    // cache existing nodes so we can reuse DOM elements
+                    const existingById = new Map();
+                    navRoot.querySelectorAll('.nav-node').forEach(li => {
+                        const id = String(li.dataset.id || '');
+                        if (id) existingById.set(id, li);
+                    });
+
+                    // track which ones we had to create so we can wire them
+                    const newlyCreated = [];
+
+                    function ensureChildrenUl(li) {
+                        let ul = li.querySelector(':scope > .nav-children');
+                        if (!ul) {
+                            ul = document.createElement('ul');
+                            ul.className = 'nav-children list-unstyled ms-4 mt-2 mb-0';
+                            li.appendChild(ul);
+                        }
+                        return ul;
+                    }
+
+                    function setFields(li, node) {
+                        // IMPORTANT: keep the snapshot id (can be temp id like "-1")
+                        li.dataset.id = String(node.id ?? '');
+                        li.dataset.deleted = node.deleted ? 'true' : 'false';
+
+                        const label = li.querySelector('.node-label'); if (label) label.value = node.label ?? '';
+                        const lt = li.querySelector('.node-linktype'); if (lt) lt.value = node.linkType ?? 'page';
+
+                        const pageSel = li.querySelector('.node-pageid'); if (pageSel) pageSel.value = node.pageId ?? '';
+                        const urlInp = li.querySelector('.node-url'); if (urlInp) urlInp.value = node.url ?? '';
+
+                        const nt = li.querySelector('.node-newtab'); if (nt) nt.checked = !!node.openInNewTab;
+                        const ia = li.querySelector('.node-active'); if (ia) ia.checked = !!node.isActive;
+                        const ip = li.querySelector('.node-published'); if (ip) ip.checked = !!node.isPublished;
+
+                        const roles = li.querySelector('.node-roles'); if (roles) roles.value = node.rolesCsv ?? '';
+
+                        // enforce your editor rules
+                        normalizeLinkInputs(li);
+                        setDeletedState(li, !!node.deleted);
+
+                        // badges depend on flags + current state
+                        updateVisibilityBadge(li);
+                        updatePageWarnBadge(li);
+
+                        // collapse UI needs re-eval after children are built
+                        // (we call refreshAllToggles() after full rebuild)
+                    }
+
+                    function buildUl(ul, nodes) {
+                        // Rebuild order exactly
+                        ul.innerHTML = '';
+
+                        (nodes || []).forEach(node => {
+                            const nodeId = String(node.id ?? '');
+
+                            let li = existingById.get(nodeId);
+                            if (!li) {
+                                // ✅ recreate missing nodes (Undo/Redo add/remove)
+                                li = createNodeLi();                // <-- no args
+                                li.dataset.id = nodeId;             // enforce snapshot id
+                                newlyCreated.push(li);
+                            }
+
+                            setFields(li, node);
+                            ul.appendChild(li);
+
+                            const childUl = ensureChildrenUl(li);
+                            buildUl(childUl, node.children || []);
+                        });
+                    }
+
+                    buildUl(navRoot, snap.tree || []);
+
+                    // ✅ wire new nodes (events + link rules + etc.)
+                    // Reused nodes already have handlers, new ones do not.
+                    newlyCreated.forEach(li => {
+                        wireNodeUi(li);
+
+                        // init sortable for its child UL (if any)
+                        const childUl = li.querySelector(':scope > .nav-children');
+                        if (childUl) initSortable(childUl);
+                    });
+
+                    // ✅ safest: re-init sortables globally (in case structure changed)
+                    initAllSortables();
+
+                    // refresh derived UI
+                    applyShowDeletedUi();
+                    refreshAllToggles();
+                    refreshAllBadges();
+                    refreshSortBadges();
+
+                    setDirty(true);
+                } finally {
+                    historyApplying = false;
+                    updateUndoRedoUi();
+                }
+            }
+
+
+            function undo() {
+                if (undoStack.length <= 1) return;
+                const current = undoStack.pop();
+                redoStack.push(current);
+
+                const prev = undoStack[undoStack.length - 1];
+                applySnapshot(prev.json);
+
+                showToast('Undo', 'info');
+            }
+
+            function redo() {
+                if (redoStack.length === 0) return;
+                const next = redoStack.pop();
+                undoStack.push(next);
+
+                applySnapshot(next.json);
+
+                showToast('Redo', 'info');
+            }
+
+            // -----------------------------
+            // Node wiring
+            // -----------------------------
             function setDeletedState(li, deleted) {
                 li.dataset.deleted = deleted ? 'true' : 'false';
                 li.classList.toggle('is-deleted', !!deleted);
@@ -974,6 +1318,67 @@
                 updatePageWarnBadge(li);
             }
 
+            // ✅ Reduced duplicate autosave triggers:
+            // - label autosaves on input
+            // - other controls autosave on change
+            function wireAutosaveOnFieldChange(li) {
+                // label typing
+                li.querySelectorAll('input.node-label').forEach(el => {
+                    let enterCommitted = false;
+
+                    el.addEventListener('input', () => {
+                        if (historyApplying) return;
+                        setDirty(true);
+                        updateVisibilityBadge(li);
+                        updatePageWarnBadge(li);
+                        autoSaveDebounced();
+                    });
+
+                    el.addEventListener('keydown', (e) => {
+                        if (e.key !== 'Enter') return;
+
+                        e.preventDefault();
+                        if (historyApplying) return;
+
+                        enterCommitted = true;
+                        pushHistory('label');
+                        el.blur();
+                    });
+
+                    el.addEventListener('blur', () => {
+                        if (historyApplying) return;
+
+                        if (enterCommitted) {
+                            enterCommitted = false;
+                            return;
+                        }
+                        pushHistory('label');
+                    });
+                });
+
+                // change-based controls
+                li.querySelectorAll('select, input[type="checkbox"], input[type="radio"], input.node-url').forEach(el => {
+                    el.addEventListener('change', () => {
+                        if (historyApplying) return;
+
+                        setDirty(true);
+
+                        if (el.classList.contains('node-linktype')) {
+                            setLinkType(li, el.value);
+                        }
+                        if (el.classList.contains('node-pageid') || el.classList.contains('node-url')) {
+                            normalizeLinkInputs(li);
+                        }
+
+                        pushHistory('change');
+
+                        updateVisibilityBadge(li);
+                        updatePageWarnBadge(li);
+                        autoSaveDebounced();
+                    });
+                });
+            }
+
             function wireNodeUi(li) {
                 const toggleBtn = li.querySelector('.toggle-children');
                 if (toggleBtn) {
@@ -988,16 +1393,37 @@
                     });
                 }
 
-                li.querySelector('.add-child')?.addEventListener('click', () => {
-                    // relies on your existing createNodeLi() code elsewhere;
-                    // if you’re using the dynamic-creation block, keep it.
-                    // (No changes required here.)
+                li.querySelector('.add-child')?.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    if (historyApplying) return;
+
+                    const parentChildUl = li.querySelector(':scope > .nav-children');
+                    if (!parentChildUl) return;
+
+                    const childLi = createNodeLi();
+                    parentChildUl.appendChild(childLi);
+
+                    // ensure parent toggle shows
+                    applyCollapseState(li);
+
+                    refreshSortBadges();
+                    refreshAllBadges();
+
                     setDirty(true);
+                    pushHistory('add-child');
                     autoSaveDebounced();
+
+                    childLi.querySelector('.node-label')?.focus({ preventScroll: true });
+                    childLi.scrollIntoView({ behavior: 'smooth', block: 'center' });
                 });
 
-                li.querySelector('.delete-node')?.addEventListener('click', () => {
+
+                li.querySelector('.delete-node')?.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    if (historyApplying) return;
+
                     setDeletedState(li, true);
+                    pushHistory('delete');
                     applyShowDeletedUi();
 
                     const parentLi = li.closest('ul')?.closest('li.nav-node');
@@ -1008,8 +1434,12 @@
                     autoSaveDebounced();
                 });
 
-                li.querySelector('.restore-node')?.addEventListener('click', () => {
+                li.querySelector('.restore-node')?.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    if (historyApplying) return;
+
                     setDeletedState(li, false);
+                    pushHistory('restore');
                     applyShowDeletedUi();
 
                     const parentLi = li.closest('ul')?.closest('li.nav-node');
@@ -1040,7 +1470,7 @@
             }
 
             // -----------------------------
-            // Snapshots + refresh helpers
+            // Refresh helpers
             // -----------------------------
             function buildFlagsSnapshot(flagsObj) {
                 const snap = {};
@@ -1145,7 +1575,6 @@
                     const changedIds = diffChangedIds(prevSnap, nextSnap);
                     const delta = diffSnapshotCounts(prevSnap, nextSnap);
 
-                    // mutate flags map
                     Object.keys(pageFlagsById).forEach(k => delete pageFlagsById[k]);
                     Object.entries(nextFlags).forEach(([k, v]) => pageFlagsById[k] = v);
 
@@ -1155,7 +1584,6 @@
                         refreshAllBadges();
                     }
 
-                    // prune acks when sig changed
                     for (const [pid, sig] of ackDangerByPageId.entries()) {
                         const nowSig = nextSnap[String(pid)];
                         if (!nowSig || nowSig !== sig) ackDangerByPageId.delete(pid);
@@ -1295,7 +1723,7 @@
                     const sev = getPageSeverity(pid);
 
                     if (sev === 'danger') {
-                        if (isDangerAcked(pid)) return; // suppress repeated danger pulses
+                        if (isDangerAcked(pid)) return;
                         expandAncestors(li);
                         setDangerAck(pid, true);
                         saveAckToStorage();
@@ -1349,35 +1777,67 @@
                 });
             }
 
-            // -----------------------------
-            // Init
-            // -----------------------------
-            document.addEventListener('DOMContentLoaded', () => {
-                updateSaveButtonUi();
+        // -----------------------------
+        // Init
+        // -----------------------------
+        document.addEventListener('DOMContentLoaded', () => {
+            updateSaveButtonUi();
 
-                initAllSortables();
-                wireExistingNodes();
+            initAllSortables();
+            wireExistingNodes();
 
-                // snapshots
-                lastFlagsSnapshot = buildFlagsSnapshot(pageFlagsById);
-                lastPagesSnapshot = buildPagesSnapshot(pages);
+            // snapshots
+            lastFlagsSnapshot = buildFlagsSnapshot(pageFlagsById);
+            lastPagesSnapshot = buildPagesSnapshot(pages);
 
-                // load + prune ack
-                loadAckFromStorage();
-                for (const [pid, sig] of ackDangerByPageId.entries()) {
-                    const nowSig = lastFlagsSnapshot[String(pid)];
-                    if (!nowSig || nowSig !== sig) ackDangerByPageId.delete(pid);
-                }
-                saveAckToStorage();
+            // load + prune ack
+            loadAckFromStorage();
+            for (const [pid, sig] of ackDangerByPageId.entries()) {
+                const nowSig = lastFlagsSnapshot[String(pid)];
+                if (!nowSig || nowSig !== sig) ackDangerByPageId.delete(pid);
+            }
+            saveAckToStorage();
 
-                // toggles
-                document.getElementById('toggleDeletedBtn')?.addEventListener('click', () => {
-                    const next = !getShowDeletedPref();
-                    setShowDeletedPref(next);
-                    applyShowDeletedUi();
+            // deleted toggle
+            document.getElementById('toggleDeletedBtn')?.addEventListener('click', () => {
+                const next = !getShowDeletedPref();
+                setShowDeletedPref(next);
+                applyShowDeletedUi();
+            });
+
+                // -----------------------------
+                // Add Root
+                // -----------------------------
+                document.getElementById('addRootBtn')?.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    if (!navRoot) return;
+                    if (historyApplying) return;
+
+                    // snapshot BEFORE change (so Undo returns to previous state)
+                    pushHistory('pre-add-root');
+
+                    const li = createNodeLi();      // your factory returns <li>
+                    navRoot.appendChild(li);
+
+                    // keep derived UI consistent
+                    refreshSortBadges();
+                    refreshAllBadges();
+                    refreshAllToggles();
+
+                    setDirty(true);
+
+                    // snapshot AFTER change (so Redo can re-apply)
+                    pushHistory('add-root');
+
+                    autoSaveDebounced();
+
+                    li.querySelector('.node-label')?.focus({ preventScroll: true });
+                    li.scrollIntoView({ behavior: 'smooth', block: 'center' });
                 });
 
-                // save buttons
+                // -----------------------------
+                // Save buttons
+                // -----------------------------
                 document.getElementById('saveBtn')?.addEventListener('click', async (e) => {
                     e.preventDefault();
                     if (isSaving) return;
@@ -1394,6 +1854,45 @@
                     window.open(publicBaseUrl, '_blank');
                 });
 
+                // -----------------------------
+                // Undo/Redo baseline + wiring
+                // -----------------------------
+                pushHistory('baseline');
+                updateUndoRedoUi();
+
+                document.getElementById('undoBtn')?.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    if (historyApplying) return;
+                    undo();
+                });
+
+                document.getElementById('redoBtn')?.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    if (historyApplying) return;
+                    redo();
+                });
+
+                // Keyboard shortcuts (Ctrl/Cmd+Z, Ctrl/Cmd+Y / Shift+Ctrl+Z)
+                document.addEventListener('keydown', (e) => {
+                    if (historyApplying) return;
+
+                    const isMac = navigator.platform.toUpperCase().includes('MAC');
+                    const mod = isMac ? e.metaKey : e.ctrlKey;
+                    if (!mod) return;
+
+                    // avoid stealing shortcuts while typing in inputs
+                    const tag = (document.activeElement?.tagName || '').toLowerCase();
+                    const isTyping = tag === 'input' || tag === 'textarea' || tag === 'select';
+                    if (isTyping) return;
+
+                    const key = (e.key || '').toLowerCase();
+                    if (key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
+                    else if (key === 'y' || (key === 'z' && e.shiftKey)) { e.preventDefault(); redo(); }
+                });
+
+                // -----------------------------
+                // Other init steps
+                // -----------------------------
                 wireBadgeAckToggle();
                 applyShowDeletedUi();
                 startPeriodicRefresh();
@@ -1405,6 +1904,7 @@
                 e.preventDefault();
                 e.returnValue = '';
             });
+
 
         })();
     </script>

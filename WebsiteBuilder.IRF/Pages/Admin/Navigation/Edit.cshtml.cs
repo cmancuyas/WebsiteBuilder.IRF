@@ -178,33 +178,45 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
             if (request.MenuId <= 0)
                 return BadRequest(new { success = false, error = "MenuId is required." });
 
+            if (request.Items == null)
+                return BadRequest(new { success = false, error = "Items is required." });
+
             var userId = GetUserIdOrEmpty();
             var now = DateTime.UtcNow;
 
+            // Load all rows for this tenant/menu (so we can update/delete)
             var existing = await _db.NavigationMenuItems
                 .Where(x => x.TenantId == _tenant.TenantId && x.MenuId == request.MenuId)
                 .ToListAsync();
 
             var existingById = existing.ToDictionary(x => x.Id);
 
+            // -----------------------------
+            // Basic validation
+            // -----------------------------
             foreach (var i in request.Items.Where(x => !x.IsDeleted))
             {
                 if (string.IsNullOrWhiteSpace(i.Label))
                     return BadRequest(new { success = false, error = "All non-deleted items must have a label." });
 
-                if (i.Label.Length > 200)
+                if ((i.Label ?? "").Length > 200)
                     return BadRequest(new { success = false, error = "Label exceeds 200 chars." });
 
                 if (!string.IsNullOrWhiteSpace(i.Url) && i.Url.Length > 500)
                     return BadRequest(new { success = false, error = "Url exceeds 500 chars." });
             }
 
-            // ✅ Guard: only validate PageId when item is intended to be an internal page link.
-            // Rule: URL wins. If Url is non-empty -> treat as URL item, ignore PageId.
+            // Validate PageIds ONLY for internal links
+            // Rule: URL wins. Internal = Url empty AND PageId present
             var internalPageIds = request.Items
                 .Where(x => !x.IsDeleted)
+                .Select(x => new
+                {
+                    PageId = (x.PageId.HasValue && x.PageId.Value > 0) ? x.PageId.Value : (int?)null,
+                    Url = (x.Url ?? "").Trim()
+                })
                 .Where(x => string.IsNullOrWhiteSpace(x.Url))
-                .Where(x => x.PageId.HasValue && x.PageId.Value > 0)
+                .Where(x => x.PageId.HasValue)
                 .Select(x => x.PageId!.Value)
                 .Distinct()
                 .ToList();
@@ -228,7 +240,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
                 {
                     var badItems = request.Items
                         .Where(x => !x.IsDeleted)
-                        .Where(x => string.IsNullOrWhiteSpace(x.Url))
+                        .Where(x => string.IsNullOrWhiteSpace((x.Url ?? "").Trim()))
                         .Where(x => x.PageId.HasValue && invalidIds.Contains(x.PageId.Value))
                         .Select(x => x.Label ?? "Unnamed")
                         .Distinct()
@@ -242,68 +254,96 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
                 }
             }
 
+            // -----------------------------
+            // Create new (temp id <= 0) items in a batch
+            // -----------------------------
             var idMap = new Dictionary<int, int>(); // tempId -> realId
 
-            foreach (var vm in request.Items.Where(x => x.Id <= 0 && !x.IsDeleted))
+            // We keep a local map tempId -> entity so we can fill ParentId after IDs exist
+            var createdTemp = new Dictionary<int, NavigationMenuItem>();
+
+            var newVms = request.Items
+                .Where(x => x.Id <= 0 && !x.IsDeleted)
+                .ToList();
+
+            if (newVms.Count > 0)
             {
-                var url = (vm.Url ?? string.Empty).Trim();
-                var isUrl = !string.IsNullOrWhiteSpace(url);
-                var pageId = (vm.PageId.HasValue && vm.PageId.Value > 0) ? vm.PageId : null;
-                var isPage = !isUrl && pageId.HasValue;
-
-                var entity = new NavigationMenuItem
+                foreach (var vm in newVms)
                 {
-                    TenantId = _tenant.TenantId,
-                    MenuId = request.MenuId,
-                    ParentId = null,
-                    SortOrder = vm.SortOrder,
-                    Label = (vm.Label ?? string.Empty).Trim(),
-                    PageId = isPage ? pageId : null,
-                    Url = isUrl ? url : string.Empty,
-                    OpenInNewTab = vm.OpenInNewTab,
-                    IsActive = vm.IsActive,
-                    IsPublished = vm.IsPublished,
-                    AllowedRolesCsv = NormalizeRolesCsv(vm.AllowedRolesCsv),
-                    IsDeleted = false,
-                    CreatedAt = now,
-                    CreatedBy = userId
-                };
+                    var normalized = NormalizeLink(vm);
 
-                _db.NavigationMenuItems.Add(entity);
+                    var entity = new NavigationMenuItem
+                    {
+                        TenantId = _tenant.TenantId,
+                        MenuId = request.MenuId,
+
+                        // ParentId fixed in 2nd pass (after idMap exists)
+                        ParentId = null,
+
+                        SortOrder = vm.SortOrder,
+                        Label = (vm.Label ?? string.Empty).Trim(),
+
+                        PageId = normalized.PageId,
+                        Url = normalized.Url, // keep null when not used
+
+                        OpenInNewTab = vm.OpenInNewTab,
+                        IsActive = vm.IsActive,
+                        IsPublished = vm.IsPublished,
+                        AllowedRolesCsv = NormalizeRolesCsv(vm.AllowedRolesCsv),
+
+                        IsDeleted = false,
+                        CreatedAt = now,
+                        CreatedBy = userId
+                    };
+
+                    _db.NavigationMenuItems.Add(entity);
+                    createdTemp[vm.Id] = entity;
+                }
+
+                // One SaveChanges to generate identity IDs for all new items
                 await _db.SaveChangesAsync();
-                idMap[vm.Id] = entity.Id;
+
+                foreach (var kvp in createdTemp)
+                {
+                    var tempId = kvp.Key;
+                    var realId = kvp.Value.Id;
+                    idMap[tempId] = realId;
+                }
             }
 
             int? ResolveParent(int? parentId)
             {
                 if (!parentId.HasValue) return null;
 
+                // parent can be temp id (<=0)
                 if (parentId.Value <= 0)
                 {
-                    if (idMap.TryGetValue(parentId.Value, out var real))
-                        return real;
-                    return null;
+                    return idMap.TryGetValue(parentId.Value, out var real)
+                        ? real
+                        : (int?)null;
                 }
 
                 return parentId.Value;
             }
 
+            // -----------------------------
+            // Apply updates (including deletes) for all items (existing + newly created)
+            // -----------------------------
             foreach (var vm in request.Items)
             {
+                NavigationMenuItem entity;
+
                 if (vm.Id <= 0)
                 {
-                    if (!idMap.TryGetValue(vm.Id, out var realId))
-                        continue;
-
-                    var created = await _db.NavigationMenuItems
-                        .FirstAsync(x => x.TenantId == _tenant.TenantId && x.Id == realId);
-
-                    ApplyVm(created, vm, ResolveParent(vm.ParentId), userId, now);
-                    continue;
+                    // New item: find created entity by temp id
+                    if (!createdTemp.TryGetValue(vm.Id, out entity!))
+                        continue; // should not happen
                 }
-
-                if (!existingById.TryGetValue(vm.Id, out var entity))
-                    continue;
+                else
+                {
+                    if (!existingById.TryGetValue(vm.Id, out entity!))
+                        continue; // ignore unknown ids
+                }
 
                 ApplyVm(entity, vm, ResolveParent(vm.ParentId), userId, now);
             }
@@ -313,6 +353,62 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
 
             return new JsonResult(new { success = true, idMap });
         }
+
+        // -----------------------------
+        // Helpers
+        // -----------------------------
+        private (int? PageId, string? Url) NormalizeLink(NavSaveItemVm vm)
+        {
+            // URL wins
+            var url = (vm.Url ?? string.Empty).Trim();
+            if (!string.IsNullOrWhiteSpace(url))
+            {
+                return (null, url);
+            }
+
+            var pageId = (vm.PageId.HasValue && vm.PageId.Value > 0) ? vm.PageId : null;
+            return (pageId, null);
+        }
+
+        private void ApplyVm(
+            NavigationMenuItem entity,
+            NavSaveItemVm vm,
+            int? resolvedParentId,
+            Guid userId,
+            DateTime now)
+
+        {
+            // Keep structure even if deleted
+            entity.ParentId = resolvedParentId;
+            entity.SortOrder = vm.SortOrder;
+
+            // Core fields
+            entity.Label = (vm.Label ?? string.Empty).Trim();
+            entity.OpenInNewTab = vm.OpenInNewTab;
+            entity.IsActive = vm.IsActive;
+            entity.IsPublished = vm.IsPublished;
+            entity.AllowedRolesCsv = NormalizeRolesCsv(vm.AllowedRolesCsv);
+
+            // ✅ Link normalization (prevents mixed PageId + Url)
+            var normalized = NormalizeLink(vm);
+            entity.PageId = normalized.PageId;
+            entity.Url = normalized.Url;
+
+            // Soft delete
+            entity.IsDeleted = vm.IsDeleted;
+
+            // Audit
+            entity.UpdatedAt = now;
+            entity.UpdatedBy = userId;
+        }
+        private Guid GetUserIdOrEmpty()
+        {
+            var id = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            return Guid.TryParse(id, out var g) ? g : Guid.Empty;
+        }
+
+
+
         public async Task<IActionResult> OnGetPageFlagsAsync(int menuId)
         {
             if (menuId <= 0) return new JsonResult(new { success = false, error = "Invalid menuId." });
@@ -405,59 +501,6 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
             return new JsonResult(new { success = true, pages = options });
         }
 
-        private void ApplyVm(
-            NavigationMenuItem entity,
-            NavSaveItemVm vm,
-            int? resolvedParentId,
-            Guid userId,
-            DateTime now)
-        {
-            entity.ParentId = resolvedParentId;
-            entity.SortOrder = vm.SortOrder;
-
-            entity.Label = (vm.Label ?? string.Empty).Trim();
-            entity.OpenInNewTab = vm.OpenInNewTab;
-            entity.IsActive = vm.IsActive;
-            entity.IsPublished = vm.IsPublished;
-            entity.AllowedRolesCsv = NormalizeRolesCsv(vm.AllowedRolesCsv);
-
-            var url = (vm.Url ?? string.Empty).Trim();
-            var isUrl = !string.IsNullOrWhiteSpace(url);
-
-            if (isUrl)
-            {
-                entity.PageId = null;
-                entity.Url = url;
-            }
-            else
-            {
-                entity.PageId = (vm.PageId.HasValue && vm.PageId.Value > 0) ? vm.PageId : null;
-                entity.Url = string.Empty;
-            }
-
-            if (vm.Restore)
-            {
-                entity.IsDeleted = false;
-                entity.DeletedAt = null;
-                entity.DeletedBy = null;
-
-                entity.UpdatedAt = now;
-                entity.UpdatedBy = userId;
-                return;
-            }
-
-            if (vm.IsDeleted)
-            {
-                entity.IsDeleted = true;
-                entity.DeletedAt = now;
-                entity.DeletedBy = userId;
-                return;
-            }
-
-            entity.UpdatedAt = now;
-            entity.UpdatedBy = userId;
-        }
-
         private static string? NormalizeRolesCsv(string? csv)
         {
             if (string.IsNullOrWhiteSpace(csv)) return null;
@@ -502,12 +545,6 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Navigation
             }
 
             return build(parentId: null);
-        }
-
-        private Guid GetUserIdOrEmpty()
-        {
-            var s = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            return Guid.TryParse(s, out var id) ? id : Guid.Empty;
         }
     }
 }
