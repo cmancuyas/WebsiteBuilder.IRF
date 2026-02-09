@@ -1,5 +1,7 @@
 ﻿using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using System.Security.Cryptography;
+using System.Text;
 using WebsiteBuilder.IRF.DataAccess;
 using WebsiteBuilder.IRF.Infrastructure.Auth;
 using WebsiteBuilder.IRF.Infrastructure.Media;
@@ -7,6 +9,7 @@ using WebsiteBuilder.IRF.Infrastructure.Middleware;
 using WebsiteBuilder.IRF.Infrastructure.Pages;
 using WebsiteBuilder.IRF.Infrastructure.Sections;
 using WebsiteBuilder.IRF.Infrastructure.Sections.Validators;
+using WebsiteBuilder.IRF.Infrastructure.Sitemap;
 using WebsiteBuilder.IRF.Infrastructure.Tenancy;
 using WebsiteBuilder.IRF.Repository;
 using WebsiteBuilder.IRF.Repository.IRepository;
@@ -101,6 +104,9 @@ builder.Services.AddScoped<IPagePublishingService, PagePublishingService>();
 builder.Services.AddScoped<PagePublishValidator>();
 builder.Services.AddScoped<IPageRevisionSectionService, PageRevisionSectionService>();
 
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddScoped<ITenantSitemapService, TenantSitemapService>();
+
 // =====================
 // Media (Cleanup/Quota/Alerts)
 // =====================
@@ -130,6 +136,9 @@ builder.Services.AddHttpClient();
 builder.Services.AddScoped<DbMediaAlertNotifier>();
 builder.Services.AddScoped<CompositeMediaAlertNotifier>();
 builder.Services.AddScoped<IMediaAlertNotifier>(sp => sp.GetRequiredService<CompositeMediaAlertNotifier>());
+
+builder.Services.AddScoped<ITenantSitemapIndexService,
+                          TenantSitemapIndexService>();
 
 var app = builder.Build();
 
@@ -165,6 +174,94 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapRazorPages();
+
+
+
+static string ComputeETag(string content)
+{
+    var bytes = Encoding.UTF8.GetBytes(content);
+    var hash = SHA256.HashData(bytes);
+    // Quote per RFC for ETag header
+    return "\"" + Convert.ToHexString(hash).ToLowerInvariant() + "\"";
+}
+
+app.MapGet("/sitemap.xml", async (HttpContext http, ITenantSitemapService sitemap, CancellationToken ct) =>
+{
+    var xml = await sitemap.GetSitemapXmlAsync(ct);
+
+    var etag = ComputeETag(xml);
+
+    // Conditional GET
+    if (http.Request.Headers.TryGetValue("If-None-Match", out var inm) &&
+        inm.ToString().Contains(etag, StringComparison.Ordinal))
+    {
+        http.Response.Headers.ETag = etag;
+        http.Response.Headers.CacheControl = "public,max-age=300";
+        return Results.StatusCode(StatusCodes.Status304NotModified);
+    }
+
+    http.Response.Headers.ETag = etag;
+    http.Response.Headers.CacheControl = "public,max-age=300";
+
+    return Results.Text(xml, "application/xml; charset=utf-8");
+});
+
+app.MapGet("/robots.txt", (HttpContext http) =>
+{
+    var scheme = http.Request.Scheme;
+    var host = http.Request.Host.Value;
+
+    var txt = string.Join("\n", new[]
+    {
+        "User-agent: *",
+        "Disallow: /Admin/",
+        "Disallow: /admin/",
+        "Disallow: /Preview/",
+        "Disallow: /preview/",
+        "Disallow: /_framework/",
+        $"Sitemap: {scheme}://{host}/sitemap_index.xml"
+    });
+
+    return Results.Text(txt, "text/plain; charset=utf-8");
+});
+
+
+app.MapGet("/sitemap_index.xml", async (HttpContext http, ITenantSitemapIndexService svc, CancellationToken ct) =>
+{
+    var xml = await svc.GetSitemapIndexXmlAsync(ct);
+    var etag = ComputeETag(xml);
+
+    if (http.Request.Headers.TryGetValue("If-None-Match", out var inm) &&
+        inm.ToString().Contains(etag, StringComparison.Ordinal))
+    {
+        http.Response.Headers.ETag = etag;
+        http.Response.Headers.CacheControl = "public,max-age=300";
+        return Results.StatusCode(StatusCodes.Status304NotModified);
+    }
+
+    http.Response.Headers.ETag = etag;
+    http.Response.Headers.CacheControl = "public,max-age=300";
+    return Results.Text(xml, "application/xml; charset=utf-8");
+});
+
+app.MapGet("/sitemaps/pages-{part:int}.xml", async (HttpContext http, int part, ITenantSitemapIndexService svc, CancellationToken ct) =>
+{
+    var xml = await svc.GetSitemapPartXmlAsync(part, ct);
+    var etag = ComputeETag(xml);
+
+    if (http.Request.Headers.TryGetValue("If-None-Match", out var inm) &&
+        inm.ToString().Contains(etag, StringComparison.Ordinal))
+    {
+        http.Response.Headers.ETag = etag;
+        http.Response.Headers.CacheControl = "public,max-age=300";
+        return Results.StatusCode(StatusCodes.Status304NotModified);
+    }
+
+    http.Response.Headers.ETag = etag;
+    http.Response.Headers.CacheControl = "public,max-age=300";
+    return Results.Text(xml, "application/xml; charset=utf-8");
+});
+
 
 // IMPORTANT: fallback to CMS page renderer
 app.MapFallbackToPage("/{slug?}", "/[slug]");

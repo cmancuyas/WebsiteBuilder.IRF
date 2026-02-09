@@ -8,6 +8,7 @@ using WebsiteBuilder.IRF.DataAccess;
 using WebsiteBuilder.IRF.Infrastructure.Auth;
 using WebsiteBuilder.IRF.Infrastructure.Pages;
 using WebsiteBuilder.IRF.Infrastructure.Sections;
+using WebsiteBuilder.IRF.Infrastructure.Sitemap;
 using WebsiteBuilder.IRF.Infrastructure.Tenancy;
 using WebsiteBuilder.IRF.ViewModels.Admin.Pages;
 using WebsiteBuilder.Models;
@@ -25,6 +26,8 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
         private readonly PagePublishValidator _pagePublishValidator;
         private readonly ISectionValidationService _sectionValidation;
         private readonly IPageRevisionSectionService _pageRevisionSectionService;
+        private readonly ITenantSitemapService _sitemap;
+        private readonly ITenantSitemapIndexService _sitemapIndex;
 
         public EditModel(
             DataContext db,
@@ -33,7 +36,9 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             ITenantNavigationService nav,
             PagePublishValidator pagePublishValidator,
             ISectionValidationService sectionValidation,
-            IPageRevisionSectionService pageRevisionSectionService)
+            IPageRevisionSectionService pageRevisionSectionService,
+            ITenantSitemapService sitemap,
+            ITenantSitemapIndexService sitemapIndex)
         {
             _db = db;
             _tenant = tenant;
@@ -42,6 +47,8 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             _pagePublishValidator = pagePublishValidator;
             _sectionValidation = sectionValidation;
             _pageRevisionSectionService = pageRevisionSectionService;
+            _sitemap = sitemap;
+            _sitemapIndex = sitemapIndex;
         }
 
         public Page PageEntity { get; set; } = default!;
@@ -229,6 +236,8 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
 
             await _db.SaveChangesAsync(ct);
             _nav.Invalidate();
+            _sitemap.Invalidate();
+            _sitemapIndex.Invalidate();
 
             return RedirectToPage(new { id = page.Id, saveSuccess = true });
         }
@@ -311,6 +320,8 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             }
 
             _nav.Invalidate();
+            _sitemap.Invalidate();
+            _sitemapIndex.Invalidate();
             TempData["Success"] = "Page published.";
             return RedirectToPage(new { id });
         }
@@ -340,6 +351,8 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
 
             await _db.SaveChangesAsync(ct);
             _nav.Invalidate();
+            _sitemap.Invalidate();
+            _sitemapIndex.Invalidate();
 
             TempData["Success"] = "Page moved back to Draft.";
             return RedirectToPage(new { id });
@@ -371,6 +384,9 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
 
             await _db.SaveChangesAsync(ct);
             _nav.Invalidate();
+            _sitemap.Invalidate();
+            _sitemapIndex.Invalidate();
+
 
             TempData["Success"] = "Page archived.";
             return RedirectToPage(new { id });
@@ -402,10 +418,13 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
 
             await _db.SaveChangesAsync(ct);
 
-            // Optional: ensure a draft revision exists after restore (so section CRUD works immediately)
+            // Ensure draft revision exists after restore (so section CRUD works immediately)
             await EnsureDraftRevisionExistsAsync(page, ct);
 
+            // Invalidate caches AFTER all related mutations are complete
             _nav.Invalidate();
+            _sitemap.Invalidate();
+            _sitemapIndex.Invalidate();
 
             TempData["Success"] = "Page restored to Draft.";
             return RedirectToPage(new { id });
@@ -786,6 +805,9 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
             await _db.SaveChangesAsync(ct);
 
             _nav.Invalidate();
+            _sitemap.Invalidate();
+            _sitemapIndex.Invalidate();
+
             TempData["Success"] = $"Rolled back to revision #{revisionId} (v{target.VersionNumber}).";
             return RedirectToPage(new { id });
         }
@@ -817,7 +839,6 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                 return RedirectToPage(new { id });
             }
 
-            // Create a new draft revision cloned from the snapshot
             var now = DateTime.UtcNow;
             var userId = GetUserIdOrEmpty();
 
@@ -827,7 +848,7 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                     .Where(r => r.TenantId == _tenant.TenantId && r.PageId == page.Id && !r.IsDeleted)
                     .MaxAsync(r => (int?)r.VersionNumber, ct) ?? 0) + 1;
 
-            // Use execution strategy for SQL retry + transaction safety (matches your PublishAsync pattern)
+            // Use execution strategy for SQL retry + transaction safety
             var strategy = _db.Database.CreateExecutionStrategy();
 
             return await strategy.ExecuteAsync(async () =>
@@ -851,7 +872,9 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                     IsActive = true,
                     IsDeleted = false,
                     CreatedAt = now,
-                    CreatedBy = userId
+                    CreatedBy = userId,
+                    UpdatedAt = now,
+                    UpdatedBy = userId
                 };
 
                 foreach (var s in source.Sections.OrderBy(x => x.SortOrder).ThenBy(x => x.Id))
@@ -868,13 +891,16 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                         IsActive = true,
                         IsDeleted = false,
                         CreatedAt = now,
-                        CreatedBy = userId
+                        CreatedBy = userId,
+                        UpdatedAt = now,
+                        UpdatedBy = userId
                     });
                 }
 
                 _db.PageRevisions.Add(newDraft);
                 await _db.SaveChangesAsync(ct);
 
+                // IMPORTANT: update the tracked page entity
                 page.DraftRevisionId = newDraft.Id;
                 page.UpdatedAt = now;
                 page.UpdatedBy = userId;
@@ -882,10 +908,16 @@ namespace WebsiteBuilder.IRF.Pages.Admin.Pages
                 await _db.SaveChangesAsync(ct);
                 await tx.CommitAsync(ct);
 
+                // ✅ Invalidate caches after commit
+                _nav.Invalidate();
+                _sitemap.Invalidate();
+                _sitemapIndex.Invalidate();
+
                 TempData["Success"] = $"Draft restored from version v{source.VersionNumber}.";
                 return RedirectToPage(new { id });
             });
         }
+
 
 
         // =======================

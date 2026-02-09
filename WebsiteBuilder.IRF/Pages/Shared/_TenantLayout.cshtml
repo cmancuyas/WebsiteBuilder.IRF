@@ -1,6 +1,9 @@
 ﻿@using WebsiteBuilder.IRF.Infrastructure.Tenancy
 @inject ITenantContext TenantContext
 
+
+
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -12,6 +15,46 @@
     <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
 
     @RenderSection("Head", required: false)
+
+    @{
+        var metaTitle = (string?)ViewData["MetaTitle"];
+        var metaDesc = (string?)ViewData["MetaDescription"];
+        var ogAssetId = ViewData["OgImageAssetId"] as int?;
+        var canonicalPath = (string?)ViewData["CanonicalPath"] ?? Context.Request.Path.Value ?? "/";
+
+        var scheme = Context.Request.Scheme;
+        var host = Context.Request.Host.Value;
+        var canonicalUrl = $"{scheme}://{host}{canonicalPath}".TrimEnd('/');
+        if (canonicalPath == "/") canonicalUrl += "/";
+    }
+
+    <title>@(string.IsNullOrWhiteSpace(metaTitle) ? "Website" : metaTitle)</title>
+
+    @if (!string.IsNullOrWhiteSpace(metaDesc))
+    {
+        <meta name="description" content="@metaDesc" />
+    }
+
+    <link rel="canonical" href="@canonicalUrl" />
+
+    <meta property="og:url" content="@canonicalUrl" />
+    <meta property="og:type" content="website" />
+    @if (!string.IsNullOrWhiteSpace(metaTitle))
+    {
+        <meta property="og:title" content="@metaTitle" />
+    }
+    @if (!string.IsNullOrWhiteSpace(metaDesc))
+    {
+        <meta property="og:description" content="@metaDesc" />
+    }
+
+    @* If you have a public image endpoint, wire it here *@
+    @if (ogAssetId.HasValue)
+    {
+        <meta property="og:image" content="@($"{scheme}://{host}/media/{ogAssetId.Value}")" />
+    }
+
+
 </head>
 <body>
 
