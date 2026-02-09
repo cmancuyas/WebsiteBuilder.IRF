@@ -32,7 +32,7 @@
             int menuId,
             string? variant)
         {
-            var normalizedCurrent = NormalizePath(currentPath);
+            var normalizedCurrent = NavigationPath.NormalizePath(currentPath);
 
             static Node Map(NavItem x)
             {
@@ -45,8 +45,6 @@
                     Title = x.Title,
                     Url = x.Url,
                     OpenInNewTab = x.OpenInNewTab,
-
-                    // NavItem doesn’t include roles in your current design.
                     AllowedRolesCsv = null,
 
                     IsActive = false,
@@ -55,7 +53,7 @@
                 };
             }
 
-            var mapped = (items.Count > 0 ? items.Select(Map).ToList() : new List<Node>(0));
+            var mapped = items.Count > 0 ? items.Select(Map).ToList() : new List<Node>(0);
 
             foreach (var n in mapped)
                 MarkActive(n, normalizedCurrent);
@@ -71,73 +69,16 @@
 
         private static bool MarkActive(Node node, string currentNorm)
         {
-            // External/absolute URLs never become active.
-            var nodeUrlNorm = NormalizePath(node.Url);
-            var isActive = nodeUrlNorm.Length > 0 && IsMatchOrSection(currentNorm, nodeUrlNorm);
+            var (isActive, isAncestorByUrl) = NavigationPath.GetActiveFlags(node.Url, currentNorm);
 
             var anyChildActive = false;
             foreach (var c in node.Children)
                 anyChildActive |= MarkActive(c, currentNorm);
 
             node.IsActive = isActive;
-            node.IsAncestorOfActive = anyChildActive;
+            node.IsAncestorOfActive = isAncestorByUrl || anyChildActive;
 
-            return isActive || anyChildActive;
-        }
-
-        // ✅ section-aware match:
-        // current=/about/team activates node=/about
-        private static bool IsMatchOrSection(string currentNorm, string nodeUrlNorm)
-        {
-            if (nodeUrlNorm == "/")
-                return currentNorm == "/";
-
-            if (string.Equals(currentNorm, nodeUrlNorm, System.StringComparison.OrdinalIgnoreCase))
-                return true;
-
-            return currentNorm.StartsWith(nodeUrlNorm + "/", System.StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static bool IsAbsolute(string? url)
-        {
-            if (string.IsNullOrWhiteSpace(url)) return false;
-
-            return url.StartsWith("http://", System.StringComparison.OrdinalIgnoreCase)
-                || url.StartsWith("https://", System.StringComparison.OrdinalIgnoreCase)
-                || url.StartsWith("mailto:", System.StringComparison.OrdinalIgnoreCase)
-                || url.StartsWith("tel:", System.StringComparison.OrdinalIgnoreCase);
-        }
-
-        // Returns:
-        // - "/" for empty
-        // - "" for absolute/external (means "never match")
-        // - normalized app-relative path for internal links
-        private static string NormalizePath(string? pathOrUrl)
-        {
-            if (string.IsNullOrWhiteSpace(pathOrUrl))
-                return "/";
-
-            if (IsAbsolute(pathOrUrl))
-                return string.Empty;
-
-            // Strip query + hash
-            var p = pathOrUrl.Split('?', '#')[0].Trim();
-            if (string.IsNullOrWhiteSpace(p))
-                return "/";
-
-            if (!p.StartsWith("/", System.StringComparison.Ordinal))
-                p = "/" + p;
-
-            // Normalize trailing slash (except root)
-            if (p.Length > 1 && p.EndsWith("/", System.StringComparison.Ordinal))
-                p = p.TrimEnd('/');
-
-            // Treat /home as /
-            if (p.Equals("/home", System.StringComparison.OrdinalIgnoreCase))
-                p = "/";
-
-            // keep consistent casing for comparisons
-            return p.ToLowerInvariant();
+            return node.IsActive || node.IsAncestorOfActive;
         }
     }
 }

@@ -1,9 +1,28 @@
 ﻿@using WebsiteBuilder.IRF.Infrastructure.Tenancy
-@inject ITenantContext TenantContext
+@inject ITenantNavigationService Nav
 
-@if (TenantContext.IsResolved)
+@{
+    var items = await Nav.GetFooterAsync();
+
+    static bool IsDisabledUrl(string? url)
+        => string.IsNullOrWhiteSpace(url) || url.Trim() == "#";
+
+    // Footer: keep it clean—don't render dead links at all
+    var visible = items.Where(x => !IsDisabledUrl(x.Url)).ToList();
+}
+
+@if (visible.Count > 0)
 {
-    <nav aria-label="Footer navigation">
-        @await Component.InvokeAsync("TenantNavigation", new { menuId = 2, variant = "footer" })
-    </nav>
+    <ul class="list-inline mb-0">
+        @foreach (var n in visible)
+        {
+            <li class="list-inline-item me-3">
+                <a class="text-muted text-decoration-none"
+                   href="@n.Url"
+                   @(n.OpenInNewTab ? "target=\"_blank\" rel=\"noopener\"" : null)>
+                    @n.Title
+                </a>
+            </li>
+        }
+    </ul>
 }

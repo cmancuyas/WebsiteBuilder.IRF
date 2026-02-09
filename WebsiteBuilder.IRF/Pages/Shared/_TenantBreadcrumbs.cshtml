@@ -1,151 +1,91 @@
 ﻿@using WebsiteBuilder.IRF.Infrastructure.Tenancy
-@inject ITenantNavigationService NavService
-@inject ITenantContext TenantContext
+@inject ITenantNavigationService Nav
+
+@{
+    var current = NavigationPath.CurrentPath(Context);
+
+    // Don't show breadcrumbs on home
+    if (NavigationPath.NormalizePath(current) == "/")
+    {
+        return;
+    }
+
+    // Use the same header tree the UI uses
+    var items = await Nav.GetHeaderAsync();
+
+    // Build the same VM so active flags are canonical + consistent
+    // (MenuId=1 is your header menu; variant doesn't matter for flags)
+    var vm = TenantNavigationVm.From(items, current, menuId: 1, variant: "header");
+
+    // Find active trail from VM nodes (skip disabled "#")
+    var trail = FindTrail(vm.Items);
+}
+
+@if (trail.Count > 0)
+{
+    <nav aria-label="breadcrumb" class="mt-3">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="/">Home</a></li>
+
+            @for (var i = 0; i < trail.Count; i++)
+            {
+                var node = trail[i];
+                var isLast = (i == trail.Count - 1);
+
+                if (isLast)
+                {
+                    <li class="breadcrumb-item active" aria-current="page">@node.Title</li>
+                }
+                else
+                {
+                    <li class="breadcrumb-item">
+                        <a href="@node.Url">@node.Title</a>
+                    </li>
+                }
+            }
+        </ol>
+    </nav>
+}
 
 @functions {
-    private static string NormalizePath(string? path)
+    private static bool IsDead(string? url)
+        => string.IsNullOrWhiteSpace(url) || url.Trim() == "#";
+
+    // Returns the path from root -> active node.
+    // Rules:
+    // - skip dead nodes
+    // - include a node if it's active or contains the active node (ancestor)
+    private static List<TenantNavigationVm.Node> FindTrail(IReadOnlyList<TenantNavigationVm.Node> nodes)
     {
-        var p = (path ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(p))
-            return "/";
-
-        // Strip query/hash if present
-        var q = p.IndexOfAny(new[] { '?', '#' });
-        if (q >= 0) p = p.Substring(0, q);
-
-        // Only normalize app-relative paths; do not touch absolute URLs
-        if (!p.StartsWith("/", StringComparison.Ordinal))
-            return p;
-
-        // Normalize trailing slash (except root)
-        p = p.TrimEnd('/');
-        if (p.Length == 0) p = "/";
-
-        // Treat /home as /
-        if (p.Equals("/home", StringComparison.OrdinalIgnoreCase))
-            p = "/";
-
-        return p;
-    }
-
-    private static bool IsAbsoluteUrl(string? url)
-        => !string.IsNullOrWhiteSpace(url) &&
-           (url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
-            url.StartsWith("https://", StringComparison.OrdinalIgnoreCase));
-
-    private static bool IsAppRelativeUrl(string? url)
-        => !string.IsNullOrWhiteSpace(url) &&
-           url.StartsWith("/", StringComparison.Ordinal) &&
-           !IsAbsoluteUrl(url);
-
-    private static bool IsMeaningfulCrumbUrl(string? url)
-        => !string.IsNullOrWhiteSpace(url) &&
-           !url.Equals("#", StringComparison.Ordinal) &&
-           IsAppRelativeUrl(url);
-
-    // Section-aware match: exact or prefix (/about/team activates /about)
-    private static bool MatchCurrentOrSection(string currentPath, string itemUrl)
-    {
-        if (!IsAppRelativeUrl(itemUrl)) return false;
-
-        var cur = NormalizePath(currentPath);
-        var url = NormalizePath(itemUrl);
-
-        if (url == "/") return cur == "/";
-        if (string.Equals(cur, url, StringComparison.OrdinalIgnoreCase)) return true;
-
-        return cur.StartsWith(url + "/", StringComparison.OrdinalIgnoreCase);
-    }
-
-    // Find the BEST trail = deepest match (longest matching URL)
-    private static void FindBestTrail(
-        IReadOnlyList<NavItem> items,
-        string currentPath,
-        List<NavItem> working,
-        ref List<NavItem>? best,
-        ref int bestScore)
-    {
-        foreach (var item in items)
+        foreach (var n in nodes)
         {
-            working.Add(item);
+            if (IsDead(n.Url))
+                continue;
 
-            // Score by normalized URL length (deeper wins)
-            if (MatchCurrentOrSection(currentPath, item.Url))
+            // Only consider nodes on the active branch
+            if (!(n.IsActive || n.IsAncestorOfActive))
+                continue;
+
+            // If exact active, end trail here
+            if (n.IsActive)
+                return new List<TenantNavigationVm.Node> { n };
+
+            // Otherwise, try to find a deeper match
+            if (n.Children is not null && n.Children.Count > 0)
             {
-                var score = NormalizePath(item.Url).Length;
-                if (score > bestScore)
+                var sub = FindTrail(n.Children);
+                if (sub.Count > 0)
                 {
-                    bestScore = score;
-                    best = new List<NavItem>(working);
+                    var res = new List<TenantNavigationVm.Node> { n };
+                    res.AddRange(sub);
+                    return res;
                 }
             }
 
-            if (item.Children != null && item.Children.Count > 0)
-            {
-                FindBestTrail(item.Children, currentPath, working, ref best, ref bestScore);
-            }
-
-            working.RemoveAt(working.Count - 1);
+            // Ancestor marked active but no child found (fallback)
+            return new List<TenantNavigationVm.Node> { n };
         }
-    }
-}
 
-@if (TenantContext.IsResolved)
-{
-    var currentPath = NormalizePath(Context?.Request?.Path.Value ?? "/");
-
-    // Hide breadcrumbs on home/root
-    if (currentPath != "/")
-    {
-        var headerItems = await NavService.GetHeaderAsync();
-
-        List<NavItem>? bestTrail = null;
-        var bestScore = -1;
-
-        FindBestTrail(headerItems, currentPath, new List<NavItem>(), ref bestTrail, ref bestScore);
-
-        // Only render when we found a matching nav path
-        if (bestTrail != null && bestTrail.Count > 0)
-        {
-            // If trail begins with a "Home" entry (Url "/" or "/home"), remove it to prevent "Home > Home".
-            var firstUrl = NormalizePath(bestTrail[0].Url);
-            if (firstUrl == "/")
-                bestTrail.RemoveAt(0);
-
-            if (bestTrail.Count > 0)
-            {
-                <nav aria-label="breadcrumb" class="mb-3">
-                    <ol class="breadcrumb mb-0">
-                        <li class="breadcrumb-item">
-                            <a href="/" class="text-decoration-none">Home</a>
-                        </li>
-
-                        @for (int i = 0; i < bestTrail.Count; i++)
-                        {
-                            var item = bestTrail[i];
-                            var isLast = (i == bestTrail.Count - 1);
-
-                            if (isLast)
-                            {
-                                <li class="breadcrumb-item active" aria-current="page">@item.Title</li>
-                            }
-                            else
-                            {
-                                if (IsMeaningfulCrumbUrl(item.Url))
-                                {
-                                    <li class="breadcrumb-item">
-                                        <a class="text-decoration-none" href="@item.Url">@item.Title</a>
-                                    </li>
-                                }
-                                else
-                                {
-                                    <li class="breadcrumb-item">@item.Title</li>
-                                }
-                            }
-                        }
-                    </ol>
-                </nav>
-            }
-        }
+        return new List<TenantNavigationVm.Node>();
     }
 }

@@ -186,3 +186,7 @@ body {
 .node-page-warn-badge {
     cursor: pointer;
 }
+.navbar .nav-link.disabled,
+.dropdown-menu .dropdown-item.disabled {
+    cursor: not-allowed;
+}

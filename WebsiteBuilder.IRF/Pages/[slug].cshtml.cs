@@ -14,17 +14,18 @@ namespace WebsiteBuilder.IRF.Pages
         private readonly DataContext _db;
         private readonly ITenantContext _tenant;
         private readonly IWebHostEnvironment _env;
+        private readonly IConfiguration _cfg;
 
-        public _slug_Model(DataContext db, ITenantContext tenant, IWebHostEnvironment env)
+        public _slug_Model(DataContext db, ITenantContext tenant, IWebHostEnvironment env, IConfiguration cfg)
         {
             _db = db;
             _tenant = tenant;
             _env = env;
+            _cfg = cfg;
         }
 
         public WebsiteBuilder.Models.Page? PageEntity { get; private set; }
         public bool IsPreview { get; private set; }
-
         public List<RenderSectionDto> RenderSections { get; private set; } = new();
 
         public sealed class RenderSectionDto
@@ -35,7 +36,7 @@ namespace WebsiteBuilder.IRF.Pages
             public string? SettingsJson { get; init; }
         }
 
-        // Catch-all route param: /{**slug}
+        // Route param: /{slug?}  (single segment)
         public async Task<IActionResult> OnGetAsync(string? slug)
         {
             if (!_tenant.IsResolved)
@@ -44,11 +45,10 @@ namespace WebsiteBuilder.IRF.Pages
             var previewRequested = IsPreviewRequested();
             IsPreview = previewRequested && UserCanPreview();
 
-            // Hard stop: never allow anonymous preview (unless Dev is allowed by UserCanPreview)
+            // Never allow unauthorized preview (hide existence)
             if (previewRequested && !IsPreview)
-                return NotFound(); // or Forbid/Unauthorized if you prefer
+                return NotFound();
 
-            // SEO protection ONLY when preview is actually enabled
             if (IsPreview)
             {
                 Response.Headers["X-Robots-Tag"] = "noindex, nofollow, noarchive, nosnippet";
@@ -66,6 +66,7 @@ namespace WebsiteBuilder.IRF.Pages
                 return Redirect("/");
             }
 
+            // Find page
             var pageQuery = _db.Pages
                 .AsNoTracking()
                 .Where(p =>
@@ -86,58 +87,44 @@ namespace WebsiteBuilder.IRF.Pages
 
             if (IsPreview)
             {
+                // Preview uses draft revision only
                 if (PageEntity.DraftRevisionId == null)
                     return NotFound();
 
-                var draftSections = await _db.PageRevisionSections
-                    .AsNoTracking()
-                    .Include(s => s.SectionType)
-                    .Where(s =>
-                        s.TenantId == _tenant.TenantId &&
-                        s.PageRevisionId == PageEntity.DraftRevisionId.Value &&
-                        s.IsActive &&
-                        !s.IsDeleted)
-                    .OrderBy(s => s.SortOrder)
-                    .ThenBy(s => s.Id)
-                    .ToListAsync(HttpContext.RequestAborted);
-
-                RenderSections = draftSections.Select(s => new RenderSectionDto
-                {
-                    SectionTypeId = s.SectionTypeId,
-                    SectionTypeName = s.SectionType?.Name,
-                    SortOrder = s.SortOrder,
-                    SettingsJson = s.SettingsJson
-                }).ToList();
-
+                RenderSections = await LoadSectionsAsync(PageEntity.DraftRevisionId.Value);
                 ApplyNoCacheHeaders();
                 return Page();
             }
 
-
+            // Public uses published revision only
             if (PageEntity.PublishedRevisionId == null)
                 return NotFound();
 
-            var publishedSections = await _db.PageRevisionSections
+            RenderSections = await LoadSectionsAsync(PageEntity.PublishedRevisionId.Value);
+            return Page();
+        }
+
+        private async Task<List<RenderSectionDto>> LoadSectionsAsync(int pageRevisionId)
+        {
+            var sections = await _db.PageRevisionSections
                 .AsNoTracking()
                 .Include(s => s.SectionType)
                 .Where(s =>
                     s.TenantId == _tenant.TenantId &&
-                    s.PageRevisionId == PageEntity.PublishedRevisionId.Value &&
+                    s.PageRevisionId == pageRevisionId &&
                     s.IsActive &&
                     !s.IsDeleted)
                 .OrderBy(s => s.SortOrder)
                 .ThenBy(s => s.Id)
                 .ToListAsync(HttpContext.RequestAborted);
 
-            RenderSections = publishedSections.Select(s => new RenderSectionDto
+            return sections.Select(s => new RenderSectionDto
             {
                 SectionTypeId = s.SectionTypeId,
                 SectionTypeName = s.SectionType?.Name,
                 SortOrder = s.SortOrder,
                 SettingsJson = s.SettingsJson
             }).ToList();
-
-            return Page();
         }
 
         private bool IsPreviewRequested()
@@ -152,8 +139,9 @@ namespace WebsiteBuilder.IRF.Pages
 
         private bool UserCanPreview()
         {
-            // Temporary: allow preview without login ONLY in Development
-            if (_env.IsDevelopment())
+            // Safer than unconditional dev access:
+            // Allow anonymous preview in Development only if explicitly enabled.
+            if (_env.IsDevelopment() && _cfg.GetValue<bool>("Preview:AllowAnonymousInDev"))
                 return true;
 
             if (User.Identity?.IsAuthenticated != true)
@@ -168,7 +156,6 @@ namespace WebsiteBuilder.IRF.Pages
             return false;
         }
 
-
         private void ApplyNoCacheHeaders()
         {
             Response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0";
@@ -179,10 +166,20 @@ namespace WebsiteBuilder.IRF.Pages
         private static string NormalizeSlug(string? slug)
         {
             slug ??= string.Empty;
-            slug = slug.Trim().Trim('/').ToLowerInvariant();
-            slug = Regex.Replace(slug, @"\s+", "-");
-            slug = Regex.Replace(slug, @"-+", "-");
-            return slug.Trim('-');
+
+            // single segment only; strip leading/trailing slashes
+            var s = slug.Trim().Trim('/').ToLowerInvariant();
+
+            // spaces/underscore -> hyphen
+            s = Regex.Replace(s, @"[\s_]+", "-");
+
+            // remove anything not url-safe (a-z 0-9 -)
+            s = Regex.Replace(s, @"[^a-z0-9\-]+", string.Empty);
+
+            // collapse multiple hyphens
+            s = Regex.Replace(s, @"-+", "-");
+
+            return s.Trim('-');
         }
     }
 }

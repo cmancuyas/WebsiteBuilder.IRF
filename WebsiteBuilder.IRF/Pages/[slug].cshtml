@@ -2,8 +2,10 @@
 @model WebsiteBuilder.IRF.Pages._slug_Model
 
 @{
-    Layout = "_AdminLayout"; // adjust if needed
     var isPreview = Model.IsPreview;
+
+    // Public layout by default; admin chrome only in preview
+    Layout = isPreview ? "_AdminLayout" : "_TenantLayout";
 }
 
 @section Head {
@@ -16,7 +18,10 @@
 
 @if (isPreview)
 {
-    var exitUrl = Request.Path; // same page, without querystring
+    // Exit preview = same path (no querystring) + canonical home
+    var exitUrl = (Request.Path.Value?.Equals("/home", StringComparison.OrdinalIgnoreCase) == true)
+        ? "/"
+        : (Request.Path.Value ?? "/");
 
     <div style="position:sticky;top:0;z-index:1050;background:#111827;color:#fff;padding:10px 16px;border-bottom:1px solid rgba(255,255,255,.15);">
         <div class="container d-flex align-items-center justify-content-between">
@@ -28,15 +33,17 @@
             <div class="d-flex align-items-center gap-2">
                 <a class="btn btn-sm btn-light" href="@exitUrl">Exit preview</a>
 
-                <a class="btn btn-sm btn-outline-light"
-                   href="/Admin/Pages/Edit/@Model.PageEntity!.Id">
-                    Back to Edit
-                </a>
+                @if (Model.PageEntity != null)
+                {
+                    <a class="btn btn-sm btn-outline-light"
+                       href="/Admin/Pages/Edit/@Model.PageEntity.Id">
+                        Back to Edit
+                    </a>
+                }
             </div>
         </div>
     </div>
 }
-
 
 @foreach (var section in Model.RenderSections)
 {

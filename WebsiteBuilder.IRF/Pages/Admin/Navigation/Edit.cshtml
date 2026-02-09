@@ -552,19 +552,20 @@
                 const urlInput = li.querySelector('.node-url');
 
                 if (type === 'page') {
-                    if (urlInput) urlInput.value = '';
+                    if (urlInput && urlInput.value !== '') urlInput.value = '';
                     setLinkType(li, 'page');
                     return;
                 }
 
                 if (type === 'url') {
-                    if (pageSelect) pageSelect.value = '';
+                    if (pageSelect && pageSelect.value !== '') pageSelect.value = '';
                     setLinkType(li, 'url');
                     return;
                 }
 
                 setLinkType(li, 'page');
             }
+
 
             // -----------------------------
             // Page option rendering
@@ -632,68 +633,69 @@
             // Build payload (normalized)
             // -----------------------------
             function buildFlatList(rootUl) {
-                const items = [];
+              const items = [];
 
-                function walk(ul, parentId) {
-                    const children = Array.from(ul.children).filter(x => x.classList.contains('nav-node'));
+              function walk(ul, parentId) {
+                const children = Array.from(ul.children).filter(x => x.classList.contains('nav-node'));
 
-                    children.forEach((li, idx) => {
-                        const id = Number(li.dataset.id);
-                        const deleted = li.dataset.deleted === 'true';
+                children.forEach((li, idx) => {
+                  const id = Number(li.dataset.id);
+                  const deleted = li.dataset.deleted === 'true';
 
-                        const label = li.querySelector('.node-label')?.value?.trim() || '';
-                        const linkType = (li.querySelector('.node-linktype')?.value || 'page').toLowerCase();
+                  const label = li.querySelector('.node-label')?.value?.trim() || '';
+                  const linkType = (li.querySelector('.node-linktype')?.value || 'page').toLowerCase();
 
-                        const pageIdRaw = li.querySelector('.node-pageid')?.value || '';
-                        const pageId = pageIdRaw ? Number(pageIdRaw) : null;
+                  const pageIdRaw = li.querySelector('.node-pageid')?.value || '';
+                  const pageId = pageIdRaw ? Number(pageIdRaw) : null;
 
-                        const urlRaw = li.querySelector('.node-url')?.value || '';
-                        const url = normalizeUrlInput(urlRaw);
+                  const urlRaw = li.querySelector('.node-url')?.value || '';
+                  const url = normalizeUrlInput(urlRaw);
 
-                        const openInNewTab = !!li.querySelector('.node-newtab')?.checked;
-                        const isActive = !!li.querySelector('.node-active')?.checked;
-                        const isPublished = !!li.querySelector('.node-published')?.checked;
+                  const openInNewTab = !!li.querySelector('.node-newtab')?.checked;
+                  const isActive = !!li.querySelector('.node-active')?.checked;
+                  const isPublished = !!li.querySelector('.node-published')?.checked;
 
-                        const rolesCsv = li.querySelector('.node-roles')?.value?.trim() || '';
-                        const allowedRolesCsv = rolesCsv.length ? normalizeRolesCsv(rolesCsv) : null;
+                  const rolesCsv = li.querySelector('.node-roles')?.value?.trim() || '';
+                  const allowedRolesCsv = rolesCsv.length ? normalizeRolesCsv(rolesCsv) : null;
 
-                        const payloadItem = {
-                            id,
-                            parentId: parentId,
-                            sortOrder: idx + 1,
-                            label,
-                            linkType,
-                            pageId: null,
-                            url: null,
-                            allowedRolesCsv,
-                            openInNewTab,
-                            isActive,
-                            isPublished,
-                            isDeleted: deleted
-                        };
+                  const payloadItem = {
+                    id,
+                    parentId,
+                    sortOrder: idx + 1,
+                    label,
+                    linkType,
+                    pageId: null,
+                    url: null,
+                    allowedRolesCsv,
+                    openInNewTab,
+                    isActive,
+                    isPublished,
+                    isDeleted: deleted,
 
-                        if (linkType === 'page') {
-                            payloadItem.pageId = (pageId && pageId > 0) ? pageId : null;
-                            payloadItem.url = null;
-                        } else if (linkType === 'url') {
-                            payloadItem.pageId = null;
-                            payloadItem.url = url ? url : null;
-                        } else {
-                            payloadItem.linkType = 'page';
-                            payloadItem.pageId = (pageId && pageId > 0) ? pageId : null;
-                            payloadItem.url = null;
-                        }
+                    // ✅ keep this
+                    restore: li.dataset.restore === 'true'
+                  };
 
-                        items.push(payloadItem);
+                  if (linkType === 'page') {
+                    payloadItem.pageId = (pageId && pageId > 0) ? pageId : null;
+                  } else if (linkType === 'url') {
+                    payloadItem.url = url ? url : null;
+                  } else {
+                    payloadItem.linkType = 'page';
+                    payloadItem.pageId = (pageId && pageId > 0) ? pageId : null;
+                  }
 
-                        const childUl = li.querySelector(':scope > .nav-children');
-                        if (childUl) walk(childUl, id);
-                    });
-                }
+                  items.push(payloadItem);
 
-                walk(rootUl, null);
-                return items;
+                  const childUl = li.querySelector(':scope > .nav-children');
+                  if (childUl) walk(childUl, id);
+                });
+              }
+
+              walk(rootUl, null);
+              return items;
             }
+
 
             // -----------------------------
             // Validation
@@ -904,6 +906,11 @@
                         return false;
                     }
 
+                    // after successful save:
+                    navRoot?.querySelectorAll('.nav-node[data-restore="true"]')
+                      .forEach(li => delete li.dataset.restore);
+
+
                     // remap temp ids to real ids
                     if (data.idMap) {
                         for (const [tempIdStr, realId] of Object.entries(data.idMap)) {
@@ -929,6 +936,10 @@
                     setDirty(false);
                     lastSavedAt = new Date();
                     updateSaveButtonUi();
+
+                    // ✅ clear one-time restore intents
+                    navRoot?.querySelectorAll('.nav-node[data-restore="true"]')
+                        .forEach(li => delete li.dataset.restore);
 
                     refreshAllToggles();
                     refreshAllBadges();
@@ -1266,6 +1277,11 @@
                     refreshSortBadges();
 
                     setDirty(true);
+
+                    navRoot?.querySelectorAll('.nav-node[data-restore="true"]')
+                        .forEach(li => delete li.dataset.restore);
+
+
                 } finally {
                     historyApplying = false;
                     updateUndoRedoUi();
@@ -1298,25 +1314,31 @@
             // Node wiring
             // -----------------------------
             function setDeletedState(li, deleted) {
-                li.dataset.deleted = deleted ? 'true' : 'false';
-                li.classList.toggle('is-deleted', !!deleted);
+              li.dataset.deleted = deleted ? 'true' : 'false';
+              li.classList.toggle('is-deleted', !!deleted);
 
-                li.querySelectorAll('input, select, textarea').forEach(el => {
-                    el.disabled = !!deleted;
-                });
+              // ✅ only mark restore intent when we are restoring (deleted=false)
+              if (!deleted) li.dataset.restore = 'true';
+              else delete li.dataset.restore;
 
-                const addChildBtn = li.querySelector('.add-child');
-                if (addChildBtn) addChildBtn.disabled = !!deleted;
+              li.querySelectorAll('input, select, textarea').forEach(el => {
+                el.disabled = !!deleted;
+              });
 
-                const delBtn = li.querySelector('.delete-node');
-                const restoreBtn = li.querySelector('.restore-node');
+              const addChildBtn = li.querySelector('.add-child');
+              if (addChildBtn) addChildBtn.disabled = !!deleted;
 
-                if (delBtn) delBtn.classList.toggle('d-none', !!deleted);
-                if (restoreBtn) restoreBtn.classList.toggle('d-none', !deleted);
+              const delBtn = li.querySelector('.delete-node');
+              const restoreBtn = li.querySelector('.restore-node');
 
-                updateVisibilityBadge(li);
-                updatePageWarnBadge(li);
+              if (delBtn) delBtn.classList.toggle('d-none', !!deleted);
+              if (restoreBtn) restoreBtn.classList.toggle('d-none', !deleted);
+
+              updateVisibilityBadge(li);
+              updatePageWarnBadge(li);
             }
+
+
 
             // ✅ Reduced duplicate autosave triggers:
             // - label autosaves on input
@@ -1420,6 +1442,10 @@
 
                 li.querySelector('.delete-node')?.addEventListener('click', (e) => {
                     e.preventDefault();
+
+                    // deleting = not a restore intent
+                    delete li.dataset.restore;
+
                     if (historyApplying) return;
 
                     setDeletedState(li, true);
@@ -1436,9 +1462,14 @@
 
                 li.querySelector('.restore-node')?.addEventListener('click', (e) => {
                     e.preventDefault();
+
+                    // deleting = not a restore intent
+                    delete li.dataset.restore;
+
                     if (historyApplying) return;
 
                     setDeletedState(li, false);
+                    li.dataset.restore = 'true';
                     pushHistory('restore');
                     applyShowDeletedUi();
 

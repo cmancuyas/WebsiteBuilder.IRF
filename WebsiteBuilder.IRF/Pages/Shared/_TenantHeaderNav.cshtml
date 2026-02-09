@@ -1,26 +1,167 @@
-﻿@using WebsiteBuilder.IRF.Infrastructure.Tenancy
-@inject ITenantContext TenantContext
+﻿@using Microsoft.AspNetCore.Html
+@using WebsiteBuilder.IRF.Infrastructure.Tenancy
+@inject ITenantNavigationService Nav
 
-@if (TenantContext.IsResolved)
-{
-    <header>
-        <nav class="navbar navbar-expand-lg navbar-light bg-white border-bottom mb-3">
-            <div class="container">
-                <a class="navbar-brand" href="/">@TenantContext.Host</a>
+@{
+    var items = await Nav.GetHeaderAsync();
+    var current = NavigationPath.CurrentPath(Context);
+}
 
-                <button class="navbar-toggler" type="button"
-                        data-bs-toggle="collapse"
-                        data-bs-target="#tenantNavbar"
-                        aria-controls="tenantNavbar"
-                        aria-expanded="false"
-                        aria-label="Toggle navigation">
-                    <span class="navbar-toggler-icon"></span>
-                </button>
+<header class="border-bottom bg-white">
+    <nav class="navbar navbar-expand-lg navbar-light">
+        <div class="container">
+            <a class="navbar-brand" href="/">@Context?.Request?.Host.Host</a>
 
-                <div class="collapse navbar-collapse" id="tenantNavbar">
-                    @await Component.InvokeAsync("TenantNavigation", new { menuId = 1, variant = "header" })
-                </div>
+            <button class="navbar-toggler" type="button"
+                    data-bs-toggle="collapse" data-bs-target="#tenantHeaderNav"
+                    aria-controls="tenantHeaderNav" aria-expanded="false" aria-label="Toggle navigation">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+
+            <div class="collapse navbar-collapse" id="tenantHeaderNav">
+                <ul class="navbar-nav ms-auto">
+                    @RenderNodes(items, current)
+                </ul>
             </div>
-        </nav>
-    </header>
+        </div>
+    </nav>
+</header>
+
+@functions {
+    private static bool IsDisabledUrl(string? url)
+        => string.IsNullOrWhiteSpace(url) || url.Trim() == "#";
+
+    private bool NodeIsActive(NavItem n, string current)
+        => !IsDisabledUrl(n.Url) && NavigationPath.IsActiveOrAncestor(n.Url, current);
+
+    private bool AnyChildActive(NavItem n, string current)
+        => n.Children != null && n.Children.Any(c => NodeIsActive(c, current) || AnyChildActive(c, current));
+
+    private bool HasAnyEnabledDescendant(NavItem n)
+    {
+        if (!IsDisabledUrl(n.Url)) return true;
+        if (n.Children == null) return false;
+        return n.Children.Any(HasAnyEnabledDescendant);
+    }
+
+    private IHtmlContent RenderNodes(IReadOnlyList<NavItem> nodes, string current)
+    {
+        var ul = new HtmlContentBuilder();
+
+        foreach (var n in nodes)
+        {
+            // Skip completely "dead" nodes (no enabled url in self or descendants)
+            if (!HasAnyEnabledDescendant(n))
+                continue;
+
+            var hasKids = n.Children != null && n.Children.Count > 0;
+
+            // Filter out dead children so we don't show empty dropdowns
+            var children = hasKids
+                ? n.Children.Where(HasAnyEnabledDescendant).ToList()
+                : new List<NavItem>();
+
+            var effectiveHasKids = children.Count > 0;
+
+            var isActive = NodeIsActive(n, current);
+            var childActive = effectiveHasKids && children.Any(c => NodeIsActive(c, current) || AnyChildActive(c, current));
+            var effectiveActive = isActive || childActive;
+
+            var disabled = IsDisabledUrl(n.Url);
+
+            // =========================
+            // Leaf node
+            // =========================
+            if (!effectiveHasKids)
+            {
+                ul.AppendHtml($@"
+<li class=""nav-item"">
+  <a class=""nav-link{(effectiveActive ? " active" : "")}{(disabled ? " disabled" : "")}""
+     href=""{(disabled ? "#" : n.Url)}""
+     {(effectiveActive ? @"aria-current=""page""" : "")}
+     {(disabled ? @"aria-disabled=""true"" tabindex=""-1""" : "")}
+     {(!disabled && n.OpenInNewTab ? @"target=""_blank"" rel=""noopener""" : "")}>
+     {System.Net.WebUtility.HtmlEncode(n.Title)}
+  </a>
+</li>");
+                continue;
+            }
+
+            // =========================
+            // Dropdown parent
+            // =========================
+            var dropId = $"navdd-{n.Order}-{n.Title.GetHashCode()}";
+
+            // If parent is disabled, make it a pure dropdown toggle (no navigation)
+            var parentHref = disabled ? "#" : n.Url;
+
+            ul.AppendHtml($@"
+<li class=""nav-item dropdown"">
+  <a class=""nav-link dropdown-toggle{(effectiveActive ? " active" : "")}{(disabled ? " disabled" : "")}""
+     href=""{parentHref}""
+     id=""{dropId}""
+     role=""button""
+     data-bs-toggle=""dropdown""
+     aria-expanded=""false""
+     {(disabled ? @"aria-disabled=""true""" : "")}
+     {(!disabled && n.OpenInNewTab ? @"target=""_blank"" rel=""noopener""" : "")}>
+     {System.Net.WebUtility.HtmlEncode(n.Title)}
+  </a>
+  <ul class=""dropdown-menu"" aria-labelledby=""{dropId}"">
+");
+
+            foreach (var c in children)
+            {
+                var cDisabled = IsDisabledUrl(c.Url);
+
+                var cHasKids = c.Children != null && c.Children.Count > 0;
+                var cChildren = cHasKids ? c.Children.Where(HasAnyEnabledDescendant).ToList() : new List<NavItem>();
+                var cEffectiveHasKids = cChildren.Count > 0;
+
+                var cActive = NodeIsActive(c, current) || (cEffectiveHasKids && cChildren.Any(x => NodeIsActive(x, current) || AnyChildActive(x, current)));
+
+                if (!cEffectiveHasKids)
+                {
+                    ul.AppendHtml($@"
+    <li>
+      <a class=""dropdown-item{(cActive ? " active" : "")}{(cDisabled ? " disabled" : "")}""
+         href=""{(cDisabled ? "#" : c.Url)}""
+         {(cActive ? @"aria-current=""page""" : "")}
+         {(cDisabled ? @"aria-disabled=""true"" tabindex=""-1""" : "")}
+         {(!cDisabled && c.OpenInNewTab ? @"target=""_blank"" rel=""noopener""" : "")}>
+         {System.Net.WebUtility.HtmlEncode(c.Title)}
+      </a>
+    </li>");
+                }
+                else
+                {
+                    // Group header (non-clickable)
+                    ul.AppendHtml($@"<li><h6 class=""dropdown-header"">{System.Net.WebUtility.HtmlEncode(c.Title)}</h6></li>");
+
+                    foreach (var gc in cChildren)
+                    {
+                        var gcDisabled = IsDisabledUrl(gc.Url);
+                        var gcActive = NodeIsActive(gc, current) || AnyChildActive(gc, current);
+
+                        ul.AppendHtml($@"
+    <li>
+      <a class=""dropdown-item{(gcActive ? " active" : "")}{(gcDisabled ? " disabled" : "")}""
+         href=""{(gcDisabled ? "#" : gc.Url)}""
+         {(gcActive ? @"aria-current=""page""" : "")}
+         {(gcDisabled ? @"aria-disabled=""true"" tabindex=""-1""" : "")}
+         {(!gcDisabled && gc.OpenInNewTab ? @"target=""_blank"" rel=""noopener""" : "")}>
+         {System.Net.WebUtility.HtmlEncode(gc.Title)}
+      </a>
+    </li>");
+                    }
+
+                    ul.AppendHtml(@"<li><hr class=""dropdown-divider"" /></li>");
+                }
+            }
+
+            ul.AppendHtml("</ul></li>");
+        }
+
+        return ul;
+    }
 }
