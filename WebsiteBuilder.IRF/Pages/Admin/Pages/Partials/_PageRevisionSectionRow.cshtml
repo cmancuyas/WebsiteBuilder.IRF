@@ -3,15 +3,20 @@
 @{
     var isEditable = (ViewData["IsEditable"] as bool?) ?? false;
 
-    var sectionId = Model.Section.Id;
-    var collapseId = $"sec-editor-{sectionId}";
+    // ✅ PageRevisionSection row
+    var revisionSectionId = Model.RevisionSectionId;
+
+    // (Optional) for display/debug
+    var sectionTypeId = Model.Section.SectionTypeId;
+
+    var collapseId = $"sec-editor-{revisionSectionId}";
     var editorPath = Model.EditorPartialPath;
 }
 
 <div class="card section-item"
-     id="section-@sectionId"
-     data-section-id="@sectionId"
-     data-revision-section-id="@sectionId">
+     id="section-@revisionSectionId"
+     data-revision-section-id="@revisionSectionId"
+     data-section-type-id="@sectionTypeId">
 
     <div class="card-body py-2 d-flex align-items-center justify-content-between">
         <div class="d-flex align-items-center gap-2">
@@ -26,14 +31,16 @@
 
             <div>
                 <div class="fw-semibold section-title">@Model.Title</div>
-                <div class="text-muted small">Section ID: @sectionId</div>
+                <div class="text-muted small">
+                    Revision Section ID: @revisionSectionId • SectionTypeId: @sectionTypeId
+                </div>
             </div>
         </div>
 
         <div class="d-flex align-items-center gap-2">
             <button type="button"
                     class="btn btn-sm btn-outline-danger"
-                    data-delete-revision-section="@sectionId"
+                    data-delete-revision-section="@revisionSectionId"
                     @(isEditable ? null : "disabled")>
                 Delete
             </button>

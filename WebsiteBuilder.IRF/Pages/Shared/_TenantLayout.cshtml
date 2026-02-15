@@ -1,34 +1,39 @@
 ﻿@using WebsiteBuilder.IRF.Infrastructure.Tenancy
 @inject ITenantContext TenantContext
 
-
-
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>@ViewData["Title"] - WebsiteBuilder.IRF</title>
-
-    <link rel="stylesheet" href="~/lib/bootstrap/dist/css/bootstrap.min.css" />
-    <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
-
-    @RenderSection("Head", required: false)
 
     @{
         var metaTitle = (string?)ViewData["MetaTitle"];
         var metaDesc = (string?)ViewData["MetaDescription"];
         var ogAssetId = ViewData["OgImageAssetId"] as int?;
-        var canonicalPath = (string?)ViewData["CanonicalPath"] ?? Context.Request.Path.Value ?? "/";
 
+        // 1) Prefer canonical computed by page model (published snapshot)
+        var canonicalFromModel = ViewData["CanonicalUrl"] as string;
+
+        // 2) Fallback to request-based canonical if model didn't provide one
+        var canonicalPath = (string?)ViewData["CanonicalPath"] ?? Context.Request.Path.Value ?? "/";
         var scheme = Context.Request.Scheme;
         var host = Context.Request.Host.Value;
-        var canonicalUrl = $"{scheme}://{host}{canonicalPath}".TrimEnd('/');
-        if (canonicalPath == "/") canonicalUrl += "/";
+
+        var canonicalFallback = $"{scheme}://{host}{canonicalPath}";
+        canonicalFallback = canonicalPath == "/" ? canonicalFallback.TrimEnd('/') + "/" : canonicalFallback.TrimEnd('/');
+
+        var canonicalUrl = !string.IsNullOrWhiteSpace(canonicalFromModel)
+        ? canonicalFromModel
+        : canonicalFallback;
     }
 
     <title>@(string.IsNullOrWhiteSpace(metaTitle) ? "Website" : metaTitle)</title>
+
+    <link rel="stylesheet" href="~/lib/bootstrap/dist/css/bootstrap.min.css" />
+    <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
+
+    @RenderSection("Head", required: false)
 
     @if (!string.IsNullOrWhiteSpace(metaDesc))
     {
@@ -39,6 +44,7 @@
 
     <meta property="og:url" content="@canonicalUrl" />
     <meta property="og:type" content="website" />
+
     @if (!string.IsNullOrWhiteSpace(metaTitle))
     {
         <meta property="og:title" content="@metaTitle" />
@@ -48,16 +54,13 @@
         <meta property="og:description" content="@metaDesc" />
     }
 
-    @* If you have a public image endpoint, wire it here *@
     @if (ogAssetId.HasValue)
     {
         <meta property="og:image" content="@($"{scheme}://{host}/media/{ogAssetId.Value}")" />
     }
-
-
 </head>
-<body>
 
+<body>
     <!-- Tenant header nav (public) -->
     <partial name="_TenantHeaderNav" />
 
@@ -76,7 +79,6 @@
             </div>
         </div>
     </footer>
-
 
     <script src="~/lib/jquery/dist/jquery.min.js"></script>
     <script src="~/lib/bootstrap/dist/js/bootstrap.bundle.min.js"></script>

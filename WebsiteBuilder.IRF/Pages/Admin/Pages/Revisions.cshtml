@@ -1,0 +1,81 @@
+﻿@page "{id:int}"
+@model WebsiteBuilder.IRF.Pages.Admin.Pages.RevisionsModel
+@{
+    ViewData["Title"] = "Revisions";
+}
+
+<div class="d-flex align-items-center justify-content-between mb-3">
+    <div>
+        <h2 class="mb-0">Revisions</h2>
+        <div class="text-muted small">@Model.PageTitle · <code>/@Model.PageSlug</code></div>
+    </div>
+    <div class="d-flex gap-2">
+        <a class="btn btn-outline-secondary" asp-page="/Admin/Pages/Edit" asp-route-id="@Model.Id">Back</a>
+    </div>
+</div>
+
+@if (!string.IsNullOrWhiteSpace(Model.Banner))
+{
+    <div class="alert alert-info">@Model.Banner</div>
+}
+
+<div class="card">
+    <div class="table-responsive">
+        <table class="table table-hover mb-0">
+            <thead>
+                <tr>
+                    <th>Version</th>
+                    <th>Slug</th>
+                    <th>Type</th>
+                    <th>Published At</th>
+                    <th class="text-end">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var r in Model.Items)
+                {
+                    <tr>
+                        <td class="fw-semibold">@r.VersionNumber</td>
+                        <td><code>@r.Slug</code></td>
+                        <td>
+                            @if (r.IsPublishedSnapshot)
+                            {
+                                <span class="badge bg-success">Published Snapshot</span>
+                            }
+                            else
+                            {
+
+                                <span class="badge bg-warning text-dark">Draft</span>
+                            }
+
+                            @if (r.Id == Model.CurrentPublishedRevisionId)
+                            {
+                                <span class="badge bg-primary ms-1">Current Published</span>
+                            }
+                        </td>
+                        <td>@(r.PublishedAt?.ToString("u") ?? "-")</td>
+                        <td class="text-end">
+                            @if (r.IsPublishedSnapshot)
+                            {
+                                <form method="post" asp-page-handler="Rollback" class="d-inline">
+                                    <input type="hidden" name="revisionId" value="@r.Id" />
+                                    <button class="btn btn-sm btn-outline-danger" type="submit"
+                                            @(r.Id == Model.CurrentPublishedRevisionId ? "disabled" : "")>
+                                        Rollback
+                                    </button>
+                                </form>
+
+                                <form method="post" asp-page-handler="RestoreDraft" class="d-inline ms-1">
+                                    <input type="hidden" name="revisionId" value="@r.Id" />
+                                    <button class="btn btn-sm btn-outline-primary" type="submit">
+                                        Restore Draft
+                                    </button>
+                                </form>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</div>

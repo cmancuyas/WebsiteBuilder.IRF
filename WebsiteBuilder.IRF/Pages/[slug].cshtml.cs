@@ -15,13 +15,20 @@ namespace WebsiteBuilder.IRF.Pages
         private readonly ITenantContext _tenant;
         private readonly IWebHostEnvironment _env;
         private readonly IConfiguration _cfg;
+        private readonly ITenantUrlResolver _url;
 
-        public _slug_Model(DataContext db, ITenantContext tenant, IWebHostEnvironment env, IConfiguration cfg)
+        public _slug_Model(
+            DataContext db,
+            ITenantContext tenant,
+            IWebHostEnvironment env,
+            IConfiguration cfg,
+            ITenantUrlResolver url)
         {
             _db = db;
             _tenant = tenant;
             _env = env;
             _cfg = cfg;
+            _url = url;
         }
 
         public WebsiteBuilder.Models.Page? PageEntity { get; private set; }
@@ -36,7 +43,7 @@ namespace WebsiteBuilder.IRF.Pages
             public string? SettingsJson { get; init; }
         }
 
-        // Route param: /{slug?}  (single segment)
+        // Route param: /{slug?}
         public async Task<IActionResult> OnGetAsync(string? slug)
         {
             if (!_tenant.IsResolved)
@@ -53,6 +60,10 @@ namespace WebsiteBuilder.IRF.Pages
             {
                 Response.Headers["X-Robots-Tag"] = "noindex, nofollow, noarchive, nosnippet";
                 ApplyNoCacheHeaders();
+
+                // Layout flags
+                ViewData["RobotsNoIndex"] = true;
+                ViewData["CanonicalUrl"] = null;
             }
 
             var normalizedSlug = NormalizeSlug(slug);
@@ -85,22 +96,53 @@ namespace WebsiteBuilder.IRF.Pages
             if (PageEntity is null)
                 return NotFound();
 
+            // ============================
+            // PREVIEW MODE
+            // ============================
             if (IsPreview)
             {
-                // Preview uses draft revision only
                 if (PageEntity.DraftRevisionId == null)
                     return NotFound();
 
                 RenderSections = await LoadSectionsAsync(PageEntity.DraftRevisionId.Value);
-                ApplyNoCacheHeaders();
                 return Page();
             }
 
-            // Public uses published revision only
+            // ============================
+            // PUBLIC / PUBLISHED MODE
+            // ============================
             if (PageEntity.PublishedRevisionId == null)
                 return NotFound();
 
+            // Load published revision (source of canonical slug)
+            var revision = await _db.PageRevisions
+                .AsNoTracking()
+                .FirstOrDefaultAsync(r =>
+                    r.Id == PageEntity.PublishedRevisionId.Value &&
+                    r.TenantId == _tenant.TenantId,
+                    HttpContext.RequestAborted);
+
+            if (revision == null)
+                return NotFound();
+
             RenderSections = await LoadSectionsAsync(PageEntity.PublishedRevisionId.Value);
+
+            // ✅ Canonical URL (published snapshot only)
+            var (scheme, host) = await _url.GetCanonicalAsync(HttpContext.RequestAborted);
+
+            // Published snapshot slug is the canonical source of truth
+            var publishedSlug = NormalizeSlug(revision.Slug);
+
+            // Map "home" to "/"
+            var canonicalPath = publishedSlug == "home"
+                ? "/"
+                : "/" + publishedSlug;
+
+            ViewData["CanonicalUrl"] = $"{scheme}://{host}{canonicalPath}";
+            ViewData["RobotsNoIndex"] = false;
+
+
+
             return Page();
         }
 
@@ -139,8 +181,6 @@ namespace WebsiteBuilder.IRF.Pages
 
         private bool UserCanPreview()
         {
-            // Safer than unconditional dev access:
-            // Allow anonymous preview in Development only if explicitly enabled.
             if (_env.IsDevelopment() && _cfg.GetValue<bool>("Preview:AllowAnonymousInDev"))
                 return true;
 
@@ -167,16 +207,9 @@ namespace WebsiteBuilder.IRF.Pages
         {
             slug ??= string.Empty;
 
-            // single segment only; strip leading/trailing slashes
             var s = slug.Trim().Trim('/').ToLowerInvariant();
-
-            // spaces/underscore -> hyphen
             s = Regex.Replace(s, @"[\s_]+", "-");
-
-            // remove anything not url-safe (a-z 0-9 -)
             s = Regex.Replace(s, @"[^a-z0-9\-]+", string.Empty);
-
-            // collapse multiple hyphens
             s = Regex.Replace(s, @"-+", "-");
 
             return s.Trim('-');

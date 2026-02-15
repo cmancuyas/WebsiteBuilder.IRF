@@ -1,116 +1,116 @@
-﻿using Microsoft.AspNetCore.Mvc;
-using Microsoft.AspNetCore.Mvc.RazorPages;
-using Microsoft.AspNetCore.Mvc.Rendering;
-using Microsoft.EntityFrameworkCore;
+﻿using System.ComponentModel.DataAnnotations;
 using System.Security.Claims;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.RazorPages;
+using Microsoft.EntityFrameworkCore;
 using WebsiteBuilder.IRF.DataAccess;
-using WebsiteBuilder.IRF.Infrastructure.Helpers;
+using WebsiteBuilder.IRF.Infrastructure.Pages;
 using WebsiteBuilder.IRF.Infrastructure.Tenancy;
-using WebsiteBuilder.IRF.ViewModels.Admin.Pages;
 using WebsiteBuilder.Models;
 using WebsiteBuilder.Models.Constants;
 using Page = WebsiteBuilder.Models.Page;
 
-namespace WebsiteBuilder.IRF.Pages.Admin.Pages
+namespace WebsiteBuilder.IRF.Pages.Admin.Pages;
+
+public sealed class CreateModel : PageModel
 {
-    public class CreateModel : PageModel
+    private readonly DataContext _db;
+    private readonly ITenantContext _tenant;
+
+    public CreateModel(DataContext db, ITenantContext tenant)
     {
-        private readonly DataContext _db;
-        private readonly ITenantContext _tenant;
+        _db = db;
+        _tenant = tenant;
+    }
 
-        public CreateModel(DataContext db, ITenantContext tenant)
+    public sealed class InputModel
+    {
+        [Required, MaxLength(200)]
+        public string Title { get; set; } = "";
+
+        [MaxLength(200)]
+        public string? Slug { get; set; }
+
+        [MaxLength(100)]
+        public string? LayoutKey { get; set; }
+
+        [MaxLength(200)]
+        public string? MetaTitle { get; set; }
+
+        [MaxLength(500)]
+        public string? MetaDescription { get; set; }
+
+        public bool ShowInNavigation { get; set; } = true;
+    }
+
+    [BindProperty]
+    public InputModel Input { get; set; } = new();
+
+    public void OnGet()
+    {
+        // no-op
+    }
+
+    public async Task<IActionResult> OnPostAsync(CancellationToken ct)
+    {
+        if (!_tenant.IsResolved)
+            return NotFound("Tenant not resolved.");
+
+        if (!ModelState.IsValid)
+            return Page();
+
+        var slug = SlugUtil.Normalize(Input.Slug);
+
+        // ensure unique per tenant
+        var exists = await _db.Pages.AsNoTracking()
+            .AnyAsync(p => p.TenantId == _tenant.TenantId && !p.IsDeleted && p.Slug == slug, ct);
+
+        if (exists)
         {
-            _db = db;
-            _tenant = tenant;
-        }
-
-        [BindProperty]
-        public PageEditVm Input { get; set; } = new()
-        {
-            PageStatusId = PageStatusIds.Draft,
-            IsActive = true
-        };
-
-        public async Task<IActionResult> OnGetAsync()
-        {
-            if (!_tenant.IsResolved)
-                return NotFound();
-
-            await LoadPageStatusesAsync();
+            ModelState.AddModelError(nameof(Input.Slug), "Slug already exists for this tenant.");
             return Page();
         }
 
-        public async Task<IActionResult> OnPostAsync()
+        var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        _ = Guid.TryParse(userIdStr, out var ownerId);
+
+        var page = new Page
         {
-            if (!_tenant.IsResolved)
-                return NotFound();
+            TenantId = _tenant.TenantId,
+            Title = Input.Title.Trim(),
+            Slug = slug,
+            LayoutKey = Input.LayoutKey?.Trim(),
+            MetaTitle = Input.MetaTitle?.Trim(),
+            MetaDescription = Input.MetaDescription?.Trim(),
+            ShowInNavigation = Input.ShowInNavigation,
+            PageStatusId = PageStatusIds.Draft,
+            OwnerUserId = ownerId
+        };
 
-            await LoadPageStatusesAsync();
+        _db.Pages.Add(page);
+        await _db.SaveChangesAsync(ct);
 
-            // Normalize slug before validation
-            Input.Slug = SlugUtil.Normalize(Input.Slug);
-
-            if (!ModelState.IsValid)
-                return Page();
-
-            // Enforce slug uniqueness per tenant (excluding soft-deleted pages)
-            var slugExists = await _db.Pages.AsNoTracking().AnyAsync(p =>
-                p.TenantId == _tenant.TenantId &&
-                p.Slug == Input.Slug &&
-                !p.IsDeleted);
-
-            if (slugExists)
-            {
-                ModelState.AddModelError(nameof(Input.Slug), "Slug already exists for this tenant.");
-                return Page();
-            }
-
-            var userId = GetUserIdOrEmpty();
-
-            var entity = new Page
-            {
-                TenantId = _tenant.TenantId,
-                OwnerUserId = userId,                 // ✅ CRITICAL
-                Title = Input.Title.Trim(),
-                Slug = Input.Slug,
-                PageStatusId = PageStatusIds.Draft,   // ✅ FORCE DRAFT
-                LayoutKey = Input.LayoutKey?.Trim() ?? "Default",
-                MetaTitle = string.IsNullOrWhiteSpace(Input.MetaTitle) ? null : Input.MetaTitle.Trim(),
-                MetaDescription = string.IsNullOrWhiteSpace(Input.MetaDescription) ? null : Input.MetaDescription.Trim(),
-                OgImageAssetId = Input.OgImageAssetId,
-
-                IsActive = true,
-                IsDeleted = false,
-                CreatedAt = DateTime.UtcNow,
-                CreatedBy = userId
-            };
-
-            _db.Pages.Add(entity);
-            await _db.SaveChangesAsync();
-
-            return RedirectToPage("./Edit", new { id = entity.Id, created = true });
-        }
-
-        private async Task LoadPageStatusesAsync()
+        // create initial draft revision (not a published snapshot)
+        var draft = new PageRevision
         {
-            var statuses = await _db.PageStatuses
-                .AsNoTracking()
-                .OrderBy(s => s.SortOrder)
-                .ThenBy(s => s.Name)
-                .Select(s => new SelectListItem
-                {
-                    Value = s.Id.ToString(),
-                    Text = s.Name
-                })
-                .ToListAsync();
+            TenantId = _tenant.TenantId,
+            PageId = page.Id,
+            VersionNumber = 1,
+            IsPublishedSnapshot = false,
+            Title = page.Title,
+            Slug = page.Slug,
+            LayoutKey = page.LayoutKey ?? "",
+            MetaTitle = page.MetaTitle ?? "",
+            MetaDescription = page.MetaDescription ?? "",
+            OgImageAssetId = page.OgImageAssetId
+        };
 
-            ViewData["PageStatuses"] = statuses;
-        }
+        _db.PageRevisions.Add(draft);
+        await _db.SaveChangesAsync(ct);
 
-        private Guid GetUserIdOrEmpty()
-        {
-            var raw = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            return Guid.TryParse(raw, out var id) ? id : Guid.Empty;
-        }
+        page.DraftRevisionId = draft.Id;
+        await _db.SaveChangesAsync(ct);
+
+        return RedirectToPage("/Admin/Pages/Edit", new { id = page.Id });
     }
 }

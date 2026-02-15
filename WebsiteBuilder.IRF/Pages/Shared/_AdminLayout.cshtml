@@ -1,29 +1,160 @@
-﻿@using WebsiteBuilder.IRF.Infrastructure.Tenancy
+﻿@using System.Security.Claims
+@using WebsiteBuilder.IRF.Infrastructure.Tenancy
 @inject ITenantContext TenantContext
+
+@{
+    var path = (Context?.Request?.Path.Value ?? "").ToLowerInvariant();
+
+    bool StartsWith(string s) => !string.IsNullOrWhiteSpace(s) && path.StartsWith(s.ToLowerInvariant());
+
+    // Active helper: returns "active" for nav links
+    string Active(params string[] startsWith)
+    {
+        foreach (var s in startsWith)
+        {
+            if (StartsWith(s)) return "active";
+        }
+        return "";
+    }
+
+    // For sidebar "open" sections (if you later add collapsible groups)
+    string Show(params string[] startsWith)
+    {
+        foreach (var s in startsWith)
+        {
+            if (StartsWith(s)) return "show";
+        }
+        return "";
+    }
+
+    var userName =
+        User?.Identity?.IsAuthenticated == true
+            ? (User.Identity?.Name ?? User.FindFirstValue(ClaimTypes.Email) ?? "User")
+            : "Guest";
+
+    var pageTitle = (ViewData["Title"] as string) ?? "Admin";
+}
 
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>@ViewData["Title"] - Admin - WebsiteBuilder.IRF</title>
+    <title>@pageTitle - Admin - WebsiteBuilder.IRF</title>
 
     <link rel="stylesheet" href="~/lib/bootstrap/dist/css/bootstrap.min.css" />
     <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
 
     @RenderSection("Head", required: false)
+
+    <style>
+        /* ---- Admin shell (minimal inline; move to site.css later if desired) ---- */
+        body {
+            background: #f8f9fa;
+        }
+
+        .admin-topbar {
+            position: sticky;
+            top: 0;
+            z-index: 1030;
+            background: #fff;
+        }
+
+        .admin-container {
+            max-width: 1320px;
+        }
+
+        .admin-shell {
+            display: grid;
+            grid-template-columns: 260px 1fr;
+            gap: 1rem;
+            padding: 1rem 0;
+            min-height: calc(100vh - 56px);
+        }
+
+        @@media (max-width: 991.98px) {
+            .admin-shell {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .admin-sidebar {
+            position: sticky;
+            top: 72px;
+            height: calc(100vh - 72px);
+            overflow: auto;
+        }
+
+        @@media (max-width: 991.98px) {
+            .admin-sidebar {
+                position: static;
+                height: auto;
+            }
+        }
+
+        .admin-brand {
+            display: inline-flex;
+            align-items: center;
+            gap: .5rem;
+            font-weight: 700;
+        }
+
+        .admin-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 999px;
+            background: rgba(13,110,253,.85);
+            display: inline-block;
+        }
+
+        .admin-sidecard {
+            background: #fff;
+            border: 1px solid rgba(0,0,0,.08);
+            border-radius: .75rem;
+        }
+
+        .admin-nav .nav-link {
+            border-radius: .5rem;
+            color: #212529;
+        }
+
+            .admin-nav .nav-link.active {
+                font-weight: 600;
+                background: rgba(13,110,253,.10);
+                color: #0d6efd;
+            }
+
+            .admin-nav .nav-link:hover {
+                background: rgba(0,0,0,.04);
+            }
+
+        .admin-maincard {
+            background: #fff;
+            border: 1px solid rgba(0,0,0,.08);
+            border-radius: .75rem;
+        }
+
+        .admin-footer {
+            background: #fff;
+        }
+    </style>
 </head>
 <body>
 
-    <!-- Admin top bar -->
-    <header>
-        <nav class="navbar navbar-expand-sm navbar-light bg-white border-bottom box-shadow mb-3">
-            <div class="container">
-                <a class="navbar-brand" href="/admin/pages">
-                    Admin
+    <!-- Top bar -->
+    <header class="admin-topbar border-bottom shadow-sm">
+        <nav class="navbar navbar-expand-lg navbar-light bg-white">
+            <div class="container admin-container">
+                <a class="navbar-brand admin-brand" asp-page="/Admin/Index">
+                    <span class="admin-dot"></span>
+                    <span>Admin</span>
+
+                    @* TenantContext is often bypassed in /Admin; keep optional *@
                     @if (TenantContext.IsResolved)
                     {
-                        <span class="text-muted">- @TenantContext.Host</span>
+                        <span class="badge text-bg-light border fw-normal ms-2">
+                            @TenantContext.Host
+                        </span>
                     }
                 </a>
 
@@ -36,38 +167,104 @@
                     <span class="navbar-toggler-icon"></span>
                 </button>
 
-                <div class="navbar-collapse collapse d-sm-inline-flex justify-content-between" id="adminNavbar">
-                    <ul class="navbar-nav me-auto">
+                <div class="collapse navbar-collapse" id="adminNavbar">
+                    <ul class="navbar-nav ms-auto align-items-lg-center gap-lg-2">
                         <li class="nav-item">
-                            <a class="nav-link text-dark" href="/admin/pages">Pages</a>
+                            <a class="nav-link" href="/" target="_blank" rel="noopener">View site</a>
                         </li>
-                        <li class="nav-item">
-                            <a class="nav-link text-dark" href="/admin/navigation">Navigation</a>
-                        </li>
-                        <li class="nav-item">
-                            <a class="nav-link text-dark" href="/admin/media">Media</a>
-                        </li>
-                    </ul>
 
-                    <ul class="navbar-nav">
-                        <li class="nav-item">
-                            <a class="nav-link text-dark" href="/">View site</a>
+                        <li class="nav-item dropdown">
+                            <a class="nav-link dropdown-toggle" href="#" id="adminUserMenu"
+                               role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                                @userName
+                            </a>
+                            <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="adminUserMenu">
+                                <li>
+                                    <a class="dropdown-item" asp-page="/Admin/Account/Logout">Logout</a>
+                                </li>
+                            </ul>
                         </li>
                     </ul>
                 </div>
+
             </div>
         </nav>
     </header>
 
-    <div class="container">
-        <main role="main" class="pb-3">
-            @RenderBody()
-        </main>
+    <div class="container admin-container">
+        <div class="admin-shell">
+
+            <!-- Sidebar -->
+            <aside class="admin-sidebar">
+                <div class="admin-sidecard p-3">
+
+                    <div class="d-flex align-items-center justify-content-between mb-2">
+                        <div class="fw-semibold">Menu</div>
+                        <span class="badge text-bg-secondary">@pageTitle</span>
+                    </div>
+
+                    <nav class="nav flex-column admin-nav gap-1">
+                        <a class="nav-link @Active("/admin", "/admin/index")"
+                           asp-page="/Admin/Index">
+                            Dashboard
+                        </a>
+
+                        <a class="nav-link @Active("/admin/pages")"
+                           asp-page="/Admin/Pages/Index">
+                            Pages
+                        </a>
+
+                        <a class="nav-link @Active("/admin/navigation")"
+                           asp-page="/Admin/Navigation/Index">
+                            Navigation
+                        </a>
+
+                        <a class="nav-link @Active("/admin/media")"
+                           asp-page="/Admin/Media/Index">
+                            Media
+                        </a>
+                    </nav>
+
+                    <hr class="my-3" />
+
+                    <div class="small text-muted">
+                        @if (TenantContext.IsResolved)
+                        {
+                            <div><span class="fw-semibold">Tenant:</span> @TenantContext.Slug</div>
+                            <div><span class="fw-semibold">Host:</span> @TenantContext.Host</div>
+                        }
+                        else
+                        {
+                            <div>Tenant not resolved in Admin (expected if bypassed).</div>
+                        }
+                    </div>
+
+                </div>
+            </aside>
+
+            <!-- Main -->
+            <section>
+                <div class="admin-maincard p-3 p-md-4">
+                    @* Optional: a per-page header slot *@
+                    @if (IsSectionDefined("PageHeader"))
+                    {
+                        <div class="mb-3">
+                            @RenderSection("PageHeader", required: false)
+                        </div>
+                        <hr class="my-3" />
+                    }
+
+                    @RenderBody()
+                </div>
+            </section>
+
+        </div>
     </div>
 
-    <footer class="border-top footer text-muted">
-        <div class="container">
-            &copy; 2026 - WebsiteBuilder.IRF
+    <footer class="admin-footer border-top text-muted mt-3">
+        <div class="container admin-container py-3 d-flex flex-column flex-sm-row justify-content-between gap-2">
+            <div class="small">&copy; 2026 - WebsiteBuilder.IRF</div>
+            <div class="small"><span class="text-muted">Admin</span></div>
         </div>
     </footer>
 
@@ -76,8 +273,8 @@
     <script src="~/js/site.js" asp-append-version="true"></script>
 
     <!-- Admin-only vendor scripts -->
-
     <script src="~/lib/jquery-sortablejs/jquery-sortable.min.js"></script>
+
     <!-- Global Media Picker bridge (admin-only) -->
     <script>
         (function () {
@@ -92,10 +289,11 @@
                     );
 
                     function handler(e) {
+                        if (e.origin !== window.location.origin) return;
                         if (!e.data || e.data.type !== "media:selected") return;
 
                         window.removeEventListener("message", handler);
-                        w.close();
+                        try { w && !w.closed && w.close(); } catch { }
 
                         if (typeof onSelect === "function") {
                             onSelect(e.data.items || []);

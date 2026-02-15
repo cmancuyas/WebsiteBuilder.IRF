@@ -1,4 +1,5 @@
 ﻿using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Cryptography;
 using System.Text;
@@ -21,12 +22,13 @@ var builder = WebApplication.CreateBuilder(args);
 // Razor Pages
 builder.Services.AddRazorPages(options =>
 {
-    // Everything under /Admin requires auth
-    options.Conventions.AuthorizeFolder("/Admin");
+    // Admin must be explicitly authorized
+    options.Conventions.AuthorizeFolder("/Admin", "AdminArea");
 
     // Allow anonymous access to login/logout pages
     options.Conventions.AllowAnonymousToFolder("/Admin/Account");
 });
+
 
 // === Database Contexts ===
 
@@ -77,6 +79,15 @@ builder.Services.ConfigureApplicationCookie(options =>
 // Authorization (updated to include SuperAdmin + use AppRoles)
 builder.Services.AddAuthorization(options =>
 {
+    options.AddPolicy("AdminArea", policy =>
+    {
+        policy.RequireAuthenticatedUser();
+        policy.RequireAssertion(ctx =>
+            ctx.User.IsInRole(AppRoles.SuperAdmin) ||
+            ctx.User.IsInRole(AppRoles.Admin) ||
+            ctx.User.HasClaim("Permission", "Admin.Access"));
+    });
+
     options.AddPolicy("PagesPreview", policy =>
     {
         policy.RequireAuthenticatedUser();
@@ -85,6 +96,35 @@ builder.Services.AddAuthorization(options =>
             ctx.User.IsInRole(AppRoles.Admin) ||
             ctx.User.HasClaim("Permission", "Pages.Preview"));
     });
+});
+
+
+builder.Services.AddResponseCompression(options =>
+{
+    options.EnableForHttps = true;
+
+    // Include common MIME types + sitemap/xml
+    options.MimeTypes = ResponseCompressionDefaults.MimeTypes.Concat(new[]
+    {
+        "application/xml",
+        "text/xml",
+        "application/rss+xml",
+        "application/atom+xml",
+        "text/plain" // robots.txt
+    });
+    options.Providers.Add<BrotliCompressionProvider>();
+    options.Providers.Add<GzipCompressionProvider>();
+});
+
+// Prefer Brotli if available, fallback to Gzip
+builder.Services.Configure<BrotliCompressionProviderOptions>(o =>
+{
+    o.Level = System.IO.Compression.CompressionLevel.Fastest;
+});
+
+builder.Services.Configure<GzipCompressionProviderOptions>(o =>
+{
+    o.Level = System.IO.Compression.CompressionLevel.Fastest;
 });
 
 // Tenant services
@@ -140,6 +180,9 @@ builder.Services.AddScoped<IMediaAlertNotifier>(sp => sp.GetRequiredService<Comp
 builder.Services.AddScoped<ITenantSitemapIndexService,
                           TenantSitemapIndexService>();
 
+builder.Services.AddScoped<ITenantUrlResolver, TenantUrlResolver>();
+
+
 var app = builder.Build();
 
 await IdentitySeeder.SeedAsync(app.Services, app.Configuration);
@@ -163,6 +206,8 @@ if (!app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
+
+app.UseResponseCompression();
 app.UseStaticFiles();
 
 app.UseRouting();
@@ -173,8 +218,9 @@ app.UseMiddleware<TenantResolutionMiddleware>();
 app.UseAuthentication();
 app.UseAuthorization();
 
-app.MapRazorPages();
-
+app.UseMiddleware<TenantResolutionMiddleware>();
+// ✅ Admin tenant resolver (cookie-based, /Admin only)
+app.UseMiddleware<AdminTenantResolutionMiddleware>();
 
 
 static string ComputeETag(string content)
@@ -185,31 +231,124 @@ static string ComputeETag(string content)
     return "\"" + Convert.ToHexString(hash).ToLowerInvariant() + "\"";
 }
 
-app.MapGet("/sitemap.xml", async (HttpContext http, ITenantSitemapService sitemap, CancellationToken ct) =>
-{
-    var xml = await sitemap.GetSitemapXmlAsync(ct);
+// ============================================================
+// SITEMAP + ROBOTS ENDPOINTS (Enhanced)
+// - Strong caching headers (ETag + 304)
+// - Compression-safe caching (Vary: Accept-Encoding)
+// - Longer TTL (1 hour) since you already invalidate server-side
+// - Optional: guard invalid parts
+// ============================================================
 
+const int SitemapMaxAgeSeconds = 3600; // 1 hour
+
+static void ApplyCacheHeaders(HttpContext http, string etag)
+{
+    http.Response.Headers.ETag = etag;
+    http.Response.Headers.CacheControl = $"public,max-age={SitemapMaxAgeSeconds}";
+    http.Response.Headers.Vary = "Accept-Encoding"; // IMPORTANT for gzip/br variants
+}
+
+static bool IsNotModified(HttpContext http, string etag)
+{
+    return http.Request.Headers.TryGetValue("If-None-Match", out var inm) &&
+           inm.ToString().Contains(etag, StringComparison.Ordinal);
+}
+
+static IResult XmlResult(string xml) =>
+    Results.Text(xml, "application/xml; charset=utf-8");
+
+static IResult TextResult(string txt) =>
+    Results.Text(txt, "text/plain; charset=utf-8");
+
+
+
+app.MapPost("/admin/api/validate-section-json",
+    async (HttpContext http,
+           ISectionValidationService validator,
+           ITenantContext tenant) =>
+    {
+        if (!tenant.IsResolved)
+            return Results.BadRequest(new { error = "Tenant not resolved." });
+
+        var form = await http.Request.ReadFromJsonAsync<ValidateSectionRequest>(http.RequestAborted);
+
+        if (form is null || string.IsNullOrWhiteSpace(form.TypeKey))
+            return Results.BadRequest(new { error = "Invalid request." });
+
+        var result = await validator.ValidateAsync(form.TypeKey, form.SettingsJson);
+
+        return Results.Ok(new
+        {
+            isValid = result.IsValid,
+            errors = result.Errors
+        });
+    })
+    .RequireAuthorization("AdminArea");
+
+
+// ----------------------------
+// /sitemap.xml (canonical entry point) -> returns sitemapindex
+// ----------------------------
+app.MapGet("/sitemap.xml", async (HttpContext http, ITenantSitemapIndexService svc, CancellationToken ct) =>
+{
+    var xml = await svc.GetSitemapIndexXmlAsync(ct);
     var etag = ComputeETag(xml);
 
-    // Conditional GET
-    if (http.Request.Headers.TryGetValue("If-None-Match", out var inm) &&
-        inm.ToString().Contains(etag, StringComparison.Ordinal))
+    if (IsNotModified(http, etag))
     {
-        http.Response.Headers.ETag = etag;
-        http.Response.Headers.CacheControl = "public,max-age=300";
+        ApplyCacheHeaders(http, etag);
         return Results.StatusCode(StatusCodes.Status304NotModified);
     }
 
-    http.Response.Headers.ETag = etag;
-    http.Response.Headers.CacheControl = "public,max-age=300";
-
-    return Results.Text(xml, "application/xml; charset=utf-8");
+    ApplyCacheHeaders(http, etag);
+    return XmlResult(xml);
 });
 
-app.MapGet("/robots.txt", (HttpContext http) =>
+// ----------------------------
+// /sitemap_index.xml (alias) -> returns same sitemapindex
+// ----------------------------
+app.MapGet("/sitemap_index.xml", async (HttpContext http, ITenantSitemapIndexService svc, CancellationToken ct) =>
 {
-    var scheme = http.Request.Scheme;
-    var host = http.Request.Host.Value;
+    var xml = await svc.GetSitemapIndexXmlAsync(ct);
+    var etag = ComputeETag(xml);
+
+    if (IsNotModified(http, etag))
+    {
+        ApplyCacheHeaders(http, etag);
+        return Results.StatusCode(StatusCodes.Status304NotModified);
+    }
+
+    ApplyCacheHeaders(http, etag);
+    return XmlResult(xml);
+});
+
+// ----------------------------
+// /sitemaps/pages-{part}.xml (paged urlset)
+// ----------------------------
+app.MapGet("/sitemaps/pages-{part:int}.xml", async (HttpContext http, int part, ITenantSitemapIndexService svc, CancellationToken ct) =>
+{
+    // optional: normalize invalid parts (prevents negative indexing, etc.)
+    if (part < 1) part = 1;
+
+    var xml = await svc.GetSitemapPartXmlAsync(part, ct);
+    var etag = ComputeETag(xml);
+
+    if (IsNotModified(http, etag))
+    {
+        ApplyCacheHeaders(http, etag);
+        return Results.StatusCode(StatusCodes.Status304NotModified);
+    }
+
+    ApplyCacheHeaders(http, etag);
+    return XmlResult(xml);
+});
+
+// ----------------------------
+// /robots.txt (resolver-based canonical host + points to /sitemap.xml)
+// ----------------------------
+app.MapGet("/robots.txt", async (HttpContext http, ITenantUrlResolver url, CancellationToken ct) =>
+{
+    var (scheme, host) = await url.GetCanonicalAsync(ct);
 
     var txt = string.Join("\n", new[]
     {
@@ -219,49 +358,97 @@ app.MapGet("/robots.txt", (HttpContext http) =>
         "Disallow: /Preview/",
         "Disallow: /preview/",
         "Disallow: /_framework/",
-        $"Sitemap: {scheme}://{host}/sitemap_index.xml"
+        $"Sitemap: {scheme}://{host}/sitemap.xml"
     });
 
-    return Results.Text(txt, "text/plain; charset=utf-8");
+    // robots.txt can also benefit from compression-aware caching
+    http.Response.Headers.CacheControl = $"public,max-age={SitemapMaxAgeSeconds}";
+    http.Response.Headers.Vary = "Accept-Encoding";
+
+    // Optional (usually fine to omit):
+    // var etag = ComputeETag(txt);
+    // if (IsNotModified(http, etag)) { ApplyCacheHeaders(http, etag); return Results.StatusCode(304); }
+    // ApplyCacheHeaders(http, etag);
+
+    return TextResult(txt);
 });
 
-
-app.MapGet("/sitemap_index.xml", async (HttpContext http, ITenantSitemapIndexService svc, CancellationToken ct) =>
+// ============================================================
+// SEO URL Normalization (301 redirects)
+// - lowercase paths
+// - trim trailing slash (except "/")
+// - collapse multiple slashes
+// - /home -> /
+// - preserve query string
+// - GET/HEAD only
+// - exclude admin/preview/sitemaps/static
+// ============================================================
+app.Use(async (ctx, next) =>
 {
-    var xml = await svc.GetSitemapIndexXmlAsync(ct);
-    var etag = ComputeETag(xml);
-
-    if (http.Request.Headers.TryGetValue("If-None-Match", out var inm) &&
-        inm.ToString().Contains(etag, StringComparison.Ordinal))
+    // Only normalize safe idempotent requests
+    if (!HttpMethods.IsGet(ctx.Request.Method) && !HttpMethods.IsHead(ctx.Request.Method))
     {
-        http.Response.Headers.ETag = etag;
-        http.Response.Headers.CacheControl = "public,max-age=300";
-        return Results.StatusCode(StatusCodes.Status304NotModified);
+        await next();
+        return;
     }
 
-    http.Response.Headers.ETag = etag;
-    http.Response.Headers.CacheControl = "public,max-age=300";
-    return Results.Text(xml, "application/xml; charset=utf-8");
-});
+    var path = ctx.Request.Path.Value ?? "/";
 
-app.MapGet("/sitemaps/pages-{part:int}.xml", async (HttpContext http, int part, ITenantSitemapIndexService svc, CancellationToken ct) =>
-{
-    var xml = await svc.GetSitemapPartXmlAsync(part, ct);
-    var etag = ComputeETag(xml);
-
-    if (http.Request.Headers.TryGetValue("If-None-Match", out var inm) &&
-        inm.ToString().Contains(etag, StringComparison.Ordinal))
+    // Skip certain paths (do not rewrite admin/system/static endpoints)
+    static bool IsExcluded(string p)
     {
-        http.Response.Headers.ETag = etag;
-        http.Response.Headers.CacheControl = "public,max-age=300";
-        return Results.StatusCode(StatusCodes.Status304NotModified);
+        return p.StartsWith("/Admin", StringComparison.OrdinalIgnoreCase)
+            || p.StartsWith("/Preview", StringComparison.OrdinalIgnoreCase)
+            || p.StartsWith("/sitemap", StringComparison.OrdinalIgnoreCase)
+            || p.StartsWith("/sitemaps", StringComparison.OrdinalIgnoreCase)
+            || p.Equals("/robots.txt", StringComparison.OrdinalIgnoreCase)
+            || p.StartsWith("/_framework", StringComparison.OrdinalIgnoreCase)
+            || p.StartsWith("/lib", StringComparison.OrdinalIgnoreCase)
+            || p.StartsWith("/css", StringComparison.OrdinalIgnoreCase)
+            || p.StartsWith("/js", StringComparison.OrdinalIgnoreCase)
+            || p.StartsWith("/images", StringComparison.OrdinalIgnoreCase)
+            || p.StartsWith("/favicon", StringComparison.OrdinalIgnoreCase);
     }
 
-    http.Response.Headers.ETag = etag;
-    http.Response.Headers.CacheControl = "public,max-age=300";
-    return Results.Text(xml, "application/xml; charset=utf-8");
+    if (IsExcluded(path))
+    {
+        await next();
+        return;
+    }
+
+    // Collapse multiple slashes
+    var normalized = path;
+    while (normalized.Contains("//", StringComparison.Ordinal))
+        normalized = normalized.Replace("//", "/", StringComparison.Ordinal);
+
+    // Lowercase
+    normalized = normalized.ToLowerInvariant();
+
+    // Canonicalize /home -> /
+    if (normalized.Equals("/home", StringComparison.Ordinal))
+        normalized = "/";
+
+    // Remove trailing slash except root
+    if (normalized.Length > 1 && normalized.EndsWith("/", StringComparison.Ordinal))
+        normalized = normalized.TrimEnd('/');
+
+    // Redirect if changed
+    if (!string.Equals(path, normalized, StringComparison.Ordinal))
+    {
+        var qs = ctx.Request.QueryString.HasValue ? ctx.Request.QueryString.Value : "";
+        var location = normalized + qs;
+
+        ctx.Response.StatusCode = StatusCodes.Status301MovedPermanently;
+        ctx.Response.Headers.Location = location;
+        return;
+    }
+
+    await next();
 });
 
+
+app.UseStatusCodePagesWithReExecute("/Admin/Errors/{0}");
+app.MapRazorPages();
 
 // IMPORTANT: fallback to CMS page renderer
 app.MapFallbackToPage("/{slug?}", "/[slug]");
