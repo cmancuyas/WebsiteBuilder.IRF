@@ -3,12 +3,13 @@
 @{
     var isEditable = (ViewData["IsEditable"] as bool?) ?? false;
 
-    // ✅ PageRevisionSection row
+    // ✅ PageRevisionSection row id (what you must use for edit/reorder/delete)
     var revisionSectionId = Model.RevisionSectionId;
 
-    // (Optional) for display/debug
+    // ✅ Section template/type id (optional: for display/debug)
     var sectionTypeId = Model.Section.SectionTypeId;
 
+    // ✅ Stable unique collapse id per revision-section row
     var collapseId = $"sec-editor-{revisionSectionId}";
     var editorPath = Model.EditorPartialPath;
 }

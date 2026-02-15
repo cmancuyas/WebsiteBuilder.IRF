@@ -212,15 +212,15 @@ app.UseStaticFiles();
 
 app.UseRouting();
 
-// Tenant resolution must be BEFORE auth (good)
+// ✅ Tenant resolution must be BEFORE auth
+// 1) Admin tenant resolver (cookie-based, /Admin only)
+app.UseMiddleware<AdminTenantResolutionMiddleware>();
+
+// 2) Public tenant resolver (host-based, non-admin)
 app.UseMiddleware<TenantResolutionMiddleware>();
 
 app.UseAuthentication();
 app.UseAuthorization();
-
-app.UseMiddleware<TenantResolutionMiddleware>();
-// ✅ Admin tenant resolver (cookie-based, /Admin only)
-app.UseMiddleware<AdminTenantResolutionMiddleware>();
 
 
 static string ComputeETag(string content)
@@ -448,6 +448,7 @@ app.Use(async (ctx, next) =>
 
 
 app.UseStatusCodePagesWithReExecute("/Admin/Errors/{0}");
+
 app.MapRazorPages();
 
 // IMPORTANT: fallback to CMS page renderer

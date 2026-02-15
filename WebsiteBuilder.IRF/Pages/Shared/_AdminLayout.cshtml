@@ -152,10 +152,17 @@
                     @* TenantContext is often bypassed in /Admin; keep optional *@
                     @if (TenantContext.IsResolved)
                     {
-                        <span class="badge text-bg-light border fw-normal ms-2">
-                            @TenantContext.Host
+                        <span class="badge text-bg-light border fw-normal ms-2" title="Active tenant">
+                            @TenantContext.Slug
                         </span>
                     }
+                    else
+                    {
+                        <span class="badge text-bg-warning border fw-normal ms-2" title="No tenant selected">
+                            No tenant
+                        </span>
+                    }
+
                 </a>
 
                 <button class="navbar-toggler" type="button"
@@ -227,17 +234,23 @@
 
                     <hr class="my-3" />
 
-                    <div class="small text-muted">
+                    <div class="small">
                         @if (TenantContext.IsResolved)
                         {
-                            <div><span class="fw-semibold">Tenant:</span> @TenantContext.Slug</div>
-                            <div><span class="fw-semibold">Host:</span> @TenantContext.Host</div>
+                            <a class="nav-link px-0" asp-page="/Admin/Tenants/Switch"
+                               asp-route-returnUrl="@(Context.Request.Path + Context.Request.QueryString)">
+                                Switch tenant
+                            </a>
                         }
                         else
                         {
-                            <div>Tenant not resolved in Admin (expected if bypassed).</div>
+                            <a class="nav-link px-0 text-warning" asp-page="/Admin/Tenants/Switch"
+                               asp-route-returnUrl="@(Context.Request.Path + Context.Request.QueryString)">
+                                Select tenant
+                            </a>
                         }
                     </div>
+
 
                 </div>
             </aside>

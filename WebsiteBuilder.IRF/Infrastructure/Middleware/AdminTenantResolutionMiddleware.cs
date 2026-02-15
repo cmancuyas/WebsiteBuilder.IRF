@@ -19,19 +19,21 @@ public sealed class AdminTenantResolutionMiddleware
         ITenantContext tenant,
         DataContext db)
     {
-        var ct = context.RequestAborted; // ✅ correct cancellation token for middleware
+        var ct = context.RequestAborted;
 
-        // Only apply to /Admin routes (but NOT login/logout pages)
         var path = context.Request.Path.Value ?? string.Empty;
 
+        // Only apply to /Admin routes (but NOT login/logout/errors/switch)
         if (!path.StartsWith("/Admin", StringComparison.OrdinalIgnoreCase) ||
-            path.StartsWith("/Admin/Account", StringComparison.OrdinalIgnoreCase))
+            path.StartsWith("/Admin/Account", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWith("/Admin/Errors", StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWith("/Admin/Tenants/Switch", StringComparison.OrdinalIgnoreCase))
         {
             await _next(context);
             return;
         }
 
-        // If already resolved (e.g., you set it elsewhere), continue
+
         if (tenant.IsResolved)
         {
             await _next(context);
@@ -64,7 +66,6 @@ public sealed class AdminTenantResolutionMiddleware
 
         if (t is null)
         {
-            // Bad cookie: delete it and redirect to Switch
             context.Response.Cookies.Delete(TenantCookieName);
             var returnUrl = context.Request.Path + context.Request.QueryString;
             context.Response.Redirect($"/Admin/Tenants/Switch?returnUrl={Uri.EscapeDataString(returnUrl)}");
@@ -80,10 +81,16 @@ public sealed class AdminTenantResolutionMiddleware
             .Select(d => d.Host)
             .FirstOrDefaultAsync(ct);
 
-        // ✅ Populate your existing ITenantContext implementation
         tenant.TenantId = t.Id;
         tenant.Slug = t.Slug;
-        tenant.Host = primaryHost ?? t.Slug;
+        tenant.Host = !string.IsNullOrWhiteSpace(primaryHost)
+            ? primaryHost.Trim().ToLowerInvariant()
+            : (context.Request.Host.Host?.Trim().ToLowerInvariant() ?? t.Slug);
+
+
+        // (Optional but useful for downstream debugging)
+        context.Items["TenantId"] = tenant.TenantId;
+        context.Items["TenantSlug"] = tenant.Slug;
 
         await _next(context);
     }

@@ -1,17 +1,19 @@
 ﻿using WebsiteBuilder.Models;
 
-namespace WebsiteBuilder.IRF.ViewModels.Admin.Pages
+namespace WebsiteBuilder.IRF.ViewModels.Admin.Pages;
+
+public sealed class SectionRowRenderVm
 {
-    public sealed class SectionRowRenderVm
-    {
-        public int Id { get; init; }
-        public string Title { get; init; } = "";
-        public string CollapseId { get; init; } = "";
-        public string EditorPartialPath { get; init; } = "";
-        public bool IsEditable { get; init; }
+    // This must be PageRevisionSection.Id
+    public int RevisionSectionId { get; init; }
 
-        // Optional but useful
-        public PageRevisionSection Section { get; init; } = default!;
-    }
+    // Template/type id can be useful too (optional)
+    public int SectionTypeId { get; init; }
 
+    public string Title { get; init; } = "";
+    public string CollapseId { get; init; } = "";
+    public string EditorPartialPath { get; init; } = "";
+    public bool IsEditable { get; init; }
+
+    public PageRevisionSection Section { get; init; } = default!;
 }

@@ -31,49 +31,17 @@ namespace WebsiteBuilder.IRF.Infrastructure.Middleware
             ITenantResolver tenantResolver,
             ITenantContext tenantContext)
         {
+            // ✅ Admin handled by AdminTenantResolutionMiddleware
+            if (context.Request.Path.StartsWithSegments("/Admin", StringComparison.OrdinalIgnoreCase))
+            {
+                await _next(context);
+                return;
+            }
+
             var path = context.Request.Path.Value ?? string.Empty;
-            var isAdminRoute = context.Request.Path.StartsWithSegments("/Admin", StringComparison.OrdinalIgnoreCase);
 
             // ✅ Always use host WITHOUT port
             var host = context.Request.Host.Host?.Trim().ToLowerInvariant() ?? string.Empty;
-
-            // =========================
-            // 0) Admin: resolve tenant via cookie (NOT by host)
-            // =========================
-            if (isAdminRoute)
-            {
-                // Platform admin host: do NOT resolve tenant at all
-                if (IsPlatformAdminHost(host, _config))
-                {
-                    await _next(context);
-                    return;
-                }
-
-                // Resolve tenant from cookie if present
-                if (context.Request.Cookies.TryGetValue(AdminTenantCookie, out var v) &&
-                    Guid.TryParse(v, out var tenantId) &&
-                    tenantId != Guid.Empty)
-                {
-                    var resolved = await tenantResolver.ResolveByIdAsync(tenantId, context.RequestAborted);
-
-                    if (resolved is not null)
-                    {
-                        SetTenantContext(context, tenantContext, resolved, hostOverride: resolved.Host);
-                        await _next(context);
-                        return; // ✅ critical: do not fall through to public resolution
-                    }
-
-                    // Cookie exists but tenant not found -> treat as "not selected"
-                    _logger.LogWarning(
-                        "Admin tenant cookie points to missing tenant | tenantId={TenantId} path={Path}",
-                        tenantId, path);
-                }
-
-                // No cookie (or invalid / missing tenant): proceed unresolved;
-                // Admin guard (separate middleware/filter) should redirect to /Admin/Tenants/Switch.
-                await _next(context);
-                return; // ✅ critical: do not fall through to public resolution
-            }
 
             // =========================
             // 1) Static/system bypass (public only)
@@ -94,9 +62,7 @@ namespace WebsiteBuilder.IRF.Infrastructure.Middleware
             }
 
             // =========================
-            // 3) HYBRID: detect “platform admin host”
-            //    If it’s the platform host but NOT /Admin (public marketing pages),
-            //    do not resolve tenant.
+            // 3) Platform admin host (marketing/root) bypass
             // =========================
             if (IsPlatformAdminHost(host, _config))
             {
@@ -147,6 +113,7 @@ namespace WebsiteBuilder.IRF.Infrastructure.Middleware
             SetTenantContext(context, tenantContext, resolvedTenant, hostOverride: host);
             await _next(context);
         }
+
 
         private static void SetTenantContext(
             HttpContext context,
