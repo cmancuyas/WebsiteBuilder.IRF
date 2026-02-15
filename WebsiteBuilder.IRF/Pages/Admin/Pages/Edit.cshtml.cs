@@ -1,12 +1,15 @@
-﻿using System.ComponentModel.DataAnnotations;
-using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
+using System.ComponentModel.DataAnnotations;
 using WebsiteBuilder.IRF.DataAccess;
 using WebsiteBuilder.IRF.Infrastructure.Pages;
+using WebsiteBuilder.IRF.Infrastructure.Sections;
 using WebsiteBuilder.IRF.Infrastructure.Tenancy;
+using WebsiteBuilder.IRF.ViewModels.Admin.Pages;
 using WebsiteBuilder.Models;
 using WebsiteBuilder.Models.Constants;
+using static System.Collections.Specialized.BitVector32;
 
 namespace WebsiteBuilder.IRF.Pages.Admin.Pages;
 
@@ -14,11 +17,13 @@ public sealed class EditModel : PageModel
 {
     private readonly DataContext _db;
     private readonly ITenantContext _tenant;
+    private readonly ISectionRegistry _sections;
 
-    public EditModel(DataContext db, ITenantContext tenant)
+    public EditModel(DataContext db, ITenantContext tenant, ISectionRegistry sections)
     {
         _db = db;
         _tenant = tenant;
+        _sections = sections;
     }
 
     [BindProperty(SupportsGet = true)]
@@ -38,7 +43,7 @@ public sealed class EditModel : PageModel
     public RevisionInfo? PublishedInfo { get; private set; }
 
     public sealed record RevisionInfo(int Id, int VersionNumber, string Slug, DateTime? PublishedAt);
-
+    public List<SectionRowRenderVm> SectionRows { get; private set; } = new();
     public sealed class InputModel
     {
         [Required, MaxLength(200)]
@@ -61,14 +66,7 @@ public sealed class EditModel : PageModel
 
     [BindProperty]
     public InputModel Input { get; set; } = new();
-    public sealed record SectionRowRenderVm(
-    PageRevisionSection Section,
-    string Title,
-    string EditorPartialPath)
-    {
-        // ✅ This is the identifier you must use for delete/reorder/edit
-        public int RevisionSectionId => Section.Id;
-    }
+
 
     public async Task<IActionResult> OnGetAsync(CancellationToken ct)
     {
@@ -286,15 +284,18 @@ public sealed class EditModel : PageModel
             .AsNoTracking()
             .Include(p => p.DraftRevision).ThenInclude(r => r!.Sections)
             .Include(p => p.PublishedRevision)
-            .FirstOrDefaultAsync(p => p.Id == Id && p.TenantId == _tenant.TenantId && !p.IsDeleted, ct);
+            .FirstOrDefaultAsync(p =>
+                p.Id == Id &&
+                p.TenantId == _tenant.TenantId &&
+                !p.IsDeleted, ct);
 
-        if (page is null) return NotFound();
+        if (page is null)
+            return NotFound();
 
         PageTitle = page.Title;
         PageSlug = page.Slug;
 
         HasDraft = page.DraftRevisionId != null;
-
         SectionCount = page.DraftRevision?.Sections.Count ?? 0;
 
         if (page.PublishedRevisionId is not null && page.PublishedRevision is not null)
@@ -307,7 +308,7 @@ public sealed class EditModel : PageModel
             );
         }
 
-        // bind form from draft if available; else from page
+        // Bind form from draft if available; else from page
         var src = page.DraftRevision ?? new PageRevision
         {
             Title = page.Title,
@@ -327,10 +328,77 @@ public sealed class EditModel : PageModel
             ShowInNavigation = page.ShowInNavigation
         };
 
-        // show tempdata banner
+        // Build section rows for the editor
+        SectionRows = new List<SectionRowRenderVm>();
+
+        var draftSections = page.DraftRevision?.Sections?
+            .OrderBy(s => s.SortOrder)
+            .ThenBy(s => s.Id)
+            .ToList();
+
+        if (draftSections is not null && draftSections.Count > 0)
+        {
+            // Load SectionTypeId -> SectionType.Key (your entity uses Key)
+            var typeIds = draftSections.Select(s => s.SectionTypeId).Distinct().ToList();
+
+            var keyById = await _db.Set<SectionType>()
+                .AsNoTracking()
+                .Where(st => typeIds.Contains(st.Id))
+                .Select(st => new { st.Id, st.Key })
+                .ToDictionaryAsync(x => x.Id, x => x.Key, ct);
+
+            foreach (var s in draftSections)
+            {
+                keyById.TryGetValue(s.SectionTypeId, out var typeKey);
+                typeKey = typeKey?.Trim();
+
+                // Defaults if registry doesn't recognize this key
+                var title = !string.IsNullOrWhiteSpace(typeKey)
+                    ? typeKey
+                    : $"Section {s.SortOrder + 1}";
+
+                var editorPartialPath = "Shared/Sections/_Unknown";
+
+                if (!string.IsNullOrWhiteSpace(typeKey) && _sections.TryGet(typeKey, out var def))
+                {
+                    title = def.DisplayName;
+                    editorPartialPath = def.PartialViewPath;
+                }
+
+                SectionRows.Add(new SectionRowRenderVm
+                {
+                    RevisionSectionId = s.Id,
+                    SectionTypeId = s.SectionTypeId,
+                    Title = title,
+                    CollapseId = $"sec-editor-{s.Id}",
+                    EditorPartialPath = editorPartialPath,
+                    IsEditable = HasDraft,
+                    Section = s
+                });
+            }
+        }
+
+        // TempData banners
         if (TempData.TryGetValue("Success", out var ok)) Banner = ok?.ToString();
         if (TempData.TryGetValue("Error", out var err)) Banner = err?.ToString();
 
         return Page();
     }
+
+
+
+    // ✅ TEMP: map SectionTypeId -> editor partial path
+    // Replace this with your SectionRegistry later if you already have one.
+    private static string ResolveEditorPartialPath(int sectionTypeId)
+    {
+        // Example mapping (adjust to your real partial locations)
+        return sectionTypeId switch
+        {
+            // 1 => "/Pages/Admin/Sections/_HeroEditor",
+            // 2 => "/Pages/Admin/Sections/_TextEditor",
+            // 3 => "/Pages/Admin/Sections/_GalleryEditor",
+            _ => "/Pages/Admin/Sections/_UnknownEditor"
+        };
+    }
+
 }
