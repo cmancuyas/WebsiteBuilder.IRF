@@ -14,17 +14,25 @@ namespace WebsiteBuilder.IRF.Pages
         private readonly DataContext _db;
         private readonly ITenantContext _tenant;
         private readonly IWebHostEnvironment _env;
+        private readonly IConfiguration _cfg;
+        private readonly ITenantUrlResolver _url;
 
-        public _slug_Model(DataContext db, ITenantContext tenant, IWebHostEnvironment env)
+        public _slug_Model(
+            DataContext db,
+            ITenantContext tenant,
+            IWebHostEnvironment env,
+            IConfiguration cfg,
+            ITenantUrlResolver url)
         {
             _db = db;
             _tenant = tenant;
             _env = env;
+            _cfg = cfg;
+            _url = url;
         }
 
         public WebsiteBuilder.Models.Page? PageEntity { get; private set; }
         public bool IsPreview { get; private set; }
-
         public List<RenderSectionDto> RenderSections { get; private set; } = new();
 
         public sealed class RenderSectionDto
@@ -35,7 +43,7 @@ namespace WebsiteBuilder.IRF.Pages
             public string? SettingsJson { get; init; }
         }
 
-        // Catch-all route param: /{**slug}
+        // Route param: /{slug?}
         public async Task<IActionResult> OnGetAsync(string? slug)
         {
             if (!_tenant.IsResolved)
@@ -44,21 +52,32 @@ namespace WebsiteBuilder.IRF.Pages
             var previewRequested = IsPreviewRequested();
             IsPreview = previewRequested && UserCanPreview();
 
-            // Hard stop: never allow anonymous preview (unless Dev is allowed by UserCanPreview)
+            // Never allow unauthorized preview (hide existence)
             if (previewRequested && !IsPreview)
-                return NotFound(); // or Forbid/Unauthorized if you prefer
+                return NotFound();
 
-            // SEO protection ONLY when preview is actually enabled
             if (IsPreview)
             {
                 Response.Headers["X-Robots-Tag"] = "noindex, nofollow, noarchive, nosnippet";
                 ApplyNoCacheHeaders();
+
+                // Layout flags
+                ViewData["RobotsNoIndex"] = true;
+                ViewData["CanonicalUrl"] = null;
             }
 
             var normalizedSlug = NormalizeSlug(slug);
             if (string.IsNullOrWhiteSpace(normalizedSlug))
                 normalizedSlug = "home";
 
+            // Canonicalize home: redirect /home -> /
+            if (normalizedSlug == "home" &&
+                HttpContext.Request.Path.Equals("/home", StringComparison.OrdinalIgnoreCase))
+            {
+                return Redirect("/");
+            }
+
+            // Find page
             var pageQuery = _db.Pages
                 .AsNoTracking()
                 .Where(p =>
@@ -77,60 +96,77 @@ namespace WebsiteBuilder.IRF.Pages
             if (PageEntity is null)
                 return NotFound();
 
+            // ============================
+            // PREVIEW MODE
+            // ============================
             if (IsPreview)
             {
                 if (PageEntity.DraftRevisionId == null)
                     return NotFound();
 
-                var draftSections = await _db.PageRevisionSections
-                    .AsNoTracking()
-                    .Include(s => s.SectionType)
-                    .Where(s =>
-                        s.TenantId == _tenant.TenantId &&
-                        s.PageRevisionId == PageEntity.DraftRevisionId.Value &&
-                        s.IsActive &&
-                        !s.IsDeleted)
-                    .OrderBy(s => s.SortOrder)
-                    .ThenBy(s => s.Id)
-                    .ToListAsync(HttpContext.RequestAborted);
-
-                RenderSections = draftSections.Select(s => new RenderSectionDto
-                {
-                    SectionTypeId = s.SectionTypeId,
-                    SectionTypeName = s.SectionType?.Name,
-                    SortOrder = s.SortOrder,
-                    SettingsJson = s.SettingsJson
-                }).ToList();
-
-                ApplyNoCacheHeaders();
+                RenderSections = await LoadSectionsAsync(PageEntity.DraftRevisionId.Value);
                 return Page();
             }
 
-
+            // ============================
+            // PUBLIC / PUBLISHED MODE
+            // ============================
             if (PageEntity.PublishedRevisionId == null)
                 return NotFound();
 
-            var publishedSections = await _db.PageRevisionSections
+            // Load published revision (source of canonical slug)
+            var revision = await _db.PageRevisions
+                .AsNoTracking()
+                .FirstOrDefaultAsync(r =>
+                    r.Id == PageEntity.PublishedRevisionId.Value &&
+                    r.TenantId == _tenant.TenantId,
+                    HttpContext.RequestAborted);
+
+            if (revision == null)
+                return NotFound();
+
+            RenderSections = await LoadSectionsAsync(PageEntity.PublishedRevisionId.Value);
+
+            // ✅ Canonical URL (published snapshot only)
+            var (scheme, host) = await _url.GetCanonicalAsync(HttpContext.RequestAborted);
+
+            // Published snapshot slug is the canonical source of truth
+            var publishedSlug = NormalizeSlug(revision.Slug);
+
+            // Map "home" to "/"
+            var canonicalPath = publishedSlug == "home"
+                ? "/"
+                : "/" + publishedSlug;
+
+            ViewData["CanonicalUrl"] = $"{scheme}://{host}{canonicalPath}";
+            ViewData["RobotsNoIndex"] = false;
+
+
+
+            return Page();
+        }
+
+        private async Task<List<RenderSectionDto>> LoadSectionsAsync(int pageRevisionId)
+        {
+            var sections = await _db.PageRevisionSections
                 .AsNoTracking()
                 .Include(s => s.SectionType)
                 .Where(s =>
                     s.TenantId == _tenant.TenantId &&
-                    s.PageRevisionId == PageEntity.PublishedRevisionId.Value &&
+                    s.PageRevisionId == pageRevisionId &&
                     s.IsActive &&
                     !s.IsDeleted)
                 .OrderBy(s => s.SortOrder)
                 .ThenBy(s => s.Id)
                 .ToListAsync(HttpContext.RequestAborted);
 
-            RenderSections = publishedSections.Select(s => new RenderSectionDto
+            return sections.Select(s => new RenderSectionDto
             {
                 SectionTypeId = s.SectionTypeId,
                 SectionTypeName = s.SectionType?.Name,
                 SortOrder = s.SortOrder,
                 SettingsJson = s.SettingsJson
             }).ToList();
-
-            return Page();
         }
 
         private bool IsPreviewRequested()
@@ -145,8 +181,7 @@ namespace WebsiteBuilder.IRF.Pages
 
         private bool UserCanPreview()
         {
-            // Temporary: allow preview without login ONLY in Development
-            if (_env.IsDevelopment())
+            if (_env.IsDevelopment() && _cfg.GetValue<bool>("Preview:AllowAnonymousInDev"))
                 return true;
 
             if (User.Identity?.IsAuthenticated != true)
@@ -161,7 +196,6 @@ namespace WebsiteBuilder.IRF.Pages
             return false;
         }
 
-
         private void ApplyNoCacheHeaders()
         {
             Response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0";
@@ -172,10 +206,13 @@ namespace WebsiteBuilder.IRF.Pages
         private static string NormalizeSlug(string? slug)
         {
             slug ??= string.Empty;
-            slug = slug.Trim().Trim('/').ToLowerInvariant();
-            slug = Regex.Replace(slug, @"\s+", "-");
-            slug = Regex.Replace(slug, @"-+", "-");
-            return slug.Trim('-');
+
+            var s = slug.Trim().Trim('/').ToLowerInvariant();
+            s = Regex.Replace(s, @"[\s_]+", "-");
+            s = Regex.Replace(s, @"[^a-z0-9\-]+", string.Empty);
+            s = Regex.Replace(s, @"-+", "-");
+
+            return s.Trim('-');
         }
     }
 }

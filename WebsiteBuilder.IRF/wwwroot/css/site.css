@@ -29,3 +29,164 @@ body {
 .form-floating > .form-control-plaintext:focus::placeholder, .form-floating > .form-control:focus::placeholder {
   text-align: start;
 }
+/* =========================
+   Navigation Editor Animations
+   ========================= */
+
+@keyframes navPulse {
+    0% {
+        box-shadow: 0 0 0 0 rgba(255,193,7,.65);
+    }
+
+    70% {
+        box-shadow: 0 0 0 8px rgba(255,193,7,0);
+    }
+
+    100% {
+        box-shadow: 0 0 0 0 rgba(255,193,7,0);
+    }
+}
+
+@keyframes navPulseWarning {
+    0% {
+        box-shadow: 0 0 0 0 rgba(255,193,7,.65);
+    }
+
+    70% {
+        box-shadow: 0 0 0 8px rgba(255,193,7,0);
+    }
+
+    100% {
+        box-shadow: 0 0 0 0 rgba(255,193,7,0);
+    }
+}
+
+@keyframes navPulseDanger {
+    0% {
+        box-shadow: 0 0 0 0 rgba(220,53,69,.55);
+    }
+
+    70% {
+        box-shadow: 0 0 0 8px rgba(220,53,69,0);
+    }
+
+    100% {
+        box-shadow: 0 0 0 0 rgba(220,53,69,0);
+    }
+}
+
+@keyframes navPulseInfo {
+    0% {
+        box-shadow: 0 0 0 0 rgba(13,110,253,.45);
+    }
+
+    70% {
+        box-shadow: 0 0 0 8px rgba(13,110,253,0);
+    }
+
+    100% {
+        box-shadow: 0 0 0 0 rgba(13,110,253,0);
+    }
+}
+
+@keyframes caretBlink {
+    0%, 100% {
+        transform: scale(1);
+        opacity: 1;
+    }
+
+    35% {
+        transform: scale(1.18);
+        opacity: .65;
+    }
+
+    70% {
+        transform: scale(1.05);
+        opacity: .9;
+    }
+}
+/* =========================
+   Navigation Editor (Admin) UI rules
+   ========================= */
+
+/* badges / row */
+.node-visibility-badge {
+    font-weight: 600;
+}
+
+.nav-tree .node-row {
+    background: #fff;
+}
+
+.nav-node {
+    list-style: none;
+}
+
+.drag-handle {
+    width: 20px;
+    text-align: center;
+}
+
+.toggle-children {
+    width: 28px;
+    text-align: center;
+}
+
+/* deleted state */
+.nav-node.is-deleted > .node-row {
+    opacity: .55;
+    filter: grayscale(0.15);
+}
+
+.nav-node.is-deleted .drag-handle,
+.nav-node.is-deleted .toggle-children {
+    pointer-events: none;
+    opacity: .4;
+}
+
+.nav-node.deleted-hidden {
+    display: none !important;
+}
+
+/* pulses (relies on keyframes you already added) */
+.nav-node.pulse-warning > .node-row {
+    animation: navPulseWarning 1.2s ease-out 1;
+    border-color: #ffc107 !important;
+}
+
+.nav-node.pulse-danger > .node-row {
+    animation: navPulseDanger 1.2s ease-out 1;
+    border-color: #dc3545 !important;
+}
+
+.nav-node.pulse-info > .node-row {
+    animation: navPulseInfo 1.2s ease-out 1;
+    border-color: #0d6efd !important;
+}
+
+/* caret auto-expand blink */
+.toggle-children.auto-expand-blink {
+    animation: caretBlink 900ms ease-in-out 2;
+    color: #dc3545 !important;
+    font-weight: 700;
+}
+
+.auto-expand-pill {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 2px 6px;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    line-height: 1.2;
+    background: rgba(220,53,69,.12);
+    color: #dc3545;
+    border: 1px solid rgba(220,53,69,.35);
+}
+
+.node-page-warn-badge {
+    cursor: pointer;
+}
+.navbar .nav-link.disabled,
+.dropdown-menu .dropdown-item.disabled {
+    cursor: not-allowed;
+}

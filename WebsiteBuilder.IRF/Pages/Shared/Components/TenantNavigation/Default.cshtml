@@ -1,37 +1,231 @@
 ﻿@using WebsiteBuilder.IRF.Infrastructure.Tenancy
-@model IReadOnlyList<NavItem>
+@model WebsiteBuilder.IRF.Infrastructure.Tenancy.TenantNavigationVm
 
-<nav class="navbar navbar-expand-sm navbar-light bg-white border-bottom box-shadow mb-3">
-    <div class="container">
+@{
+    var idx = 0;
+    var variant = (Model.Variant ?? "header").ToLowerInvariant();
 
-        <a class="navbar-brand" href="/">
-            WebsiteBuilder.IRF
-        </a>
+    static bool IsDead(string? url)
+        => string.IsNullOrWhiteSpace(url) || url.Trim() == "#";
 
-        <button class="navbar-toggler" type="button"
-                data-bs-toggle="collapse"
-                data-bs-target="#mainNavbar"
-                aria-controls="mainNavbar"
-                aria-expanded="false"
-                aria-label="Toggle navigation">
-            <span class="navbar-toggler-icon"></span>
-        </button>
+    static string SafeHref(string? url)
+        => string.IsNullOrWhiteSpace(url) ? "#" : url!;
 
-        <div class="collapse navbar-collapse d-sm-inline-flex justify-content-between" id="mainNavbar">
-            <ul class="navbar-nav flex-grow-1">
-                @foreach (var item in Model)
+    static string? TargetAttr(bool openInNewTab) => openInNewTab ? "_blank" : null;
+    static string? RelAttr(bool openInNewTab) => openInNewTab ? "noopener noreferrer" : null;
+
+    // "Renderable" for HEADER:
+    // - Keep nodes even if they are dead ONLY when they have renderable children (acts as dropdown label)
+    // - Leaf dead nodes should render as disabled (or be pruned from dropdown lists)
+    static bool HasRenderableDescendant(TenantNavigationVm.Node node)
+        => node.Children.Any(c => !IsDead(c.Url) || HasRenderableDescendant(c));
+
+    // "Renderable" for FOOTER:
+    // - Skip dead links entirely, and also skip parent nodes that have no renderable (non-dead) descendants.
+    static bool IsRenderableInFooter(TenantNavigationVm.Node node)
+    {
+        if (!IsDead(node.Url)) return true;
+        return node.Children.Any(IsRenderableInFooter);
+    }
+
+    // "Renderable" for HEADER:
+    // - Leaf nodes: render if not dead (normal) OR dead (disabled) [your choice; we keep disabled for top-level only]
+    // - Dropdown: render if it has any renderable children/grandchildren
+    static bool IsRenderableInHeader(TenantNavigationVm.Node node)
+    {
+        if (!IsDead(node.Url)) return true;
+        return HasRenderableDescendant(node);
+    }
+
+    // =========================
+    // FOOTER RENDERER (recursive)
+    // =========================
+    void RenderFooterNode(TenantNavigationVm.Node node)
+    {
+        // Footer skips dead links entirely (clean footer)
+        if (!IsRenderableInFooter(node)) return;
+        if (IsDead(node.Url)) return; // strict: no dead links in footer
+
+        var isActive = node.IsActive || node.IsAncestorOfActive;
+
+        <li class="mb-1">
+            <a class="text-decoration-none @(isActive ? "fw-semibold" : "")"
+               href="@SafeHref(node.Url)"
+               target="@TargetAttr(node.OpenInNewTab)"
+               rel="@RelAttr(node.OpenInNewTab)"
+               @(node.IsActive ? "aria-current=\"page\"" : null)>
+                @node.Title
+            </a>
+
+            @if (node.Children.Count > 0)
+            {
+                var footerChildren = node.Children.Where(IsRenderableInFooter).ToList();
+                if (footerChildren.Count > 0)
                 {
-                    var isActive = Context.Request.Path.Equals(item.Url, StringComparison.OrdinalIgnoreCase);
+                    <ul class="list-unstyled ms-3 mt-1">
+                        @foreach (var child in footerChildren)
+                        {
+                            RenderFooterNode(child);
+                        }
+                    </ul>
+                }
+            }
+        </li>
+    }
 
+    // ====================================
+    // HEADER DROPDOWN ITEMS (safe, flat)
+    // - Skips dead leaf nodes ("#")
+    // - Keeps group headers even if parent Url is dead
+    // ====================================
+    void RenderHeaderDropdownItems(IReadOnlyList<TenantNavigationVm.Node> children)
+    {
+        foreach (var child in children)
+        {
+            // If child has children, it becomes a "group header" + grandchildren list.
+            if (child.Children.Count > 0)
+            {
+                // Only render this group if it has at least one non-dead grandchild (or deeper)
+                var grandChildren = child.Children
+                    .Where(c => !IsDead(c.Url))
+                    .ToList();
+
+                if (grandChildren.Count == 0)
+                    continue;
+
+                <li>
+                    <h6 class="dropdown-header @(child.IsActive || child.IsAncestorOfActive ? "text-primary" : "")">
+                        @child.Title
+                    </h6>
+                </li>
+
+                foreach (var gc in grandChildren)
+                {
+                    <li>
+                        <a class="dropdown-item @(gc.IsActive ? "active" : "")"
+                           href="@SafeHref(gc.Url)"
+                           target="@TargetAttr(gc.OpenInNewTab)"
+                           rel="@RelAttr(gc.OpenInNewTab)"
+                           @(gc.IsActive ? "aria-current=\"page\"" : null)>
+                            — @gc.Title
+                        </a>
+                    </li>
+                }
+
+                <li><hr class="dropdown-divider" /></li>
+            }
+            else
+            {
+                // Leaf item inside dropdown: skip dead links
+                if (IsDead(child.Url))
+                    continue;
+
+                <li>
+                    <a class="dropdown-item @(child.IsActive ? "active" : "")"
+                       href="@SafeHref(child.Url)"
+                       target="@TargetAttr(child.OpenInNewTab)"
+                       rel="@RelAttr(child.OpenInNewTab)"
+                       @(child.IsActive ? "aria-current=\"page\"" : null)>
+                        @child.Title
+                    </a>
+                </li>
+            }
+        }
+    }
+}
+
+@* ======================
+   FOOTER NAVIGATION
+   ====================== *@
+@if (variant == "footer")
+{
+    <nav aria-label="Footer navigation">
+        <ul class="list-unstyled mb-0">
+            @foreach (var item in Model.Items)
+            {
+                RenderFooterNode(item);
+            }
+        </ul>
+    </nav>
+}
+else
+{
+    @* ======================
+   HEADER NAVIGATION
+   ====================== *@
+    <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+        @foreach (var item in Model.Items)
+        {
+            // Header: prune fully-dead branches to avoid empty dropdowns
+            if (!IsRenderableInHeader(item))
+                continue;
+
+            // Determine children that are actually renderable in dropdown
+            var headerChildren = item.Children
+            .Where(IsRenderableInHeader)
+            .ToList();
+
+            var hasChildren = headerChildren.Count > 0;
+            var isActive = item.IsActive || item.IsAncestorOfActive;
+
+            if (!hasChildren)
+            {
+                // Leaf header item:
+                // - If dead => render disabled (visible but not clickable)
+                if (IsDead(item.Url))
+                {
                     <li class="nav-item">
-                        <a class="nav-link text-dark @(isActive ? "active" : "")"
-                           href="@item.Url">
+                        <a class="nav-link text-dark disabled"
+                           href="#"
+                           tabindex="-1"
+                           aria-disabled="true">
                             @item.Title
                         </a>
                     </li>
                 }
-            </ul>
-        </div>
+                else
+                {
+                    <li class="nav-item">
+                        <a class="nav-link text-dark @(isActive ? "active" : "")"
+                           href="@SafeHref(item.Url)"
+                           target="@TargetAttr(item.OpenInNewTab)"
+                           rel="@RelAttr(item.OpenInNewTab)"
+                           @(item.IsActive ? "aria-current=\"page\"" : null)>
+                            @item.Title
+                        </a>
+                    </li>
+                }
+            }
+            else
+            {
+                // Dropdown: ensure dropdown menu is not empty after pruning dead nodes
+                var hasAnyDropdownLink =
+                headerChildren.Any(c => !IsDead(c.Url)) ||
+                headerChildren.Any(c => c.Children.Any(gc => !IsDead(gc.Url)));
 
-    </div>
-</nav>
+                if (!hasAnyDropdownLink)
+                    continue;
+
+                var ddId = $"tenant-nav-dd-{idx++}";
+                var menuShow = isActive ? "show" : ""; // optional: keep dropdown open if child active
+
+                <li class="nav-item dropdown">
+                    <a class="nav-link dropdown-toggle text-dark @(isActive ? "active" : "")"
+                       href="#"
+                       id="@ddId"
+                       role="button"
+                       data-bs-toggle="dropdown"
+                       aria-expanded="false">
+                        @item.Title
+                    </a>
+
+                    <ul class="dropdown-menu @menuShow" aria-labelledby="@ddId">
+                        @{
+                            RenderHeaderDropdownItems(headerChildren);
+                        }
+                    </ul>
+                </li>
+            }
+        }
+    </ul>
+}

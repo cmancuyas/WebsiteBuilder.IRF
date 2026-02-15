@@ -1,5 +1,6 @@
 ﻿using System.Text.RegularExpressions;
 using WebsiteBuilder.IRF.DataAccess;
+using WebsiteBuilder.IRF.Infrastructure.Tenancy;
 using WebsiteBuilder.Models;
 
 namespace WebsiteBuilder.IRF.Infrastructure.Media;
@@ -10,10 +11,12 @@ public sealed class DbMediaAlertNotifier : IMediaAlertNotifier
         new(@"(?:^|[,\s])RunId=(\d+)(?:$|[,\s])", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private readonly DataContext _db;
+    private readonly ITenantContext _tenant;
 
-    public DbMediaAlertNotifier(DataContext db)
+    public DbMediaAlertNotifier(DataContext db, ITenantContext tenant)
     {
         _db = db;
+        _tenant = tenant;
     }
 
     public async Task NotifyAsync(string subject, string message, CancellationToken ct)
@@ -28,7 +31,7 @@ public sealed class DbMediaAlertNotifier : IMediaAlertNotifier
         {
             // If you don’t have tenant scoping for alerts yet, you can set TenantId later.
             // For now: store Guid.Empty (or if you have tenant context available, inject it and use real tenantId).
-            TenantId = Guid.Empty,
+            TenantId = _tenant.TenantId,
 
             Subject = (subject ?? string.Empty).Trim(),
             Message = (message ?? string.Empty).Trim(),

@@ -1,0 +1,89 @@
+﻿@using WebsiteBuilder.IRF.Infrastructure.Tenancy
+@inject ITenantContext TenantContext
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    @{
+        var metaTitle = (string?)ViewData["MetaTitle"];
+        var metaDesc = (string?)ViewData["MetaDescription"];
+        var ogAssetId = ViewData["OgImageAssetId"] as int?;
+
+        // 1) Prefer canonical computed by page model (published snapshot)
+        var canonicalFromModel = ViewData["CanonicalUrl"] as string;
+
+        // 2) Fallback to request-based canonical if model didn't provide one
+        var canonicalPath = (string?)ViewData["CanonicalPath"] ?? Context.Request.Path.Value ?? "/";
+        var scheme = Context.Request.Scheme;
+        var host = Context.Request.Host.Value;
+
+        var canonicalFallback = $"{scheme}://{host}{canonicalPath}";
+        canonicalFallback = canonicalPath == "/" ? canonicalFallback.TrimEnd('/') + "/" : canonicalFallback.TrimEnd('/');
+
+        var canonicalUrl = !string.IsNullOrWhiteSpace(canonicalFromModel)
+        ? canonicalFromModel
+        : canonicalFallback;
+    }
+
+    <title>@(string.IsNullOrWhiteSpace(metaTitle) ? "Website" : metaTitle)</title>
+
+    <link rel="stylesheet" href="~/lib/bootstrap/dist/css/bootstrap.min.css" />
+    <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
+
+    @RenderSection("Head", required: false)
+
+    @if (!string.IsNullOrWhiteSpace(metaDesc))
+    {
+        <meta name="description" content="@metaDesc" />
+    }
+
+    <link rel="canonical" href="@canonicalUrl" />
+
+    <meta property="og:url" content="@canonicalUrl" />
+    <meta property="og:type" content="website" />
+
+    @if (!string.IsNullOrWhiteSpace(metaTitle))
+    {
+        <meta property="og:title" content="@metaTitle" />
+    }
+    @if (!string.IsNullOrWhiteSpace(metaDesc))
+    {
+        <meta property="og:description" content="@metaDesc" />
+    }
+
+    @if (ogAssetId.HasValue)
+    {
+        <meta property="og:image" content="@($"{scheme}://{host}/media/{ogAssetId.Value}")" />
+    }
+</head>
+
+<body>
+    <!-- Tenant header nav (public) -->
+    <partial name="_TenantHeaderNav" />
+
+    <div class="container">
+        <main role="main" class="pb-3">
+            <partial name="_TenantBreadcrumbs" />
+            @RenderBody()
+        </main>
+    </div>
+
+    <footer class="border-top footer text-muted mt-4">
+        <div class="container py-3">
+            <partial name="_TenantFooterNav" />
+            <div class="mt-2 small">
+                &copy; 2026 - WebsiteBuilder.IRF
+            </div>
+        </div>
+    </footer>
+
+    <script src="~/lib/jquery/dist/jquery.min.js"></script>
+    <script src="~/lib/bootstrap/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="~/js/site.js" asp-append-version="true"></script>
+
+    @RenderSection("Scripts", required: false)
+</body>
+</html>

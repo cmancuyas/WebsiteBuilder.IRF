@@ -1,0 +1,162 @@
+﻿@model WebsiteBuilder.IRF.ViewModels.Admin.Navigation.NavNodeVm
+
+@{
+    var children = Model.Children ?? new List<WebsiteBuilder.IRF.ViewModels.Admin.Navigation.NavNodeVm>();
+    var hasChildren = children.Count > 0;
+
+    var hasPage = Model.PageId.HasValue && Model.PageId.Value > 0;
+    var hasUrl = !string.IsNullOrWhiteSpace(Model.Url);
+
+    // Initial link type: page wins if PageId exists, else url if Url exists, else page default
+    var linkType = hasPage ? "page" : (hasUrl ? "url" : "page");
+
+    // Initial wrappers (prevents flicker before JS normalizes)
+    var pageWrapClass = linkType == "page" ? "" : "d-none";
+    var urlWrapClass = linkType == "url" ? "" : "d-none";
+
+    var pageDisabled = linkType == "url";
+    var urlDisabled = linkType == "page";
+
+    var safeUrl = urlDisabled ? "" : (Model.Url ?? "");
+    var safePageId = pageDisabled ? (int?)null : Model.PageId;
+}
+
+<li class="nav-node mb-2"
+    data-id="@Model.Id"
+    data-deleted="@(Model.IsDeleted ? "true" : "false")">
+
+    <div class="node-row border rounded p-2 bg-white">
+        <div class="d-flex align-items-start gap-2">
+
+            <div class="drag-handle text-muted"
+                 title="Drag to reorder"
+                 style="cursor: grab; user-select: none;">
+                &#x2630;
+            </div>
+
+            <button type="button"
+                    class="btn btn-sm btn-link toggle-children px-1 @(hasChildren ? "" : "d-none")"
+                    aria-label="Toggle children"
+                    style="text-decoration:none;">
+                ▼
+            </button>
+
+            <span class="badge bg-secondary sort-badge">S?</span>
+
+            @* ✅ this is the badge the JS will control *@
+            <span class="badge bg-warning text-dark d-none node-page-warn-badge" title=""></span>
+
+            <div class="flex-grow-1">
+                <div class="row g-2">
+                    <div class="col-12">
+                        <span class="badge bg-secondary node-visibility-badge" title="Visibility status">…</span>
+                    </div>
+
+                    <div class="col-12">
+                        <label class="form-label mb-1 small">Label</label>
+                        <input class="form-control form-control-sm node-label"
+                               value="@Model.Label"
+                               maxlength="200" />
+                    </div>
+
+                    <div class="col-12">
+                        <label class="form-label mb-1 small">Link Type</label>
+                        <select class="form-select form-select-sm node-linktype">
+                            @if (linkType == "page")
+                            {
+                                <option value="page" selected>Internal Page</option>
+                                <option value="url">External URL</option>
+                            }
+                            else
+                            {
+                                <option value="page">Internal Page</option>
+                                <option value="url" selected>External URL</option>
+                            }
+                        </select>
+                    </div>
+
+                    <div class="col-12 node-pagewrap @pageWrapClass">
+                        <label class="form-label mb-1 small">Page</label>
+                        <select class="form-select form-select-sm node-pageid" @(pageDisabled ? "disabled" : null)>
+                            <option value="">-- Select page --</option>
+                            @foreach (var p in Model.PageOptions)
+                            {
+                                if (safePageId == p.Id)
+                                {
+                                    <option value="@p.Id" selected>@p.Title (@p.Slug)</option>
+                                }
+                                else
+                                {
+                                    <option value="@p.Id">@p.Title (@p.Slug)</option>
+                                }
+                            }
+                        </select>
+                    </div>
+
+                    <div class="col-12 node-urlwrap @urlWrapClass">
+                        <label class="form-label mb-1 small">URL</label>
+                        <input class="form-control form-control-sm node-url"
+                               value="@safeUrl"
+                               maxlength="500"
+                               placeholder="https://..."
+                               @(urlDisabled ? "disabled" : null) />
+                    </div>
+
+                    <div class="col-12 d-flex flex-wrap gap-3 align-items-center">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input node-newtab"
+                                   type="checkbox"
+                                   @(Model.OpenInNewTab ? "checked" : null) />
+                            <label class="form-check-label small">Open in new tab</label>
+                        </div>
+
+                        <div class="form-check form-switch">
+                            <input class="form-check-input node-active"
+                                   type="checkbox"
+                                   @(Model.IsActive ? "checked" : null) />
+                            <label class="form-check-label small">Active</label>
+                        </div>
+
+                        <div class="form-check form-switch">
+                            <input class="form-check-input node-published"
+                                   type="checkbox"
+                                   @(Model.IsPublished ? "checked" : null) />
+                            <label class="form-check-label small">Published</label>
+                        </div>
+                    </div>
+
+                    <div class="col-12">
+                        <label class="form-label mb-1 small">Visible to Roles (CSV)</label>
+                        <input class="form-control form-control-sm node-roles"
+                               value="@Model.AllowedRolesCsv"
+                               maxlength="400"
+                               placeholder="e.g. Admin,Agent (leave blank for everyone)" />
+                    </div>
+
+                </div>
+            </div>
+
+            <div class="d-flex flex-column gap-2">
+                <button type="button" class="btn btn-sm btn-outline-secondary add-child">Add Child</button>
+
+                @if (!Model.IsDeleted)
+                {
+                    <button type="button" class="btn btn-sm btn-outline-danger delete-node">Delete</button>
+                    <button type="button" class="btn btn-sm btn-outline-success restore-node d-none">Restore</button>
+
+                }
+                else
+                {
+                    <button type="button" class="btn btn-sm btn-outline-warning restore-node">Restore</button>
+                }
+            </div>
+        </div>
+    </div>
+
+    <ul class="nav-children list-unstyled ms-4 mt-2 mb-0">
+        @foreach (var child in children)
+        {
+            <partial name="_NavNode" model="child" />
+        }
+    </ul>
+</li>

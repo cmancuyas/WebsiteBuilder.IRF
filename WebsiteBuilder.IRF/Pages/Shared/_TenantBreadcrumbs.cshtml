@@ -1,0 +1,91 @@
+﻿@using WebsiteBuilder.IRF.Infrastructure.Tenancy
+@inject ITenantNavigationService Nav
+
+@{
+    var current = NavigationPath.CurrentPath(Context);
+
+    // Don't show breadcrumbs on home
+    if (NavigationPath.NormalizePath(current) == "/")
+    {
+        return;
+    }
+
+    // Use the same header tree the UI uses
+    var items = await Nav.GetHeaderAsync();
+
+    // Build the same VM so active flags are canonical + consistent
+    // (MenuId=1 is your header menu; variant doesn't matter for flags)
+    var vm = TenantNavigationVm.From(items, current, menuId: 1, variant: "header");
+
+    // Find active trail from VM nodes (skip disabled "#")
+    var trail = FindTrail(vm.Items);
+}
+
+@if (trail.Count > 0)
+{
+    <nav aria-label="breadcrumb" class="mt-3">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="/">Home</a></li>
+
+            @for (var i = 0; i < trail.Count; i++)
+            {
+                var node = trail[i];
+                var isLast = (i == trail.Count - 1);
+
+                if (isLast)
+                {
+                    <li class="breadcrumb-item active" aria-current="page">@node.Title</li>
+                }
+                else
+                {
+                    <li class="breadcrumb-item">
+                        <a href="@node.Url">@node.Title</a>
+                    </li>
+                }
+            }
+        </ol>
+    </nav>
+}
+
+@functions {
+    private static bool IsDead(string? url)
+        => string.IsNullOrWhiteSpace(url) || url.Trim() == "#";
+
+    // Returns the path from root -> active node.
+    // Rules:
+    // - skip dead nodes
+    // - include a node if it's active or contains the active node (ancestor)
+    private static List<TenantNavigationVm.Node> FindTrail(IReadOnlyList<TenantNavigationVm.Node> nodes)
+    {
+        foreach (var n in nodes)
+        {
+            if (IsDead(n.Url))
+                continue;
+
+            // Only consider nodes on the active branch
+            if (!(n.IsActive || n.IsAncestorOfActive))
+                continue;
+
+            // If exact active, end trail here
+            if (n.IsActive)
+                return new List<TenantNavigationVm.Node> { n };
+
+            // Otherwise, try to find a deeper match
+            if (n.Children is not null && n.Children.Count > 0)
+            {
+                var sub = FindTrail(n.Children);
+                if (sub.Count > 0)
+                {
+                    var res = new List<TenantNavigationVm.Node> { n };
+                    res.AddRange(sub);
+                    return res;
+                }
+            }
+
+            // Ancestor marked active but no child found (fallback)
+            return new List<TenantNavigationVm.Node> { n };
+        }
+
+        return new List<TenantNavigationVm.Node>();
+    }
+}

@@ -1,71 +1,57 @@
-using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
 using WebsiteBuilder.IRF.DataAccess;
 using WebsiteBuilder.IRF.Infrastructure.Tenancy;
+using WebsiteBuilder.Models.Constants;
 
-namespace WebsiteBuilder.IRF.Pages.Admin.Pages
+namespace WebsiteBuilder.IRF.Pages.Admin.Pages;
+
+public sealed class IndexModel : PageModel
 {
-    public class IndexModel : PageModel
+    private readonly DataContext _db;
+    private readonly ITenantContext _tenant;
+
+    public IndexModel(DataContext db, ITenantContext tenant)
     {
-        private readonly DataContext _db;
-        private readonly ITenantContext _tenant;
+        _db = db;
+        _tenant = tenant;
+    }
 
-        public IndexModel(DataContext db, ITenantContext tenant)
-        {
-            _db = db;
-            _tenant = tenant;
-        }
+    // ✅ Replace IsArchived boolean with PageStatusId + derived flag
+    public sealed record Row(
+        int Id,
+        string Title,
+        string Slug,
+        int PageStatusId,
+        int? DraftRevisionId,
+        int? PublishedRevisionId)
+    {
+        public bool IsArchived => PageStatusId == PageStatusIds.Archived;
+        public bool IsDraft => PageStatusId == PageStatusIds.Draft;
+        public bool IsPublished => PageStatusId == PageStatusIds.Published;
+    }
 
-        [BindProperty(SupportsGet = true)]
-        public string? Q { get; set; }
+    public List<Row> Items { get; private set; } = new();
 
-        [BindProperty(SupportsGet = true)]
-        public int? StatusId { get; set; }
+    public async Task OnGetAsync(CancellationToken ct)
+    {
+        if (!_tenant.IsResolved)
+            return;
 
-        public List<PageListItemVm> Items { get; private set; } = new();
+        var tenantId = _tenant.TenantId;
 
-        public async Task<IActionResult> OnGetAsync()
-        {
-            if (!_tenant.IsResolved) return NotFound();
-
-            var query = _db.Pages
-                .AsNoTracking()
-                .Where(p => p.TenantId == _tenant.TenantId && p.IsActive && !p.IsDeleted);
-
-            if (!string.IsNullOrWhiteSpace(Q))
-            {
-                var q = Q.Trim();
-                query = query.Where(p => p.Title.Contains(q) || p.Slug.Contains(q));
-            }
-
-            if (StatusId.HasValue)
-            {
-                query = query.Where(p => p.PageStatusId == StatusId.Value);
-            }
-
-            Items = await query
-                .OrderByDescending(p => p.UpdatedAt ?? p.CreatedAt)
-                .Select(p => new PageListItemVm
-                {
-                    Id = p.Id,
-                    Title = p.Title,
-                    Slug = p.Slug,
-                    PageStatusId = p.PageStatusId,
-                    UpdatedAt = p.UpdatedAt ?? p.CreatedAt
-                })
-                .ToListAsync();
-
-            return Page();
-        }
-
-        public sealed class PageListItemVm
-        {
-            public int Id { get; set; }
-            public string Title { get; set; } = string.Empty;
-            public string Slug { get; set; } = string.Empty;
-            public int PageStatusId { get; set; }
-            public DateTime UpdatedAt { get; set; }
-        }
+        Items = await _db.Pages
+            .AsNoTracking()
+            .Where(p => p.TenantId == tenantId && !p.IsDeleted)
+            .OrderByDescending(p => p.UpdatedAt ?? p.CreatedAt)
+            .Select(p => new Row(
+                p.Id,
+                p.Title,
+                p.Slug,
+                p.PageStatusId,
+                p.DraftRevisionId,
+                p.PublishedRevisionId
+            ))
+            .ToListAsync(ct);
     }
 }

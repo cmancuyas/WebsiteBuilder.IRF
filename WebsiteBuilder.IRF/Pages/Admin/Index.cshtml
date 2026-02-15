@@ -1,0 +1,286 @@
+﻿@page
+@model WebsiteBuilder.IRF.Pages.Admin.IndexModel
+@{
+    ViewData["Title"] = "Dashboard";
+
+    string fmtBytes(long bytes)
+    {
+        if (bytes < 1024) return $"{bytes} B";
+        double kb = bytes / 1024.0;
+        if (kb < 1024) return $"{kb:0.#} KB";
+        double mb = kb / 1024.0;
+        if (mb < 1024) return $"{mb:0.#} MB";
+        double gb = mb / 1024.0;
+        return $"{gb:0.#} GB";
+    }
+
+    string pct(long used, long limit)
+    {
+        if (limit <= 0) return "0";
+        var p = (used * 100.0) / limit;
+        if (p < 0) p = 0;
+        if (p > 100) p = 100;
+        return $"{p:0}";
+    }
+}
+
+<div class="d-flex align-items-center justify-content-between mb-3">
+    <div>
+        <h2 class="mb-0">Admin Dashboard</h2>
+        <div class="text-muted small">
+            Manage pages, navigation, and media.
+        </div>
+    </div>
+
+    <div class="d-flex gap-2">
+        <a class="btn btn-outline-secondary" href="/" target="_blank" rel="noopener">View site</a>
+        <a class="btn btn-primary" asp-page="/Admin/Pages/Create">Create page</a>
+    </div>
+</div>
+
+@if (!string.IsNullOrWhiteSpace(Model.Banner))
+{
+    <div class="alert alert-info">@Model.Banner</div>
+}
+
+<!-- KPI Row -->
+<div class="row g-3 mb-3">
+    <div class="col-12 col-md-3">
+        <div class="card h-100">
+            <div class="card-body">
+                <div class="text-muted small">Pages (Total)</div>
+                <div class="display-6 mb-1">@Model.PageTotal</div>
+                <div class="small text-muted">All statuses</div>
+            </div>
+            <div class="card-footer bg-transparent d-flex justify-content-between align-items-center">
+                <span class="text-muted small">Go to</span>
+                <a class="btn btn-sm btn-outline-primary" asp-page="/Admin/Pages/Index">Pages</a>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-12 col-md-3">
+        <div class="card h-100">
+            <div class="card-body">
+                <div class="text-muted small">Draft pages</div>
+                <div class="display-6 mb-1">@Model.PageDraft</div>
+                <div class="small text-muted">Needs publish</div>
+            </div>
+            <div class="card-footer bg-transparent">
+                <div class="small">
+                    <span class="badge bg-secondary">Draft</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-12 col-md-3">
+        <div class="card h-100">
+            <div class="card-body">
+                <div class="text-muted small">Published pages</div>
+                <div class="display-6 mb-1">@Model.PagePublished</div>
+                <div class="small text-muted">Live in sitemap</div>
+            </div>
+            <div class="card-footer bg-transparent">
+                <div class="small">
+                    <span class="badge bg-success">Published</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-12 col-md-3">
+        <div class="card h-100">
+            <div class="card-body">
+                <div class="text-muted small">Archived pages</div>
+                <div class="display-6 mb-1">@Model.PageArchived</div>
+                <div class="small text-muted">Hidden / non-public</div>
+            </div>
+            <div class="card-footer bg-transparent">
+                <div class="small">
+                    <span class="badge bg-warning text-dark">Archived</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modules + Media Usage -->
+<div class="row g-3 mb-3">
+    <div class="col-12 col-lg-7">
+        <div class="card h-100">
+            <div class="card-header bg-white">
+                <div class="fw-semibold">Quick actions</div>
+                <div class="text-muted small">Most common admin tasks.</div>
+            </div>
+            <div class="card-body">
+                <div class="row g-3">
+                    <div class="col-12 col-md-4">
+                        <div class="border rounded-3 p-3 h-100">
+                            <div class="fw-semibold">Pages</div>
+                            <div class="text-muted small">Draft → publish pipeline.</div>
+                            <div class="mt-2 d-flex gap-2 flex-wrap">
+                                <a class="btn btn-sm btn-primary" asp-page="/Admin/Pages/Index">Open</a>
+                                <a class="btn btn-sm btn-outline-secondary" asp-page="/Admin/Pages/Create">Create</a>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="col-12 col-md-4">
+                        <div class="border rounded-3 p-3 h-100">
+                            <div class="fw-semibold">Navigation</div>
+                            <div class="text-muted small">Published pages only.</div>
+                            <div class="mt-2 d-flex gap-2 flex-wrap">
+                                <a class="btn btn-sm btn-primary" asp-page="/Admin/Navigation/Index">Open</a>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="col-12 col-md-4">
+                        <div class="border rounded-3 p-3 h-100">
+                            <div class="fw-semibold">Media</div>
+                            <div class="text-muted small">Upload, alt text, restore.</div>
+                            <div class="mt-2 d-flex gap-2 flex-wrap">
+                                <a class="btn btn-sm btn-primary" asp-page="/Admin/Media/Index">Open</a>
+                                <a class="btn btn-sm btn-outline-secondary" asp-page="/Admin/Media/Upload">Upload</a>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <hr />
+
+                <div class="d-flex flex-wrap gap-2">
+                    <a class="btn btn-sm btn-outline-secondary" href="/sitemap.xml" target="_blank" rel="noopener">Sitemap</a>
+                    <a class="btn btn-sm btn-outline-secondary" href="/robots.txt" target="_blank" rel="noopener">Robots</a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-12 col-lg-5">
+        <div class="card h-100">
+            <div class="card-header bg-white">
+                <div class="fw-semibold">Media usage</div>
+                <div class="text-muted small">Tenant-scoped assets.</div>
+            </div>
+
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <div class="text-muted small">Images</div>
+                        <div class="h4 mb-0">@Model.MediaImageCount</div>
+                    </div>
+                    <div class="text-end">
+                        <div class="text-muted small">Total size</div>
+                        <div class="h4 mb-0">@fmtBytes(Model.MediaTotalBytes)</div>
+                    </div>
+                </div>
+
+                @if (Model.MediaQuotaBytes > 0)
+                {
+                    var usedPct = pct(Model.MediaTotalBytes, Model.MediaQuotaBytes);
+                    <div class="mt-3">
+                        <div class="d-flex justify-content-between small text-muted mb-1">
+                            <span>Quota</span>
+                            <span>@fmtBytes(Model.MediaTotalBytes) / @fmtBytes(Model.MediaQuotaBytes) (@usedPct%)</span>
+                        </div>
+                        <div class="progress" role="progressbar" aria-label="Media quota usage" aria-valuenow="@usedPct" aria-valuemin="0" aria-valuemax="100">
+                            <div class="progress-bar" style="width:@usedPct%"></div>
+                        </div>
+                    </div>
+                }
+
+                @if (Model.MediaDeletedCount > 0)
+                {
+                    <div class="alert alert-warning mt-3 mb-0">
+                        <div class="fw-semibold">Trash contains @Model.MediaDeletedCount item(s)</div>
+                        <div class="small">You can restore or permanently clean up via media tools.</div>
+                        <div class="mt-2">
+                            <a class="btn btn-sm btn-outline-primary" asp-page="/Admin/Media/Trash">Open trash</a>
+                        </div>
+                    </div>
+                }
+            </div>
+
+            <div class="card-footer bg-transparent d-flex justify-content-end">
+                <a class="btn btn-sm btn-outline-primary" asp-page="/Admin/Media/Usage">View usage</a>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Recent Activity -->
+<div class="row g-3">
+    <div class="col-12 col-lg-6">
+        <div class="card h-100">
+            <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                <div>
+                    <div class="fw-semibold">Recently published</div>
+                    <div class="text-muted small">Latest live updates.</div>
+                </div>
+                <a class="btn btn-sm btn-outline-secondary" asp-page="/Admin/Pages/Index">View all</a>
+            </div>
+            <div class="card-body p-0">
+                @if (Model.RecentPublishedPages?.Count > 0)
+                {
+                    <div class="list-group list-group-flush">
+                        @foreach (var p in Model.RecentPublishedPages)
+                        {
+                            <div class="list-group-item d-flex justify-content-between align-items-start">
+                                <div class="me-3">
+                                    <div class="fw-semibold">@p.Title</div>
+                                    <div class="text-muted small"><code>/@p.Slug</code></div>
+                                </div>
+                                <div class="text-end">
+                                    <div class="text-muted small">@p.PublishedAt?.ToString("yyyy-MM-dd HH:mm")</div>
+                                    <a class="btn btn-sm btn-outline-primary mt-1" href="/@p.Slug" target="_blank" rel="noopener">Open</a>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                }
+                else
+                {
+                    <div class="p-3 text-muted">No published pages yet.</div>
+                }
+            </div>
+        </div>
+    </div>
+
+    <div class="col-12 col-lg-6">
+        <div class="card h-100">
+            <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                <div>
+                    <div class="fw-semibold">Recent uploads</div>
+                    <div class="text-muted small">Newest media assets.</div>
+                </div>
+                <a class="btn btn-sm btn-outline-secondary" asp-page="/Admin/Media/Index">View all</a>
+            </div>
+            <div class="card-body p-0">
+                @if (Model.RecentMedia?.Count > 0)
+                {
+                    <div class="list-group list-group-flush">
+                        @foreach (var m in Model.RecentMedia)
+                        {
+                            <div class="list-group-item d-flex justify-content-between align-items-start">
+                                <div class="me-3">
+                                    <div class="fw-semibold text-truncate" style="max-width: 340px;" title="@m.FileName">@m.FileName</div>
+                                    <div class="text-muted small">@m.ContentType · @fmtBytes(m.SizeBytes)</div>
+                                </div>
+                                <div class="text-end">
+                                    <div class="text-muted small">@m.CreatedAt.ToString("yyyy-MM-dd HH:mm")</div>
+                                    <a class="btn btn-sm btn-outline-primary mt-1" asp-page="/Admin/Media/List">Open</a>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                }
+                else
+                {
+                    <div class="p-3 text-muted">No uploads yet.</div>
+                }
+            </div>
+        </div>
+    </div>
+</div>

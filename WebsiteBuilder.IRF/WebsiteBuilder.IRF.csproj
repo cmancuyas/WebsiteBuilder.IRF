@@ -29,6 +29,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Folder Include="Infrastructure\Navigation\" />
     <Folder Include="wwwroot\uploads\" />
   </ItemGroup>
 

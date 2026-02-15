@@ -223,7 +223,6 @@ namespace WebsiteBuilder.IRF.DataAccess.Migrations.Data
                         .HasColumnType("nvarchar(255)");
 
                     b.Property<int?>("Height")
-                        .HasMaxLength(500)
                         .HasColumnType("int");
 
                     b.Property<bool>("IsActive")
@@ -236,6 +235,11 @@ namespace WebsiteBuilder.IRF.DataAccess.Migrations.Data
                         .HasColumnType("bit")
                         .HasDefaultValue(false);
 
+                    b.Property<Guid>("OwnerUserId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasDefaultValue(new Guid("00000000-0000-0000-0000-000000000000"));
+
                     b.Property<byte[]>("RowVersion")
                         .IsConcurrencyToken()
                         .IsRequired()
@@ -243,7 +247,6 @@ namespace WebsiteBuilder.IRF.DataAccess.Migrations.Data
                         .HasColumnType("rowversion");
 
                     b.Property<long>("SizeBytes")
-                        .HasMaxLength(255)
                         .HasColumnType("bigint");
 
                     b.Property<string>("StorageKey")
@@ -265,7 +268,6 @@ namespace WebsiteBuilder.IRF.DataAccess.Migrations.Data
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<int?>("Width")
-                        .HasMaxLength(500)
                         .HasColumnType("int");
 
                     b.HasKey("Id");
@@ -281,6 +283,8 @@ namespace WebsiteBuilder.IRF.DataAccess.Migrations.Data
                     b.HasIndex("TenantId", "CheckSum");
 
                     b.HasIndex("TenantId", "IsDeleted");
+
+                    b.HasIndex("TenantId", "OwnerUserId");
 
                     b.ToTable("MediaAssets", (string)null);
                 });
@@ -395,6 +399,101 @@ namespace WebsiteBuilder.IRF.DataAccess.Migrations.Data
                     b.ToTable("MediaCleanupRunLogs", (string)null);
                 });
 
+            modelBuilder.Entity("WebsiteBuilder.Models.NavigationMenuItem", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("AllowedRolesCsv")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("datetime2")
+                        .HasDefaultValueSql("SYSUTCDATETIME()");
+
+                    b.Property<Guid>("CreatedBy")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("DeletedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("DeletedBy")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<bool>("IsActive")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(true);
+
+                    b.Property<bool>("IsDeleted")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false);
+
+                    b.Property<bool>("IsPublished")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("Label")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int>("MenuId")
+                        .HasColumnType("int");
+
+                    b.Property<bool>("OpenInNewTab")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false);
+
+                    b.Property<int?>("PageId")
+                        .HasColumnType("int");
+
+                    b.Property<int?>("ParentId")
+                        .HasColumnType("int");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<int>("SortOrder")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasDefaultValue(0);
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("UpdatedBy")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Url")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PageId");
+
+                    b.HasIndex("ParentId");
+
+                    b.HasIndex("TenantId", "IsDeleted", "IsActive");
+
+                    b.HasIndex("TenantId", "MenuId", "ParentId", "SortOrder");
+
+                    b.ToTable("NavigationMenuItems", (string)null);
+                });
+
             modelBuilder.Entity("WebsiteBuilder.Models.Page", b =>
                 {
                     b.Property<int>("Id")
@@ -448,6 +547,11 @@ namespace WebsiteBuilder.IRF.DataAccess.Migrations.Data
                     b.Property<int?>("OgImageAssetId")
                         .HasColumnType("int");
 
+                    b.Property<Guid>("OwnerUserId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasDefaultValue(new Guid("00000000-0000-0000-0000-000000000000"));
+
                     b.Property<int>("PageStatusId")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("int")
@@ -492,6 +596,8 @@ namespace WebsiteBuilder.IRF.DataAccess.Migrations.Data
                     b.HasIndex("DraftRevisionId");
 
                     b.HasIndex("PublishedRevisionId");
+
+                    b.HasIndex("TenantId", "OwnerUserId");
 
                     b.HasIndex("TenantId", "Slug")
                         .IsUnique();
@@ -996,6 +1102,19 @@ namespace WebsiteBuilder.IRF.DataAccess.Migrations.Data
                         .IsRequired();
 
                     b.Navigation("Tenant");
+                });
+
+            modelBuilder.Entity("WebsiteBuilder.Models.NavigationMenuItem", b =>
+                {
+                    b.HasOne("WebsiteBuilder.Models.Page", null)
+                        .WithMany()
+                        .HasForeignKey("PageId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("WebsiteBuilder.Models.NavigationMenuItem", null)
+                        .WithMany()
+                        .HasForeignKey("ParentId")
+                        .OnDelete(DeleteBehavior.Restrict);
                 });
 
             modelBuilder.Entity("WebsiteBuilder.Models.Page", b =>
