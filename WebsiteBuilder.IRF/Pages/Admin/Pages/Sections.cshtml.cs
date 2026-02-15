@@ -1,12 +1,14 @@
-using System.ComponentModel.DataAnnotations;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.AspNetCore.Mvc.Rendering;
 using Microsoft.EntityFrameworkCore;
+using System.Text.Json;
 using WebsiteBuilder.IRF.DataAccess;
+using WebsiteBuilder.IRF.Infrastructure.Razor;
 using WebsiteBuilder.IRF.Infrastructure.Sections;
 using WebsiteBuilder.IRF.Infrastructure.Sections.Settings;
 using WebsiteBuilder.IRF.Infrastructure.Tenancy;
+using WebsiteBuilder.IRF.ViewModels.Admin.Pages;
 using WebsiteBuilder.Models;
 
 namespace WebsiteBuilder.IRF.Pages.Admin.Pages;
@@ -15,13 +17,22 @@ public sealed class SectionsModel : PageModel
 {
     private readonly DataContext _db;
     private readonly ITenantContext _tenant;
-    private readonly ISectionValidationService _sectionValidation;
+    private readonly ISectionRegistry _sections;
+    private readonly IPageRevisionSectionService _pageRevisionSectionService;
+    private readonly IRazorPartialRenderer _partial;
 
-    public SectionsModel(DataContext db, ITenantContext tenant, ISectionValidationService sectionValidation)
+    public SectionsModel(
+        DataContext db,
+        ITenantContext tenant,
+        ISectionRegistry sections,
+        IPageRevisionSectionService pageRevisionSectionService,
+        IRazorPartialRenderer partial)
     {
         _db = db;
         _tenant = tenant;
-        _sectionValidation = sectionValidation;
+        _sections = sections;
+        _pageRevisionSectionService = pageRevisionSectionService;
+        _partial = partial;
     }
 
     [BindProperty(SupportsGet = true)]
@@ -29,37 +40,420 @@ public sealed class SectionsModel : PageModel
 
     public string PageTitle { get; private set; } = "";
     public string PageSlug { get; private set; } = "";
-    public string? Banner { get; private set; }
 
-    public bool HasDraft { get; private set; }
     public int? DraftRevisionId { get; private set; }
+    public bool HasDraft => DraftRevisionId is not null;
 
-    public sealed record Row(
-        int Id,
-        int SortOrder,
-        int SectionTypeId,
-        string SectionTypeName,
-        string SectionTypeKey,
-        string SettingsJson,
-        object? TypedModel
-    );
-
-    public List<Row> Items { get; private set; } = new();
+    public string DraftRevisionRowVersionBase64 { get; private set; } = "";
+    public string? Banner { get; private set; }
 
     public List<SelectListItem> SectionTypeOptions { get; private set; } = new();
 
-    public sealed class AddSectionModel
+    public sealed class AddSectionInput
     {
-        [Required]
         public int SectionTypeId { get; set; }
     }
 
     [BindProperty]
-    public AddSectionModel Add { get; set; } = new();
+    public AddSectionInput Add { get; set; } = new();
 
-    public async Task<IActionResult> OnGetAsync(CancellationToken ct)
-        => await LoadAsync(ct);
+    public sealed class DeleteRevisionSectionRequest
+    {
+        public int RevisionSectionId { get; init; }
+        public string? DraftRevisionRowVersion { get; init; } // base64
+    }
 
+    public sealed class AddRevisionSectionRequest
+    {
+        public int PageId { get; init; }
+        public int SectionTypeId { get; init; }
+        public int? InsertAfterRevisionSectionId { get; init; }
+        public bool InsertAtTop { get; init; } = false;
+        public string? DraftRevisionRowVersion { get; init; } // base64
+    }
+
+    public sealed class ReorderRevisionSectionsRequest
+    {
+        public int PageId { get; init; }
+        public List<int> OrderedRevisionSectionIds { get; init; } = new();
+        public string? DraftRevisionRowVersion { get; init; } // base64
+    }
+
+    public sealed class SectionItemVm
+    {
+        public int Id { get; init; }
+        public int SortOrder { get; init; }
+        public int SectionTypeId { get; init; }
+        public string SectionTypeKey { get; init; } = "";
+        public string SectionTypeName { get; init; } = "";
+        public string SettingsJson { get; init; } = "{}";
+        public object? TypedModel { get; init; }
+    }
+
+    public List<SectionItemVm> Items { get; private set; } = new();
+    public List<SectionRowRenderVm> SectionRows { get; private set; } = new();
+
+    // =========================
+    // GET
+    // =========================
+    public async Task<IActionResult> OnGetAsync(CancellationToken ct) => await LoadAsync(ct);
+
+    // =========================
+    // AJAX: ADD REVISION SECTION (Optimistic Concurrency)
+    // POST: /Admin/Pages/Sections/{id}?handler=AddRevisionSection
+    // =========================
+    public async Task<IActionResult> OnPostAddRevisionSectionAsync(
+        int id,
+        [FromBody] AddRevisionSectionRequest req,
+        CancellationToken ct = default)
+    {
+        if (!_tenant.IsResolved)
+            return new JsonResult(new { ok = false, error = "Tenant not resolved." }) { StatusCode = 404 };
+
+        if (req is null || req.SectionTypeId <= 0)
+            return BadRequest(new { ok = false, error = "Invalid request." });
+
+        if (req.PageId <= 0 || req.PageId != id)
+            return BadRequest(new { ok = false, error = "Mismatched PageId." });
+
+        var page = await _db.Pages
+            .AsNoTracking()
+            .Where(p => p.Id == id && p.TenantId == _tenant.TenantId && !p.IsDeleted)
+            .Select(p => new { p.Id, p.DraftRevisionId })
+            .FirstOrDefaultAsync(ct);
+
+        if (page is null)
+            return NotFound(new { ok = false, error = "Page not found." });
+
+        if (page.DraftRevisionId is null)
+            return BadRequest(new { ok = false, error = "No draft exists. Restore or create a draft first." });
+
+        var draftRevisionId = page.DraftRevisionId.Value;
+
+        var st = await _db.Set<SectionType>()
+            .AsNoTracking()
+            .Where(x => x.Id == req.SectionTypeId && !x.IsDeleted)
+            .Select(x => new { x.Id, x.Key })
+            .FirstOrDefaultAsync(ct);
+
+        if (st is null)
+            return BadRequest(new { ok = false, error = "Invalid SectionTypeId." });
+
+        // ✅ tracked draft revision for concurrency + "touch"
+        var draft = await _db.PageRevisions
+            .FirstOrDefaultAsync(r =>
+                r.Id == draftRevisionId &&
+                r.TenantId == _tenant.TenantId &&
+                r.PageId == id &&
+                !r.IsDeleted, ct);
+
+        if (draft is null)
+            return NotFound(new { ok = false, error = "Draft revision not found." });
+
+        try
+        {
+            ApplyOptimisticConcurrency(draft, req.DraftRevisionRowVersion);
+
+            // Load current sections (tracked because we shift SortOrder)
+            var existing = await _db.PageRevisionSections
+                .Where(s => s.TenantId == _tenant.TenantId
+                            && s.PageRevisionId == draftRevisionId
+                            && !s.IsDeleted)
+                .OrderBy(s => s.SortOrder).ThenBy(s => s.Id)
+                .ToListAsync(ct);
+
+            int newSortOrder;
+
+            if (req.InsertAtTop)
+            {
+                foreach (var s in existing) s.SortOrder += 1;
+                newSortOrder = 1;
+            }
+            else if (req.InsertAfterRevisionSectionId.HasValue)
+            {
+                var afterId = req.InsertAfterRevisionSectionId.Value;
+                var after = existing.FirstOrDefault(x => x.Id == afterId);
+                if (after is null)
+                    return BadRequest(new { ok = false, error = "InsertAfter section not found." });
+
+                newSortOrder = after.SortOrder + 1;
+
+                foreach (var s in existing)
+                    if (s.SortOrder >= newSortOrder)
+                        s.SortOrder += 1;
+            }
+            else
+            {
+                newSortOrder = existing.Count == 0 ? 1 : existing.Max(x => x.SortOrder) + 1;
+            }
+
+            var typeKey = (st.Key ?? "").Trim();
+
+            var newSection = new PageRevisionSection
+            {
+                TenantId = _tenant.TenantId,
+                PageRevisionId = draftRevisionId,
+                SectionTypeId = st.Id,
+                SortOrder = newSortOrder,
+                SettingsJson = GetDefaultJsonByKey(typeKey)
+            };
+
+            _db.PageRevisionSections.Add(newSection);
+
+            // ✅ bump draft rowversion for any section mutation
+            draft.UpdatedAt = DateTime.UtcNow;
+
+            await _db.SaveChangesAsync(ct);
+
+            await _pageRevisionSectionService.CompactSortOrderAsync(_tenant.TenantId, draftRevisionId, ct);
+
+            var created = await _db.PageRevisionSections
+                .AsNoTracking()
+                .FirstOrDefaultAsync(s =>
+                    s.Id == newSection.Id &&
+                    s.TenantId == _tenant.TenantId &&
+                    s.PageRevisionId == draftRevisionId &&
+                    !s.IsDeleted, ct);
+
+            if (created is null)
+                return new JsonResult(new { ok = false, error = "Failed to load created section." }) { StatusCode = 500 };
+
+            var title = !string.IsNullOrWhiteSpace(typeKey) ? typeKey : "Section";
+            var editorPartialPath = "Shared/Sections/_Text";
+
+            if (!string.IsNullOrWhiteSpace(typeKey) && _sections.TryGet(typeKey, out var def))
+            {
+                title = def.DisplayName;
+                editorPartialPath = def.PartialViewPath;
+            }
+
+            var rowVm = new SectionRowRenderVm
+            {
+                RevisionSectionId = created.Id,
+                SectionTypeId = created.SectionTypeId,
+                Title = title,
+                CollapseId = $"sec-editor-{created.Id}",
+                EditorPartialPath = editorPartialPath,
+                IsEditable = true,
+                Section = created
+            };
+
+            var html = await _partial.RenderPartialAsync(
+                "/Pages/Admin/Pages/Partials/_PageRevisionSectionRow.cshtml",
+                rowVm,
+                HttpContext);
+
+            return new JsonResult(new
+            {
+                ok = true,
+                revisionSectionId = created.Id,
+                title,
+                html,
+                draftRevisionRowVersion = ToBase64(draft.RowVersion)
+            });
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return ConcurrencyConflict();
+        }
+        catch (InvalidOperationException ex)
+        {
+            return new JsonResult(new { ok = false, error = ex.Message }) { StatusCode = 400 };
+        }
+    }
+
+    // =========================
+    // AJAX: DELETE (Optimistic Concurrency)
+    // POST: /Admin/Pages/Sections/{id}?handler=DeleteRevisionSection
+    // =========================
+    public async Task<IActionResult> OnPostDeleteRevisionSectionAsync(
+        int id,
+        [FromBody] DeleteRevisionSectionRequest req,
+        CancellationToken ct)
+    {
+        if (!_tenant.IsResolved)
+            return new JsonResult(new { ok = false, error = "Tenant not resolved." }) { StatusCode = 404 };
+
+        if (req is null || req.RevisionSectionId <= 0)
+            return BadRequest(new { ok = false, error = "Invalid request." });
+
+        var page = await _db.Pages
+            .AsNoTracking()
+            .Where(p => p.Id == id && p.TenantId == _tenant.TenantId && !p.IsDeleted)
+            .Select(p => new { p.Id, p.DraftRevisionId })
+            .FirstOrDefaultAsync(ct);
+
+        if (page is null)
+            return NotFound(new { ok = false, error = "Page not found." });
+
+        if (page.DraftRevisionId is null)
+            return BadRequest(new { ok = false, error = "No draft exists." });
+
+        var draftRevisionId = page.DraftRevisionId.Value;
+
+        var draft = await _db.PageRevisions
+            .FirstOrDefaultAsync(r =>
+                r.Id == draftRevisionId &&
+                r.TenantId == _tenant.TenantId &&
+                r.PageId == id &&
+                !r.IsDeleted, ct);
+
+        if (draft is null)
+            return NotFound(new { ok = false, error = "Draft revision not found." });
+
+        try
+        {
+            ApplyOptimisticConcurrency(draft, req.DraftRevisionRowVersion);
+
+            var section = await _db.PageRevisionSections
+                .FirstOrDefaultAsync(s =>
+                    s.Id == req.RevisionSectionId &&
+                    s.TenantId == _tenant.TenantId &&
+                    s.PageRevisionId == draftRevisionId &&
+                    !s.IsDeleted, ct);
+
+            if (section is null)
+                return NotFound(new { ok = false, error = "Section not found." });
+
+            section.IsDeleted = true;
+
+            // bump draft rowversion
+            draft.UpdatedAt = DateTime.UtcNow;
+
+            await _db.SaveChangesAsync(ct);
+
+            await _pageRevisionSectionService.CompactSortOrderAsync(_tenant.TenantId, draftRevisionId, ct);
+
+            return new JsonResult(new
+            {
+                ok = true,
+                draftRevisionRowVersion = ToBase64(draft.RowVersion)
+            });
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return ConcurrencyConflict();
+        }
+        catch (InvalidOperationException ex)
+        {
+            return new JsonResult(new { ok = false, error = ex.Message }) { StatusCode = 400 };
+        }
+    }
+
+    // =========================
+    // AJAX: REORDER (HARDENED + Optimistic Concurrency)
+    // POST: /Admin/Pages/Sections/{id}?handler=ReorderRevisionSections
+    // =========================
+    public async Task<IActionResult> OnPostReorderRevisionSectionsAsync(
+        int id,
+        [FromBody] ReorderRevisionSectionsRequest req,
+        CancellationToken ct = default)
+    {
+        if (!_tenant.IsResolved)
+            return new JsonResult(new { ok = false, error = "Tenant not resolved." }) { StatusCode = 404 };
+
+        if (req is null || req.PageId <= 0 || req.PageId != id)
+            return BadRequest(new { ok = false, error = "Invalid request." });
+
+        if (req.OrderedRevisionSectionIds is null || req.OrderedRevisionSectionIds.Count == 0)
+            return BadRequest(new { ok = false, error = "No section IDs provided." });
+
+        var ordered = req.OrderedRevisionSectionIds.ToList();
+        if (ordered.Any(x => x <= 0))
+            return BadRequest(new { ok = false, error = "Invalid section IDs." });
+
+        var dupes = ordered.GroupBy(x => x).Where(g => g.Count() > 1).Select(g => g.Key).ToList();
+        if (dupes.Count > 0)
+            return BadRequest(new { ok = false, error = "Duplicate section IDs.", duplicates = dupes });
+
+        var page = await _db.Pages
+            .AsNoTracking()
+            .Where(p => p.Id == id && p.TenantId == _tenant.TenantId && !p.IsDeleted)
+            .Select(p => new { p.Id, p.DraftRevisionId })
+            .FirstOrDefaultAsync(ct);
+
+        if (page is null)
+            return NotFound(new { ok = false, error = "Page not found." });
+
+        if (page.DraftRevisionId is null)
+            return BadRequest(new { ok = false, error = "No draft exists. Restore or create a draft first." });
+
+        var draftRevisionId = page.DraftRevisionId.Value;
+
+        var draft = await _db.PageRevisions
+            .FirstOrDefaultAsync(r =>
+                r.Id == draftRevisionId &&
+                r.TenantId == _tenant.TenantId &&
+                r.PageId == id &&
+                !r.IsDeleted, ct);
+
+        if (draft is null)
+            return NotFound(new { ok = false, error = "Draft revision not found." });
+
+        // authoritative set
+        var existingIds = await _db.PageRevisionSections
+            .AsNoTracking()
+            .Where(s => s.TenantId == _tenant.TenantId
+                        && s.PageRevisionId == draftRevisionId
+                        && !s.IsDeleted)
+            .Select(s => s.Id)
+            .ToListAsync(ct);
+
+        var missingFromClient = existingIds.Except(ordered).ToList();
+        var extraFromClient = ordered.Except(existingIds).ToList();
+
+        if (missingFromClient.Count > 0 || extraFromClient.Count > 0)
+        {
+            return BadRequest(new
+            {
+                ok = false,
+                error = "Reorder list does not match current draft sections.",
+                missingFromClient,
+                extraFromClient
+            });
+        }
+
+        try
+        {
+            ApplyOptimisticConcurrency(draft, req.DraftRevisionRowVersion);
+
+            var tracked = await _db.PageRevisionSections
+                .Where(s => s.TenantId == _tenant.TenantId
+                            && s.PageRevisionId == draftRevisionId
+                            && !s.IsDeleted)
+                .ToListAsync(ct);
+
+            var byId = tracked.ToDictionary(x => x.Id);
+
+            for (int i = 0; i < ordered.Count; i++)
+                byId[ordered[i]].SortOrder = i + 1;
+
+            // bump draft rowversion
+            draft.UpdatedAt = DateTime.UtcNow;
+
+            await _db.SaveChangesAsync(ct);
+
+            await _pageRevisionSectionService.CompactSortOrderAsync(_tenant.TenantId, draftRevisionId, ct);
+
+            return new JsonResult(new
+            {
+                ok = true,
+                draftRevisionRowVersion = ToBase64(draft.RowVersion)
+            });
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return ConcurrencyConflict();
+        }
+        catch (InvalidOperationException ex)
+        {
+            return new JsonResult(new { ok = false, error = ex.Message }) { StatusCode = 400 };
+        }
+    }
+
+    // =========================
+    // LEGACY POSTBACK ADD (optional)
+    // =========================
     public async Task<IActionResult> OnPostAddSectionAsync(CancellationToken ct)
     {
         if (!_tenant.IsResolved) return NotFound("Tenant not resolved.");
@@ -68,329 +462,213 @@ public sealed class SectionsModel : PageModel
             .FirstOrDefaultAsync(p => p.Id == Id && p.TenantId == _tenant.TenantId && !p.IsDeleted, ct);
 
         if (page is null) return NotFound();
-
         if (page.DraftRevisionId is null)
         {
-            TempData["Error"] = "No draft revision exists. Restore a draft first.";
+            TempData["Error"] = "No draft revision exists. Restore a draft before editing sections.";
             return RedirectToPage(new { id = Id });
         }
 
-        if (!ModelState.IsValid)
+        if (Add.SectionTypeId <= 0)
+        {
+            ModelState.AddModelError(nameof(Add.SectionTypeId), "Please select a section type.");
             return await LoadAsync(ct);
+        }
 
-        var st = await _db.SectionTypes.AsNoTracking()
-            .FirstOrDefaultAsync(x => x.Id == Add.SectionTypeId && !x.IsDeleted, ct);
+        var st = await _db.Set<SectionType>()
+            .AsNoTracking()
+            .FirstOrDefaultAsync(x => x.Id == Add.SectionTypeId, ct);
 
         if (st is null)
         {
-            TempData["Error"] = "Invalid section type.";
-            return RedirectToPage(new { id = Id });
+            ModelState.AddModelError(nameof(Add.SectionTypeId), "Invalid section type.");
+            return await LoadAsync(ct);
         }
 
         var maxSort = await _db.PageRevisionSections
-            .AsNoTracking()
-            .Where(s => s.TenantId == _tenant.TenantId && s.PageRevisionId == page.DraftRevisionId && !s.IsDeleted)
+            .Where(s => s.TenantId == _tenant.TenantId && s.PageRevisionId == page.DraftRevisionId.Value && !s.IsDeleted)
             .MaxAsync(s => (int?)s.SortOrder, ct) ?? 0;
 
-        var section = new PageRevisionSection
+        _db.PageRevisionSections.Add(new PageRevisionSection
         {
             TenantId = _tenant.TenantId,
             PageRevisionId = page.DraftRevisionId.Value,
             SectionTypeId = st.Id,
             SortOrder = maxSort + 1,
-            SettingsJson = "{}"
-        };
+            SettingsJson = GetDefaultJsonByKey((st.Key ?? "").Trim())
+        });
 
-        _db.PageRevisionSections.Add(section);
         await _db.SaveChangesAsync(ct);
+
+        await _pageRevisionSectionService.CompactSortOrderAsync(_tenant.TenantId, page.DraftRevisionId.Value, ct);
 
         TempData["Success"] = "Section added.";
         return RedirectToPage(new { id = Id });
     }
 
-    public async Task<IActionResult> OnPostUpdateJsonAsync(int sectionId, string? settingsJson, CancellationToken ct)
-    {
-        if (!_tenant.IsResolved) return NotFound("Tenant not resolved.");
-
-        var page = await _db.Pages.AsNoTracking()
-            .FirstOrDefaultAsync(p => p.Id == Id && p.TenantId == _tenant.TenantId && !p.IsDeleted, ct);
-
-        if (page is null) return NotFound();
-        if (page.DraftRevisionId is null)
-        {
-            TempData["Error"] = "No draft revision exists. Restore a draft first.";
-            return RedirectToPage(new { id = Id });
-        }
-
-        var section = await _db.PageRevisionSections
-            .Include(s => s.SectionType)
-            .FirstOrDefaultAsync(s =>
-                s.Id == sectionId &&
-                s.TenantId == _tenant.TenantId &&
-                s.PageRevisionId == page.DraftRevisionId &&
-                !s.IsDeleted, ct);
-
-        if (section is null) return NotFound();
-
-        var json = string.IsNullOrWhiteSpace(settingsJson) ? "{}" : settingsJson.Trim();
-        var typeKey = section.SectionType?.Key ?? "";
-
-        var result = await _sectionValidation.ValidateAsync(typeKey, json);
-        if (!result.IsValid)
-        {
-            TempData["Error"] = string.Join(" | ", result.Errors);
-            return RedirectToPage(new { id = Id });
-        }
-
-        section.SettingsJson = json;
-        await _db.SaveChangesAsync(ct);
-
-        TempData["Success"] = "Section JSON updated.";
-        return RedirectToPage(new { id = Id });
-    }
-
-    public async Task<IActionResult> OnPostUpdateTypedAsync(int sectionId, string typeKey, CancellationToken ct)
-    {
-        if (!_tenant.IsResolved) return NotFound("Tenant not resolved.");
-
-        var page = await _db.Pages.AsNoTracking()
-            .FirstOrDefaultAsync(p => p.Id == Id && p.TenantId == _tenant.TenantId && !p.IsDeleted, ct);
-
-        if (page is null) return NotFound();
-        if (page.DraftRevisionId is null)
-        {
-            TempData["Error"] = "No draft revision exists. Restore a draft first.";
-            return RedirectToPage(new { id = Id });
-        }
-
-        var section = await _db.PageRevisionSections
-            .Include(s => s.SectionType)
-            .FirstOrDefaultAsync(s =>
-                s.Id == sectionId &&
-                s.TenantId == _tenant.TenantId &&
-                s.PageRevisionId == page.DraftRevisionId &&
-                !s.IsDeleted, ct);
-
-        if (section is null) return NotFound();
-
-        if (!string.Equals(typeKey, section.SectionType?.Key, StringComparison.OrdinalIgnoreCase))
-        {
-            TempData["Error"] = "Section type mismatch.";
-            return RedirectToPage(new { id = Id });
-        }
-
-        // Build JSON from form fields (simple + reliable)
-        var normalized = (typeKey ?? "").Trim().ToLowerInvariant();
-
-        string json = normalized switch
-        {
-            "hero" => SectionJson.Serialize(new HeroSettings
-            {
-                Heading = Request.Form["Hero.Heading"],
-                Subheading = Request.Form["Hero.Subheading"],
-                CtaText = Request.Form["Hero.CtaText"],
-                CtaUrl = Request.Form["Hero.CtaUrl"],
-                BackgroundImageAssetId = int.TryParse(Request.Form["Hero.BackgroundImageAssetId"], out var bg) ? bg : null
-            }),
-
-            "text" => SectionJson.Serialize(new TextSettings
-            {
-                Title = Request.Form["Text.Title"],
-                Body = Request.Form["Text.Body"],
-                Align = Request.Form["Text.Align"]
-            }),
-
-            "gallery" => SectionJson.Serialize(new GallerySettings
-            {
-                Layout = Request.Form["Gallery.Layout"],
-                ImageAssetIds = (Request.Form["Gallery.ImageAssetIds"].ToString() ?? "")
-                    .Split(',', StringSplitOptions.RemoveEmptyEntries)
-                    .Select(x => int.TryParse(x.Trim(), out var v) ? (int?)v : null)
-                    .Where(x => x.HasValue)
-                    .Select(x => x!.Value)
-                    .Distinct()
-                    .ToList()
-            }),
-
-            _ => section.SettingsJson ?? "{}"
-        };
-
-        var result = await _sectionValidation.ValidateAsync(section.SectionType!.Key, json);
-        if (!result.IsValid)
-        {
-            TempData["Error"] = string.Join(" | ", result.Errors);
-            return RedirectToPage(new { id = Id });
-        }
-
-        section.SettingsJson = json;
-        await _db.SaveChangesAsync(ct);
-
-        TempData["Success"] = "Section updated.";
-        return RedirectToPage(new { id = Id });
-    }
-
-    public async Task<IActionResult> OnPostDeleteAsync(int sectionId, CancellationToken ct)
-    {
-        if (!_tenant.IsResolved) return NotFound("Tenant not resolved.");
-
-        var page = await _db.Pages.AsNoTracking()
-            .FirstOrDefaultAsync(p => p.Id == Id && p.TenantId == _tenant.TenantId && !p.IsDeleted, ct);
-
-        if (page is null) return NotFound();
-        if (page.DraftRevisionId is null)
-        {
-            TempData["Error"] = "No draft revision exists. Restore a draft first.";
-            return RedirectToPage(new { id = Id });
-        }
-
-        var section = await _db.PageRevisionSections
-            .FirstOrDefaultAsync(s =>
-                s.Id == sectionId &&
-                s.TenantId == _tenant.TenantId &&
-                s.PageRevisionId == page.DraftRevisionId &&
-                !s.IsDeleted, ct);
-
-        if (section is null) return NotFound();
-
-        _db.PageRevisionSections.Remove(section);
-        await _db.SaveChangesAsync(ct);
-
-        await RepackSortOrderAsync(page.DraftRevisionId.Value, ct);
-
-        TempData["Success"] = "Section deleted.";
-        return RedirectToPage(new { id = Id });
-    }
-
-    public async Task<IActionResult> OnPostMoveUpAsync(int sectionId, CancellationToken ct)
-        => await MoveAsync(sectionId, -1, ct);
-
-    public async Task<IActionResult> OnPostMoveDownAsync(int sectionId, CancellationToken ct)
-        => await MoveAsync(sectionId, +1, ct);
-
-    private async Task<IActionResult> MoveAsync(int sectionId, int direction, CancellationToken ct)
-    {
-        if (!_tenant.IsResolved) return NotFound("Tenant not resolved.");
-
-        var page = await _db.Pages.AsNoTracking()
-            .FirstOrDefaultAsync(p => p.Id == Id && p.TenantId == _tenant.TenantId && !p.IsDeleted, ct);
-
-        if (page is null) return NotFound();
-        if (page.DraftRevisionId is null)
-        {
-            TempData["Error"] = "No draft revision exists. Restore a draft first.";
-            return RedirectToPage(new { id = Id });
-        }
-
-        var list = await _db.PageRevisionSections
-            .Where(s => s.TenantId == _tenant.TenantId && s.PageRevisionId == page.DraftRevisionId && !s.IsDeleted)
-            .OrderBy(s => s.SortOrder)
-            .ToListAsync(ct);
-
-        var idx = list.FindIndex(x => x.Id == sectionId);
-        if (idx < 0) return NotFound();
-
-        var swapIdx = idx + direction;
-        if (swapIdx < 0 || swapIdx >= list.Count)
-            return RedirectToPage(new { id = Id });
-
-        (list[idx].SortOrder, list[swapIdx].SortOrder) = (list[swapIdx].SortOrder, list[idx].SortOrder);
-
-        await _db.SaveChangesAsync(ct);
-
-        TempData["Success"] = "Section order updated.";
-        return RedirectToPage(new { id = Id });
-    }
-
-    private async Task RepackSortOrderAsync(int draftRevisionId, CancellationToken ct)
-    {
-        var list = await _db.PageRevisionSections
-            .Where(s => s.TenantId == _tenant.TenantId && s.PageRevisionId == draftRevisionId && !s.IsDeleted)
-            .OrderBy(s => s.SortOrder)
-            .ToListAsync(ct);
-
-        var i = 1;
-        foreach (var s in list)
-            s.SortOrder = i++;
-
-        await _db.SaveChangesAsync(ct);
-    }
-
+    // =========================
+    // LOAD
+    // =========================
     private async Task<IActionResult> LoadAsync(CancellationToken ct)
     {
-        if (!_tenant.IsResolved)
-            return NotFound("Tenant not resolved.");
+        if (!_tenant.IsResolved) return NotFound("Tenant not resolved.");
 
         var page = await _db.Pages
             .AsNoTracking()
-            .FirstOrDefaultAsync(p =>
-                p.Id == Id &&
-                p.TenantId == _tenant.TenantId &&
-                !p.IsDeleted,
-                ct);
+            .Include(p => p.DraftRevision).ThenInclude(r => r!.Sections)
+            .Where(p => p.Id == Id && p.TenantId == _tenant.TenantId && !p.IsDeleted)
+            .Select(p => new
+            {
+                p.Id,
+                p.Title,
+                p.Slug,
+                p.DraftRevisionId,
+                DraftRowVersion = p.DraftRevision != null ? p.DraftRevision.RowVersion : null,
+                Sections = p.DraftRevision != null ? p.DraftRevision.Sections : null
+            })
+            .FirstOrDefaultAsync(ct);
 
         if (page is null) return NotFound();
 
         PageTitle = page.Title;
         PageSlug = page.Slug;
-
         DraftRevisionId = page.DraftRevisionId;
-        HasDraft = DraftRevisionId is not null;
+        DraftRevisionRowVersionBase64 = ToBase64(page.DraftRowVersion);
 
-        SectionTypeOptions = await _db.SectionTypes
+        SectionTypeOptions = await _db.Set<SectionType>()
             .AsNoTracking()
-            .Where(t => !t.IsDeleted)
-            .OrderBy(t => t.SortOrder)
-            .ThenBy(t => t.Name)
-            .Select(t => new SelectListItem(t.Name, t.Id.ToString()))
+            .Where(x => !x.IsDeleted)
+            .OrderBy(x => x.SortOrder).ThenBy(x => x.Name)
+            .Select(x => new SelectListItem(x.Name, x.Id.ToString()))
             .ToListAsync(ct);
 
-        if (!HasDraft)
+        Items = new();
+        SectionRows = new();
+
+        if (DraftRevisionId is not null)
         {
-            Items = new();
-        }
-        else
-        {
-            var sections = await _db.PageRevisionSections
+            var typeIds = (page.Sections ?? Array.Empty<PageRevisionSection>())
+                .Select(s => s.SectionTypeId)
+                .Distinct()
+                .ToList();
+
+            var types = await _db.Set<SectionType>()
                 .AsNoTracking()
-                .Include(s => s.SectionType)
-                .Where(s =>
-                    s.TenantId == _tenant.TenantId &&
-                    s.PageRevisionId == DraftRevisionId &&
-                    !s.IsDeleted)
-                .OrderBy(s => s.SortOrder)
-                .ToListAsync(ct);
+                .Where(st => !st.IsDeleted && typeIds.Contains(st.Id))
+                .Select(st => new { st.Id, st.Key, st.Name })
+                .ToDictionaryAsync(x => x.Id, x => x, ct);
 
-            Items = sections.Select(s =>
+            var draftSections = (page.Sections ?? Array.Empty<PageRevisionSection>())
+                .Where(s => !s.IsDeleted)
+                .OrderBy(s => s.SortOrder).ThenBy(s => s.Id)
+                .ToList();
+
+            foreach (var s in draftSections)
             {
-                var key = s.SectionType!.Key;
-                var json = s.SettingsJson ?? "{}";
+                types.TryGetValue(s.SectionTypeId, out var st);
 
-                object? typed = key.ToLowerInvariant() switch
+                var key = st?.Key?.Trim() ?? "";
+                var name = st?.Name?.Trim() ?? key;
+
+                Items.Add(new SectionItemVm
                 {
-                    "hero" => SectionJson.Deserialize<HeroSettings>(json),
-                    "text" => SectionJson.Deserialize<TextSettings>(json),
-                    "gallery" => SectionJson.Deserialize<GallerySettings>(json),
-                    _ => null
-                };
+                    Id = s.Id,
+                    SortOrder = s.SortOrder,
+                    SectionTypeId = s.SectionTypeId,
+                    SectionTypeKey = key,
+                    SectionTypeName = string.IsNullOrWhiteSpace(name) ? key : name,
+                    SettingsJson = s.SettingsJson ?? "{}",
+                    TypedModel = DeserializeTypedModel(key, s.SettingsJson)
+                });
 
-                return new Row(
-                    s.Id,
-                    s.SortOrder,
-                    s.SectionTypeId,
-                    s.SectionType.Name,
-                    s.SectionType.Key,
-                    json,
-                    typed
-                );
-            }).ToList();
+                var title = string.IsNullOrWhiteSpace(key) ? "Section" : key;
+                var editorPartialPath = "Shared/Sections/_Unknown";
+
+                if (!string.IsNullOrWhiteSpace(key) && _sections.TryGet(key, out var def))
+                {
+                    title = def.DisplayName;
+                    editorPartialPath = def.PartialViewPath;
+                }
+
+                SectionRows.Add(new SectionRowRenderVm
+                {
+                    RevisionSectionId = s.Id,
+                    SectionTypeId = s.SectionTypeId,
+                    Title = title,
+                    CollapseId = $"sec-editor-{s.Id}",
+                    EditorPartialPath = editorPartialPath,
+                    IsEditable = true,
+                    Section = s
+                });
+            }
         }
 
-        if (TempData.TryGetValue("Success", out var ok))
-            Banner = ok?.ToString();
-
-        if (TempData.TryGetValue("Error", out var err))
-            Banner = err?.ToString();
+        if (TempData.TryGetValue("Success", out var ok)) Banner = ok?.ToString();
+        if (TempData.TryGetValue("Error", out var err)) Banner = err?.ToString();
 
         return Page();
     }
+
+    private static object? DeserializeTypedModel(string typeKey, string? json)
+    {
+        var safeJson = string.IsNullOrWhiteSpace(json) ? "{}" : json;
+
+        try
+        {
+            if (typeKey.Equals("Hero", StringComparison.OrdinalIgnoreCase))
+                return JsonSerializer.Deserialize<HeroSettings>(safeJson) ?? new HeroSettings();
+
+            if (typeKey.Equals("Text", StringComparison.OrdinalIgnoreCase))
+                return JsonSerializer.Deserialize<TextSettings>(safeJson) ?? new TextSettings();
+
+            if (typeKey.Equals("Gallery", StringComparison.OrdinalIgnoreCase))
+                return JsonSerializer.Deserialize<GallerySettings>(safeJson) ?? new GallerySettings();
+
+            return null;
+        }
+        catch
+        {
+            if (typeKey.Equals("Hero", StringComparison.OrdinalIgnoreCase)) return new HeroSettings();
+            if (typeKey.Equals("Text", StringComparison.OrdinalIgnoreCase)) return new TextSettings();
+            if (typeKey.Equals("Gallery", StringComparison.OrdinalIgnoreCase)) return new GallerySettings();
+            return null;
+        }
+    }
+
+    private static string GetDefaultJsonByKey(string key)
+    {
+        if (key.Equals("Hero", StringComparison.OrdinalIgnoreCase))
+            return JsonSerializer.Serialize(new HeroSettings { Heading = "Welcome", Subheading = "Your tagline here" });
+
+        if (key.Equals("Text", StringComparison.OrdinalIgnoreCase))
+            return JsonSerializer.Serialize(new TextSettings { Title = "Title", Body = "Your content here." });
+
+        if (key.Equals("Gallery", StringComparison.OrdinalIgnoreCase))
+            return JsonSerializer.Serialize(new GallerySettings { Layout = "grid", ImageAssetIds = new List<int>() });
+
+        return "{}";
+    }
+
+    // =========================
+    // Concurrency helpers
+    // =========================
+    private static byte[]? FromBase64(string? s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return null;
+        try { return Convert.FromBase64String(s); } catch { return null; }
+    }
+
+    private void ApplyOptimisticConcurrency(PageRevision draft, string? base64RowVersion)
+    {
+        var token = FromBase64(base64RowVersion);
+        if (token is null || token.Length == 0)
+            throw new InvalidOperationException("Missing or invalid draft revision concurrency token.");
+
+        _db.Entry(draft).Property(x => x.RowVersion).OriginalValue = token;
+    }
+
+    private static string ToBase64(byte[]? rv)
+        => (rv is null || rv.Length == 0) ? "" : Convert.ToBase64String(rv);
+
+    private JsonResult ConcurrencyConflict()
+        => new(new { ok = false, error = "This draft was changed by someone else. Please reload." }) { StatusCode = 409 };
 }

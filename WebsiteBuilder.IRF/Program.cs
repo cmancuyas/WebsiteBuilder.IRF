@@ -8,6 +8,7 @@ using WebsiteBuilder.IRF.Infrastructure.Auth;
 using WebsiteBuilder.IRF.Infrastructure.Media;
 using WebsiteBuilder.IRF.Infrastructure.Middleware;
 using WebsiteBuilder.IRF.Infrastructure.Pages;
+using WebsiteBuilder.IRF.Infrastructure.Razor;
 using WebsiteBuilder.IRF.Infrastructure.Sections;
 using WebsiteBuilder.IRF.Infrastructure.Sections.Validators;
 using WebsiteBuilder.IRF.Infrastructure.Sitemap;
@@ -143,6 +144,9 @@ builder.Services.AddScoped<ISectionContentValidator, GallerySectionValidator>();
 builder.Services.AddScoped<IPagePublishingService, PagePublishingService>();
 builder.Services.AddScoped<PagePublishValidator>();
 builder.Services.AddScoped<IPageRevisionSectionService, PageRevisionSectionService>();
+
+builder.Services.AddScoped<IRazorPartialRenderer,
+                           RazorPartialRenderer>();
 
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ITenantSitemapService, TenantSitemapService>();

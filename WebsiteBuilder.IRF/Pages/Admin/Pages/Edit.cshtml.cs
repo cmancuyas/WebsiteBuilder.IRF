@@ -1,15 +1,18 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
+using Microsoft.AspNetCore.Mvc.Rendering;
 using Microsoft.EntityFrameworkCore;
 using System.ComponentModel.DataAnnotations;
+using System.Text.Json;
 using WebsiteBuilder.IRF.DataAccess;
 using WebsiteBuilder.IRF.Infrastructure.Pages;
+using WebsiteBuilder.IRF.Infrastructure.Razor;
 using WebsiteBuilder.IRF.Infrastructure.Sections;
+using WebsiteBuilder.IRF.Infrastructure.Sections.Settings;
 using WebsiteBuilder.IRF.Infrastructure.Tenancy;
 using WebsiteBuilder.IRF.ViewModels.Admin.Pages;
 using WebsiteBuilder.Models;
 using WebsiteBuilder.Models.Constants;
-using static System.Collections.Specialized.BitVector32;
 
 namespace WebsiteBuilder.IRF.Pages.Admin.Pages;
 
@@ -18,12 +21,21 @@ public sealed class EditModel : PageModel
     private readonly DataContext _db;
     private readonly ITenantContext _tenant;
     private readonly ISectionRegistry _sections;
+    private readonly IPageRevisionSectionService _pageRevisionSectionService;
+    private readonly IRazorPartialRenderer _partialRenderer;
 
-    public EditModel(DataContext db, ITenantContext tenant, ISectionRegistry sections)
+    public EditModel(
+        DataContext db,
+        ITenantContext tenant,
+        ISectionRegistry sections,
+        IPageRevisionSectionService pageRevisionSectionService,
+        IRazorPartialRenderer partialRenderer)
     {
         _db = db;
         _tenant = tenant;
         _sections = sections;
+        _pageRevisionSectionService = pageRevisionSectionService;
+        _partialRenderer = partialRenderer;
     }
 
     [BindProperty(SupportsGet = true)]
@@ -31,19 +43,28 @@ public sealed class EditModel : PageModel
 
     public string PageTitle { get; private set; } = "";
     public string PageSlug { get; private set; } = "";
-
     public string? Banner { get; private set; }
 
     public bool HasDraft { get; private set; }
-    public bool CanPublish => HasDraft; // publish requires draft
+    public bool CanPublish => HasDraft;
     public bool CanRestoreDraft => PublishedInfo is not null;
 
     public int SectionCount { get; private set; }
 
+    public List<SelectListItem> SectionTypeOptions { get; private set; } = new();
+
     public RevisionInfo? PublishedInfo { get; private set; }
 
     public sealed record RevisionInfo(int Id, int VersionNumber, string Slug, DateTime? PublishedAt);
+
     public List<SectionRowRenderVm> SectionRows { get; private set; } = new();
+
+    // ✅ NEW: base64 rowversion for the current draft revision
+    // Edit.cshtml uses this for AJAX calls to SectionsModel to prevent lost updates.
+    public int? DraftRevisionId { get; private set; }
+    public string DraftRevisionRowVersionBase64 { get; private set; } = "";
+
+
     public sealed class InputModel
     {
         [Required, MaxLength(200)]
@@ -64,14 +85,17 @@ public sealed class EditModel : PageModel
         public bool ShowInNavigation { get; set; } = true;
     }
 
+    public sealed class AddSectionRequest
+    {
+        public int SectionTypeId { get; init; }
+        public int? InsertAfterRevisionSectionId { get; init; }
+        public bool InsertAtTop { get; init; }
+    }
+
     [BindProperty]
     public InputModel Input { get; set; } = new();
 
-
-    public async Task<IActionResult> OnGetAsync(CancellationToken ct)
-    {
-        return await LoadAsync(ct);
-    }
+    public async Task<IActionResult> OnGetAsync(CancellationToken ct) => await LoadAsync(ct);
 
     public async Task<IActionResult> OnPostSaveAsync(CancellationToken ct)
     {
@@ -105,7 +129,6 @@ public sealed class EditModel : PageModel
             return await LoadAsync(ct);
         }
 
-        // Update page canonical fields
         page.Title = Input.Title.Trim();
         page.Slug = newSlug;
         page.LayoutKey = Input.LayoutKey?.Trim();
@@ -114,7 +137,6 @@ public sealed class EditModel : PageModel
         page.ShowInNavigation = Input.ShowInNavigation;
         page.PageStatusId = PageStatusIds.Draft;
 
-        // Update draft revision snapshot fields too
         page.DraftRevision.Title = page.Title;
         page.DraftRevision.Slug = page.Slug;
         page.DraftRevision.LayoutKey = page.LayoutKey ?? "";
@@ -138,13 +160,13 @@ public sealed class EditModel : PageModel
             .FirstOrDefaultAsync(p => p.Id == Id && p.TenantId == _tenant.TenantId && !p.IsDeleted, ct);
 
         if (page is null) return NotFound();
+
         if (page.DraftRevisionId is null || page.DraftRevision is null)
         {
             TempData["Error"] = "No draft revision exists to publish.";
             return RedirectToPage(new { id = Id });
         }
 
-        // next version number = max + 1 (across all revisions)
         var maxVersion = await _db.PageRevisions
             .AsNoTracking()
             .Where(r => r.TenantId == _tenant.TenantId && r.PageId == page.Id && !r.IsDeleted)
@@ -152,7 +174,6 @@ public sealed class EditModel : PageModel
 
         var now = DateTime.UtcNow;
 
-        // create immutable published snapshot cloned from draft
         var published = new PageRevision
         {
             TenantId = _tenant.TenantId,
@@ -168,7 +189,6 @@ public sealed class EditModel : PageModel
             PublishedAt = now
         };
 
-        // clone sections
         foreach (var s in page.DraftRevision.Sections.OrderBy(x => x.SortOrder))
         {
             published.Sections.Add(new PageRevisionSection
@@ -183,12 +203,9 @@ public sealed class EditModel : PageModel
         _db.PageRevisions.Add(published);
         await _db.SaveChangesAsync(ct);
 
-        // point page to published snapshot
         page.PublishedRevisionId = published.Id;
         page.PublishedAt = now;
         page.PageStatusId = PageStatusIds.Published;
-
-        // IMPORTANT for your architecture: published pages immutable; editing requires Draft
         page.DraftRevisionId = null;
 
         await _db.SaveChangesAsync(ct);
@@ -209,7 +226,6 @@ public sealed class EditModel : PageModel
 
         if (page is null) return NotFound();
 
-        // Validate published snapshot
         var source = await _db.PageRevisions
             .AsNoTracking()
             .Include(r => r.Sections)
@@ -262,7 +278,6 @@ public sealed class EditModel : PageModel
         page.DraftRevisionId = draft.Id;
         page.PageStatusId = PageStatusIds.Draft;
 
-        // Keep page canonical fields aligned with draft snapshot
         page.Title = draft.Title;
         page.Slug = draft.Slug;
         page.LayoutKey = draft.LayoutKey;
@@ -273,6 +288,118 @@ public sealed class EditModel : PageModel
 
         TempData["Success"] = "Draft restored from published snapshot.";
         return RedirectToPage(new { id = Id });
+    }
+
+    // ✅ AJAX: Add a section to the current draft revision (kept as-is; Edit.cshtml uses SectionsModel for mutations)
+    public async Task<IActionResult> OnPostAddRevisionSectionAsync([FromBody] AddSectionRequest req, CancellationToken ct)
+    {
+        if (!_tenant.IsResolved)
+            return new JsonResult(new { ok = false, error = "Tenant not resolved." }) { StatusCode = 404 };
+
+        if (req is null || req.SectionTypeId <= 0)
+            return BadRequest(new { ok = false, error = "Invalid request." });
+
+        var page = await _db.Pages
+            .Include(p => p.DraftRevision).ThenInclude(r => r!.Sections)
+            .FirstOrDefaultAsync(p =>
+                p.Id == Id &&
+                p.TenantId == _tenant.TenantId &&
+                !p.IsDeleted, ct);
+
+        if (page is null)
+            return NotFound(new { ok = false, error = "Page not found." });
+
+        if (page.DraftRevisionId is null || page.DraftRevision is null)
+            return BadRequest(new { ok = false, error = "No draft exists. Restore a draft first." });
+
+        var st = await _db.Set<SectionType>()
+            .AsNoTracking()
+            .FirstOrDefaultAsync(x => x.Id == req.SectionTypeId, ct);
+
+        if (st is null)
+            return BadRequest(new { ok = false, error = "Invalid SectionTypeId." });
+
+        var draftRevisionId = page.DraftRevisionId.Value;
+
+        var sections = page.DraftRevision.Sections
+            .OrderBy(s => s.SortOrder).ThenBy(s => s.Id)
+            .ToList();
+
+        int insertIndex;
+        if (req.InsertAtTop)
+        {
+            insertIndex = 0;
+        }
+        else if (req.InsertAfterRevisionSectionId.HasValue)
+        {
+            var idx = sections.FindIndex(x => x.Id == req.InsertAfterRevisionSectionId.Value);
+            if (idx < 0)
+                return BadRequest(new { ok = false, error = "InsertAfter section not found." });
+
+            insertIndex = idx + 1;
+        }
+        else
+        {
+            insertIndex = sections.Count; // bottom
+        }
+
+        var newSection = new PageRevisionSection
+        {
+            TenantId = _tenant.TenantId,
+            PageRevisionId = draftRevisionId,
+            SectionTypeId = st.Id,
+            SortOrder = insertIndex,
+            SettingsJson = GetDefaultJsonByKey(st.Key)
+        };
+
+        _db.PageRevisionSections.Add(newSection);
+        await _db.SaveChangesAsync(ct);
+
+        await _pageRevisionSectionService.CompactSortOrderAsync(_tenant.TenantId, draftRevisionId, ct);
+
+        var created = await _db.PageRevisionSections
+            .AsNoTracking()
+            .FirstAsync(s =>
+                s.Id == newSection.Id &&
+                s.TenantId == _tenant.TenantId &&
+                s.PageRevisionId == draftRevisionId &&
+                !s.IsDeleted, ct);
+
+        var createdKey = (await _db.Set<SectionType>()
+                .AsNoTracking()
+                .Where(x => x.Id == created.SectionTypeId)
+                .Select(x => x.Key)
+                .FirstOrDefaultAsync(ct))?.Trim();
+
+        var title = !string.IsNullOrWhiteSpace(createdKey) ? createdKey : "Section";
+        var editorPartialPath = "Shared/Sections/_Text";
+
+        if (!string.IsNullOrWhiteSpace(createdKey) && _sections.TryGet(createdKey, out var def))
+        {
+            title = def.DisplayName;
+            editorPartialPath = def.PartialViewPath;
+        }
+
+        var rowVm = new SectionRowRenderVm
+        {
+            RevisionSectionId = created.Id,
+            SectionTypeId = created.SectionTypeId,
+            Title = title,
+            CollapseId = $"sec-editor-{created.Id}",
+            EditorPartialPath = editorPartialPath,
+            IsEditable = false,
+            Section = created
+        };
+
+        var html = await _partialRenderer.RenderPartialAsync("Partials/_PageRevisionSectionRow", rowVm, HttpContext);
+
+        return new JsonResult(new
+        {
+            ok = true,
+            revisionSectionId = created.Id,
+            title = rowVm.Title,
+            html
+        });
     }
 
     private async Task<IActionResult> LoadAsync(CancellationToken ct)
@@ -296,6 +423,14 @@ public sealed class EditModel : PageModel
         PageSlug = page.Slug;
 
         HasDraft = page.DraftRevisionId != null;
+
+        // ✅ expose draft revision id + rowversion
+        DraftRevisionId = page.DraftRevisionId;
+        DraftRevisionRowVersionBase64 =
+            (page.DraftRevision?.RowVersion is { Length: > 0 } rv)
+                ? Convert.ToBase64String(rv)
+                : "";
+
         SectionCount = page.DraftRevision?.Sections.Count ?? 0;
 
         if (page.PublishedRevisionId is not null && page.PublishedRevision is not null)
@@ -308,7 +443,6 @@ public sealed class EditModel : PageModel
             );
         }
 
-        // Bind form from draft if available; else from page
         var src = page.DraftRevision ?? new PageRevision
         {
             Title = page.Title,
@@ -328,17 +462,23 @@ public sealed class EditModel : PageModel
             ShowInNavigation = page.ShowInNavigation
         };
 
-        // Build section rows for the editor
+        SectionTypeOptions = await _db.Set<SectionType>()
+            .AsNoTracking()
+            .Where(x => !x.IsDeleted)
+            .OrderBy(x => x.SortOrder).ThenBy(x => x.Name)
+            .Select(x => new SelectListItem(x.Name, x.Id.ToString()))
+            .ToListAsync(ct);
+
         SectionRows = new List<SectionRowRenderVm>();
 
         var draftSections = page.DraftRevision?.Sections?
+            .Where(s => !s.IsDeleted)
             .OrderBy(s => s.SortOrder)
             .ThenBy(s => s.Id)
             .ToList();
 
         if (draftSections is not null && draftSections.Count > 0)
         {
-            // Load SectionTypeId -> SectionType.Key (your entity uses Key)
             var typeIds = draftSections.Select(s => s.SectionTypeId).Distinct().ToList();
 
             var keyById = await _db.Set<SectionType>()
@@ -352,12 +492,11 @@ public sealed class EditModel : PageModel
                 keyById.TryGetValue(s.SectionTypeId, out var typeKey);
                 typeKey = typeKey?.Trim();
 
-                // Defaults if registry doesn't recognize this key
                 var title = !string.IsNullOrWhiteSpace(typeKey)
                     ? typeKey
                     : $"Section {s.SortOrder + 1}";
 
-                var editorPartialPath = "Shared/Sections/_Unknown";
+                var editorPartialPath = "Shared/Sections/_Text";
 
                 if (!string.IsNullOrWhiteSpace(typeKey) && _sections.TryGet(typeKey, out var def))
                 {
@@ -372,13 +511,12 @@ public sealed class EditModel : PageModel
                     Title = title,
                     CollapseId = $"sec-editor-{s.Id}",
                     EditorPartialPath = editorPartialPath,
-                    IsEditable = HasDraft,
+                    IsEditable = false, // Edit page requirement: delete+reorder on, edit off
                     Section = s
                 });
             }
         }
 
-        // TempData banners
         if (TempData.TryGetValue("Success", out var ok)) Banner = ok?.ToString();
         if (TempData.TryGetValue("Error", out var err)) Banner = err?.ToString();
 
@@ -386,19 +524,29 @@ public sealed class EditModel : PageModel
     }
 
 
-
-    // ✅ TEMP: map SectionTypeId -> editor partial path
-    // Replace this with your SectionRegistry later if you already have one.
-    private static string ResolveEditorPartialPath(int sectionTypeId)
+    private static string GetDefaultJsonByKey(string key)
     {
-        // Example mapping (adjust to your real partial locations)
-        return sectionTypeId switch
-        {
-            // 1 => "/Pages/Admin/Sections/_HeroEditor",
-            // 2 => "/Pages/Admin/Sections/_TextEditor",
-            // 3 => "/Pages/Admin/Sections/_GalleryEditor",
-            _ => "/Pages/Admin/Sections/_UnknownEditor"
-        };
-    }
+        if (string.Equals(key, "Hero", StringComparison.OrdinalIgnoreCase))
+            return JsonSerializer.Serialize(new HeroSettings
+            {
+                Heading = "Welcome",
+                Subheading = "Your tagline here"
+            });
 
+        if (string.Equals(key, "Text", StringComparison.OrdinalIgnoreCase))
+            return JsonSerializer.Serialize(new TextSettings
+            {
+                Title = "Title",
+                Body = "Your content here."
+            });
+
+        if (string.Equals(key, "Gallery", StringComparison.OrdinalIgnoreCase))
+            return JsonSerializer.Serialize(new GallerySettings
+            {
+                Layout = "grid",
+                ImageAssetIds = new List<int>()
+            });
+
+        return "{}";
+    }
 }

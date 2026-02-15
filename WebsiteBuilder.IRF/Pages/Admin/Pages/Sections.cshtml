@@ -1,9 +1,15 @@
 ﻿@page "{id:int}"
 @using WebsiteBuilder.IRF.Infrastructure.Sections.Settings
+@using System.Text.Json
 @model WebsiteBuilder.IRF.Pages.Admin.Pages.SectionsModel
 @{
     ViewData["Title"] = "Sections";
 }
+
+<!-- Anti-forgery token for JS -->
+<form id="antiForgeryForm" method="post" class="d-none">
+    @Html.AntiForgeryToken()
+</form>
 
 <div class="d-flex align-items-center justify-content-between mb-3">
     <div>
@@ -13,7 +19,11 @@
     </div>
 
     <div class="d-flex gap-2">
-        <a class="btn btn-outline-secondary" asp-page="/Admin/Pages/Edit" asp-route-id="@Model.Id">Back</a>
+        <a class="btn btn-outline-secondary"
+           asp-page="/Admin/Pages/Edit"
+           asp-route-id="@Model.Id">
+            Back
+        </a>
     </div>
 </div>
 
@@ -25,7 +35,7 @@
 @if (!Model.HasDraft)
 {
     <div class="alert alert-warning">
-        This page has no draft revision. Restore a draft from a published snapshot before editing sections.
+        This page has no draft revision. Restore a draft before editing sections.
     </div>
 }
 else
@@ -35,446 +45,193 @@ else
             <form method="post" asp-page-handler="AddSection" class="row g-2 align-items-end">
                 <div class="col-12 col-md-6">
                     <label class="form-label">Add Section</label>
-                    <select asp-for="Add.SectionTypeId" asp-items="Model.SectionTypeOptions" class="form-select"></select>
+                    <select asp-for="Add.SectionTypeId"
+                            asp-items="Model.SectionTypeOptions"
+                            class="form-select">
+                    </select>
                     <span asp-validation-for="Add.SectionTypeId" class="text-danger small"></span>
                 </div>
-                <div class="col-12 col-md-6 d-flex gap-2 justify-content-end">
-                    <button type="submit" class="btn btn-primary">Add</button>
+
+                <div class="col-12 col-md-6 d-flex justify-content-end">
+                    <button type="submit" class="btn btn-primary">
+                        Add
+                    </button>
                 </div>
             </form>
         </div>
     </div>
 
     <div class="card">
-        <div class="table-responsive">
-            <table class="table table-hover mb-0 align-middle">
-                <thead>
-                    <tr>
-                        <th style="width: 60px;">#</th>
-                        <th>Section</th>
-                        <th style="width: 220px;" class="text-end">Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    @if (Model.Items.Count == 0)
+        <div class="card-body">
+            <div class="fw-semibold mb-2">Draft Sections</div>
+
+            <div id="sectionsList" class="d-grid gap-2">
+                @if (Model.SectionRows is null || Model.SectionRows.Count == 0)
+                {
+                    <div class="text-muted">No sections yet.</div>
+                }
+                else
+                {
+                    @foreach (var row in Model.SectionRows)
                     {
-                        <tr><td colspan="3" class="text-muted p-3">No sections yet.</td></tr>
+                        <partial name="Partials/_PageRevisionSectionRow" model="row" />
                     }
-                    else
-                    {
-                        @for (var i = 0; i < Model.Items.Count; i++)
-                        {
-                            var s = Model.Items[i];
-
-                            <tr>
-                                <td class="text-muted">@s.SortOrder</td>
-
-                                <td>
-                                    <div class="fw-semibold">@s.SectionTypeName</div>
-                                    <div class="text-muted small"><code>@s.SectionTypeKey</code></div>
-
-                                    @* ---------- HERO ---------- *@
-                                    @if (s.SectionTypeKey.Equals("Hero", StringComparison.OrdinalIgnoreCase))
-                                    {
-                                        var m = (HeroSettings)s.TypedModel!;
-                                        <form method="post" asp-page-handler="UpdateTyped" class="mt-3">
-                                            <input type="hidden" name="sectionId" value="@s.Id" />
-                                            <input type="hidden" name="typeKey" value="@s.SectionTypeKey" />
-
-                                            <div class="row g-2">
-                                                <div class="col-12 col-md-6">
-                                                    <label class="form-label">Heading</label>
-                                                    <input class="form-control" name="Hero.Heading" value="@m.Heading" />
-                                                </div>
-
-                                                <div class="col-12 col-md-6">
-                                                    <label class="form-label">Subheading</label>
-                                                    <input class="form-control" name="Hero.Subheading" value="@m.Subheading" />
-                                                </div>
-
-                                                <div class="col-12 col-md-4">
-                                                    <label class="form-label">CTA Text</label>
-                                                    <input class="form-control" name="Hero.CtaText" value="@m.CtaText" />
-                                                </div>
-
-                                                <div class="col-12 col-md-4">
-                                                    <label class="form-label">CTA URL</label>
-                                                    <input class="form-control" name="Hero.CtaUrl" value="@m.CtaUrl" />
-                                                </div>
-
-                                                <div class="col-12 col-md-4">
-                                                    <label class="form-label">Background Image</label>
-
-                                                    <div class="input-group">
-                                                        <input class="form-control"
-                                                               id="hero-bg-@s.Id"
-                                                               name="Hero.BackgroundImageAssetId"
-                                                               value="@(m.BackgroundImageAssetId?.ToString() ?? "")" />
-
-                                                        <button type="button"
-                                                                class="btn btn-outline-secondary"
-                                                                onclick="openMediaPicker({ mode: 'single', targetInputId: 'hero-bg-@s.Id', previewElId: 'hero-preview-@s.Id' })">
-                                                            Browse
-                                                        </button>
-                                                    </div>
-
-                                                    @* ✅ Preview target (this is what you were missing) *@
-                                                    <div class="mt-2" id="hero-preview-@s.Id"></div>
-                                                </div>
-                                            </div>
-
-                                            <div class="mt-2 d-flex justify-content-end">
-                                                <button class="btn btn-sm btn-primary" type="submit">Save</button>
-                                            </div>
-                                        </form>
-                                    }
-                                    @* ---------- TEXT ---------- *@
-                                    else if (s.SectionTypeKey.Equals("Text", StringComparison.OrdinalIgnoreCase))
-                                    {
-                                        var m = (TextSettings)s.TypedModel!;
-                                        <form method="post" asp-page-handler="UpdateTyped" class="mt-3">
-                                            <input type="hidden" name="sectionId" value="@s.Id" />
-                                            <input type="hidden" name="typeKey" value="@s.SectionTypeKey" />
-
-                                            <div class="row g-2">
-                                                <div class="col-12 col-md-6">
-                                                    <label class="form-label">Title</label>
-                                                    <input class="form-control" name="Text.Title" value="@m.Title" />
-                                                </div>
-
-                                                <div class="col-12 col-md-6">
-                                                    <label class="form-label">Align</label>
-                                                    <select class="form-select" name="Text.Align">
-                                                        <option value="" selected="@(string.IsNullOrWhiteSpace(m.Align))">(default)</option>
-                                                        <option value="left" selected="@(m.Align == "left")">Left</option>
-                                                        <option value="center" selected="@(m.Align == "center")">Center</option>
-                                                        <option value="right" selected="@(m.Align == "right")">Right</option>
-                                                    </select>
-                                                </div>
-
-                                                <div class="col-12">
-                                                    <label class="form-label">Body</label>
-                                                    <textarea class="form-control" name="Text.Body" rows="6">@m.Body</textarea>
-                                                </div>
-                                            </div>
-
-                                            <div class="mt-2 d-flex justify-content-end">
-                                                <button class="btn btn-sm btn-primary" type="submit">Save</button>
-                                            </div>
-                                        </form>
-                                    }
-                                    @* ---------- GALLERY ---------- *@
-                                    else if (s.SectionTypeKey.Equals("Gallery", StringComparison.OrdinalIgnoreCase))
-                                    {
-                                        var m = (GallerySettings)s.TypedModel!;
-                                        <form method="post" asp-page-handler="UpdateTyped" class="mt-3">
-                                            <input type="hidden" name="sectionId" value="@s.Id" />
-                                            <input type="hidden" name="typeKey" value="@s.SectionTypeKey" />
-
-                                            <div class="row g-2">
-                                                <div class="col-12 col-md-4">
-                                                    <label class="form-label">Layout</label>
-                                                    <select class="form-select" name="Gallery.Layout">
-                                                        <option value="" selected="@(string.IsNullOrWhiteSpace(m.Layout))">(default)</option>
-                                                        <option value="grid" selected="@(m.Layout == "grid")">Grid</option>
-                                                        <option value="carousel" selected="@(m.Layout == "carousel")">Carousel</option>
-                                                    </select>
-                                                </div>
-
-                                                <div class="col-12 col-md-8">
-                                                    <label class="form-label">Images</label>
-
-                                                    <div class="input-group">
-                                                        <input class="form-control"
-                                                               id="gallery-ids-@s.Id"
-                                                               name="Gallery.ImageAssetIds"
-                                                               value="@string.Join(",", m.ImageAssetIds)" />
-
-                                                        <button type="button"
-                                                                class="btn btn-outline-secondary"
-                                                                onclick="openMediaPicker({ mode: 'bulk', targetInputId: 'gallery-ids-@s.Id', previewElId: 'gallery-preview-@s.Id' })">
-                                                            Browse
-                                                        </button>
-                                                    </div>
-
-                                                    <div class="form-text">Picker supports multi-select; IDs will be merged uniquely.</div>
-
-                                                    @* ✅ Preview target *@
-                                                    <div class="mt-2 d-flex flex-wrap gap-2" id="gallery-preview-@s.Id"></div>
-                                                </div>
-                                            </div>
-
-                                            <div class="mt-2 d-flex justify-content-end">
-                                                <button class="btn btn-sm btn-primary" type="submit">Save</button>
-                                            </div>
-                                        </form>
-                                    }
-                                    @* ---------- FALLBACK JSON EDITOR ---------- *@
-                                    else
-                                    {
-                                        <details class="mt-3">
-                                            <summary class="text-primary" style="cursor:pointer;">Edit Settings JSON</summary>
-
-                                            <form method="post" asp-page-handler="UpdateJson" class="mt-2">
-                                                <input type="hidden" name="sectionId" value="@s.Id" />
-                                                <textarea name="settingsJson" class="form-control font-monospace" rows="8">@s.SettingsJson</textarea>
-                                                <div class="form-text">Validated using <code>@s.SectionTypeKey</code> validator (if registered).</div>
-                                                <div class="mt-2 d-flex justify-content-end">
-                                                    <button class="btn btn-sm btn-primary" type="submit">Save JSON</button>
-                                                </div>
-                                            </form>
-                                        </details>
-                                    }
-                                </td>
-
-                                <td class="text-end">
-                                    <form method="post" asp-page-handler="MoveUp" class="d-inline">
-                                        <input type="hidden" name="sectionId" value="@s.Id" />
-                                        <button class="btn btn-sm btn-outline-secondary" type="submit" @(i == 0 ? "disabled" : "")>Up</button>
-                                    </form>
-
-                                    <form method="post" asp-page-handler="MoveDown" class="d-inline ms-1">
-                                        <input type="hidden" name="sectionId" value="@s.Id" />
-                                        <button class="btn btn-sm btn-outline-secondary" type="submit" @(i == Model.Items.Count - 1 ? "disabled" : "")>Down</button>
-                                    </form>
-
-                                    <form method="post" asp-page-handler="Delete" class="d-inline ms-1">
-                                        <input type="hidden" name="sectionId" value="@s.Id" />
-                                        <button class="btn btn-sm btn-outline-danger" type="submit">Delete</button>
-                                    </form>
-                                </td>
-                            </tr>
-                        }
-                    }
-                </tbody>
-            </table>
+                }
+            </div>
         </div>
     </div>
 }
-
-<div class="modal fade" id="mediaPickerModal" tabindex="-1" aria-hidden="true">
-    <div class="modal-dialog modal-xl modal-dialog-scrollable">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title">Select Media</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-            </div>
-
-            <div class="modal-body p-0">
-                <iframe id="mediaPickerFrame" style="width:100%; height:70vh; border:0;"></iframe>
-            </div>
-        </div>
-    </div>
-</div>
 
 @section Scripts {
     <partial name="_ValidationScriptsPartial" />
 
     <script>
-        // Context: where to write picker results + render previews
-        let mediaPickerCtx = null;
+        (function () {
 
-        function openMediaPicker({ mode, targetInputId, previewElId }) {
-            mediaPickerCtx = { mode, targetInputId, previewElId };
+            const pageId = @Model.Id;
 
-            const frame = document.getElementById("mediaPickerFrame");
-            frame.src = "/Admin/Media/Picker";
+            // ✅ draft revision concurrency token (base64 rowversion)
+            // Provided by SectionsModel.DraftRevisionRowVersionBase64
+            let draftRevisionRowVersion =
+                @Html.Raw(JsonSerializer.Serialize(Model.DraftRevisionRowVersionBase64 ?? ""));
 
-            const modalEl = document.getElementById("mediaPickerModal");
-            bootstrap.Modal.getOrCreateInstance(modalEl).show();
-        }
+            let sortableInstance = null;
 
-        function closeMediaPicker() {
-            const modalEl = document.getElementById("mediaPickerModal");
-            bootstrap.Modal.getInstance(modalEl)?.hide();
-        }
+            function getAntiForgeryToken() {
+                const el = document.querySelector('#antiForgeryForm input[name="__RequestVerificationToken"]');
+                return el ? el.value : null;
+            }
 
-        function mergeIds(existingCsv, newIds) {
-            const set = new Set(
-                (existingCsv || "")
-                    .split(",")
-                    .map(x => x.trim())
-                    .filter(Boolean)
-            );
+            async function postJson(url, body) {
+                const token = getAntiForgeryToken();
 
-            newIds.forEach(id => set.add(String(id)));
-            return Array.from(set).join(",");
-        }
+                const res = await fetch(url, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        ...(token ? { "RequestVerificationToken": token } : {})
+                    },
+                    body: JSON.stringify(body)
+                });
 
-        function parseIds(csv) {
-            return (csv || "")
-                .split(",")
-                .map(x => Number(x.trim()))
-                .filter(x => Number.isFinite(x) && x > 0);
-        }
+                let json = null;
+                try { json = await res.json(); } catch { }
 
-        function getAntiForgeryToken() {
-            const el = document.querySelector('input[name="__RequestVerificationToken"]');
-            return el ? el.value : null;
-        }
+                // ✅ Concurrency conflict (rowversion mismatch)
+                if (res.status === 409) {
+                    const msg = json?.error || json?.message || "This draft was changed by someone else.";
+                    // safest UX: reload to refresh DOM + token
+                    alert(msg + " Reloading…");
+                    window.location.reload();
+                    return null;
+                }
 
-        async function lookupMedia(ids) {
-            ids = (ids || []).filter(x => Number.isFinite(x) && x > 0);
-            if (!ids.length) return [];
+                if (!res.ok || json?.ok === false) {
+                    throw new Error(json?.error || json?.message || ("Request failed: " + res.status));
+                }
 
-            const token = getAntiForgeryToken();
+                // ✅ refresh token if server returns it
+                if (json?.draftRevisionRowVersion) {
+                    draftRevisionRowVersion = json.draftRevisionRowVersion;
+                }
 
-            const res = await fetch("/Admin/Media/Picker?handler=Lookup", {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    ...(token ? { "RequestVerificationToken": token } : {})
-                },
-                body: JSON.stringify({ ids })
+                return json;
+            }
+
+            // =========================
+            // DELETE (AJAX + concurrency token)
+            // =========================
+            document.addEventListener("click", async function (e) {
+                const btn = e.target.closest("[data-delete-revision-section]");
+                if (!btn) return;
+
+                const id = Number(btn.getAttribute("data-delete-revision-section"));
+                if (!Number.isFinite(id) || id <= 0) return;
+
+                if (!confirm("Delete this section?")) return;
+
+                btn.disabled = true;
+
+                try {
+                    const url = `/Admin/Pages/Sections/${pageId}?handler=DeleteRevisionSection`;
+
+                    await postJson(url, {
+                        revisionSectionId: id,
+                        draftRevisionRowVersion
+                    });
+
+                    const row = document.getElementById("section-" + id);
+                    if (row) row.remove();
+
+                } catch (err) {
+                    alert(err.message || "Delete failed.");
+                    btn.disabled = false;
+                }
             });
 
-            const json = await res.json();
-            if (!res.ok || !json.ok) return [];
+            // =========================
+            // REORDER (SortableJS + concurrency token)
+            // =========================
 
-            return (json.items || []).map(x => ({
-                id: x.id,
-                fileName: x.fileName,
-                altText: x.altText || x.fileName,
-                url: x.url,          // StorageKey
-                thumbUrl: x.thumbUrl // ThumbStorageKey
-            }));
-        }
+            function currentOrder(list) {
+                return Array.from(list.querySelectorAll('.section-item[data-revision-section-id]'))
+                    .map(el => Number(el.getAttribute('data-revision-section-id')))
+                    .filter(n => Number.isFinite(n) && n > 0);
+            }
 
-        function toPublicUrl(storageKey) {
-            if (!storageKey) return "";
-            if (storageKey.startsWith("http://") || storageKey.startsWith("https://")) return storageKey;
-            if (storageKey.startsWith("/")) return storageKey;
-            return "/uploads/" + storageKey;
-        }
+            async function persistOrder(list) {
+                const orderedRevisionSectionIds = currentOrder(list);
+                if (!orderedRevisionSectionIds.length)
+                    throw new Error("No sections found to reorder.");
 
-        function renderPreviewSingle(previewElId, item) {
-            const el = document.getElementById(previewElId);
-            if (!el) return;
+                const url = `/Admin/Pages/Sections/${pageId}?handler=ReorderRevisionSections`;
 
-            if (!item) { el.innerHTML = ""; return; }
+                const payload = await postJson(url, {
+                    pageId,
+                    orderedRevisionSectionIds,
+                    draftRevisionRowVersion
+                });
 
-            const src = toPublicUrl(item.thumbUrl || item.url);
-            const safeName = (item.fileName || "").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-            const safeAlt = (item.altText || item.fileName || "").replaceAll('"', "&quot;");
-
-            el.innerHTML = `
-                <div class="d-flex align-items-center gap-2">
-                    <img src="${src}" alt="${safeAlt}"
-                         style="height:64px;width:96px;object-fit:cover;border-radius:.5rem;border:1px solid rgba(0,0,0,.12);" />
-                    <div class="small text-muted text-truncate" style="max-width:320px;">${safeName}</div>
-                </div>
-            `;
-        }
-
-        function renderPreviewBulk(previewElId, items) {
-            const el = document.getElementById(previewElId);
-            if (!el) return;
-
-            if (!items || !items.length) { el.innerHTML = ""; return; }
-
-            el.innerHTML = items.map(item => {
-                const src = toPublicUrl(item.thumbUrl || item.url);
-                const safeAlt = (item.altText || item.fileName || "").replaceAll('"', "&quot;");
-                return `
-                    <img src="${src}" alt="${safeAlt}" title="${safeAlt}"
-                         style="height:64px;width:96px;object-fit:cover;border-radius:.5rem;border:1px solid rgba(0,0,0,.12);" />
-                `;
-            }).join("");
-        }
-
-        async function refreshPreviewFor(targetInputId, previewElId, mode) {
-            if (!previewElId) return;
-
-            const input = document.getElementById(targetInputId);
-            if (!input) return;
-
-            if (mode === "single") {
-                const id = Number((input.value || "").trim());
-                if (!Number.isFinite(id) || id <= 0) {
-                    renderPreviewSingle(previewElId, null);
-                    return;
+                // Hardened backend mismatch details (optional debug)
+                if (payload?.missingFromClient || payload?.extraFromClient) {
+                    console.warn("Reorder mismatch details:", payload);
                 }
 
-                const items = await lookupMedia([id]);
-                renderPreviewSingle(previewElId, items[0] || null);
-            } else {
-                const ids = parseIds(input.value);
-                if (!ids.length) {
-                    renderPreviewBulk(previewElId, []);
-                    return;
+                return true;
+            }
+
+            function bindSortable(list) {
+                if (!window.Sortable) return;
+
+                if (sortableInstance && typeof sortableInstance.destroy === "function") {
+                    try { sortableInstance.destroy(); } catch { }
+                    sortableInstance = null;
                 }
 
-                const items = await lookupMedia(ids);
+                sortableInstance = new Sortable(list, {
+                    animation: 150,
+                    handle: ".section-drag-handle",
+                    draggable: ".section-item",
+                    onEnd: async function (evt) {
+                        if (evt.oldIndex === evt.newIndex) return;
 
-                // Keep original order from CSV
-                const byId = new Map(items.map(x => [x.id, x]));
-                const ordered = ids.map(id => byId.get(id)).filter(Boolean);
-
-                renderPreviewBulk(previewElId, ordered);
-            }
-        }
-
-        function applyPickedIds(ids) {
-            if (!mediaPickerCtx) return;
-
-            const input = document.getElementById(mediaPickerCtx.targetInputId);
-            if (!input) return;
-
-            if (mediaPickerCtx.mode === "single") {
-                input.value = ids[0] ? String(ids[0]) : "";
-            } else {
-                input.value = mergeIds(input.value, ids);
-            }
-        }
-
-        window.addEventListener("message", async (ev) => {
-            if (ev.origin !== window.location.origin) return;
-
-            const data = ev.data || {};
-            if (!mediaPickerCtx) return;
-
-            if (data.type === "media:selected" && Array.isArray(data.items)) {
-                const ids = data.items
-                    .map(x => Number(x.id))
-                    .filter(x => Number.isFinite(x) && x > 0);
-
-                if (ids.length) {
-                    applyPickedIds(ids);
-                    await refreshPreviewFor(mediaPickerCtx.targetInputId, mediaPickerCtx.previewElId, mediaPickerCtx.mode);
-                    closeMediaPicker();
-                }
-                return;
+                        try {
+                            await persistOrder(list);
+                        } catch (err) {
+                            alert(err.message || "Reorder failed.");
+                            window.location.reload();
+                        }
+                    }
+                });
             }
 
-            if (data.type === "media-selected" && data.id) {
-                const id = Number(data.id);
-                if (Number.isFinite(id) && id > 0) {
-                    applyPickedIds([id]);
-                    await refreshPreviewFor(mediaPickerCtx.targetInputId, mediaPickerCtx.previewElId, mediaPickerCtx.mode);
-                    closeMediaPicker();
-                }
-                return;
-            }
+            document.addEventListener("DOMContentLoaded", function () {
+                const list = document.getElementById("sectionsList");
+                if (!list) return;
 
-            if (data.type === "media-picker-cancel") {
-                closeMediaPicker();
-                return;
-            }
-        });
+                bindSortable(list);
+            });
 
-        // Render previews on initial load (existing values)
-        document.addEventListener("DOMContentLoaded", async () => {
-            const heroInputs = Array.from(document.querySelectorAll('input[id^="hero-bg-"]'));
-            for (const inp of heroInputs) {
-                const sid = inp.id.replace("hero-bg-", "");
-                await refreshPreviewFor(inp.id, "hero-preview-" + sid, "single");
-            }
-
-            const galInputs = Array.from(document.querySelectorAll('input[id^="gallery-ids-"]'));
-            for (const inp of galInputs) {
-                const sid = inp.id.replace("gallery-ids-", "");
-                await refreshPreviewFor(inp.id, "gallery-preview-" + sid, "bulk");
-            }
-        });
+        })();
     </script>
 }
