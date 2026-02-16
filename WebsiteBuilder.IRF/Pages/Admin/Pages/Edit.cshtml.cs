@@ -23,19 +23,22 @@ public sealed class EditModel : PageModel
     private readonly ISectionRegistry _sections;
     private readonly IPageRevisionSectionService _pageRevisionSectionService;
     private readonly IRazorPartialRenderer _partialRenderer;
+    private readonly PagePublishValidator _pagePublishValidator;
 
     public EditModel(
         DataContext db,
         ITenantContext tenant,
         ISectionRegistry sections,
         IPageRevisionSectionService pageRevisionSectionService,
-        IRazorPartialRenderer partialRenderer)
+        IRazorPartialRenderer partialRenderer,
+        PagePublishValidator pagePublishValidator)
     {
         _db = db;
         _tenant = tenant;
         _sections = sections;
         _pageRevisionSectionService = pageRevisionSectionService;
         _partialRenderer = partialRenderer;
+        _pagePublishValidator = pagePublishValidator;
     }
 
     [BindProperty(SupportsGet = true)]
@@ -94,6 +97,8 @@ public sealed class EditModel : PageModel
 
     [BindProperty]
     public InputModel Input { get; set; } = new();
+    public List<PagePublishValidator.PageSectionPublishError> PublishValidationErrors { get; private set; } = new();
+    public HashSet<int> PublishValidationSectionIds { get; private set; } = new();
 
     public async Task<IActionResult> OnGetAsync(CancellationToken ct) => await LoadAsync(ct);
 
@@ -167,6 +172,20 @@ public sealed class EditModel : PageModel
             return RedirectToPage(new { id = Id });
         }
 
+        // ✅ NEW: validate draft revision sections before publishing
+        var publishValidation = await _pagePublishValidator.ValidateDraftSectionsAsync(page.Id, ct);
+        if (!publishValidation.IsValid)
+        {
+            // short user-facing message
+            TempData["Error"] = "Cannot publish. One or more sections have invalid settings.";
+
+            // optional: store detailed errors for display (avoid huge payloads)
+            // If you already have JSON helpers elsewhere, reuse them.
+            TempData["PublishValidationErrors"] = JsonSerializer.Serialize(publishValidation.Errors);
+
+            return RedirectToPage(new { id = Id });
+        }
+
         var maxVersion = await _db.PageRevisions
             .AsNoTracking()
             .Where(r => r.TenantId == _tenant.TenantId && r.PageId == page.Id && !r.IsDeleted)
@@ -189,7 +208,9 @@ public sealed class EditModel : PageModel
             PublishedAt = now
         };
 
-        foreach (var s in page.DraftRevision.Sections.OrderBy(x => x.SortOrder))
+        foreach (var s in page.DraftRevision.Sections
+                     .Where(x => !x.IsDeleted && x.IsActive) // ✅ match publish validator filter
+                     .OrderBy(x => x.SortOrder))
         {
             published.Sections.Add(new PageRevisionSection
             {
@@ -213,6 +234,7 @@ public sealed class EditModel : PageModel
         TempData["Success"] = "Page published.";
         return RedirectToPage(new { id = Id });
     }
+
 
     public async Task<IActionResult> OnPostRestoreDraftAsync(int revisionId, CancellationToken ct)
     {
@@ -517,8 +539,40 @@ public sealed class EditModel : PageModel
             }
         }
 
-        if (TempData.TryGetValue("Success", out var ok)) Banner = ok?.ToString();
-        if (TempData.TryGetValue("Error", out var err)) Banner = err?.ToString();
+        if (TempData.TryGetValue("Success", out var ok))
+            Banner = ok?.ToString();
+
+        if (TempData.TryGetValue("Error", out var err))
+            Banner = err?.ToString();
+
+        // ✅ Always reset first
+        PublishValidationErrors = new();
+        PublishValidationSectionIds = new();
+
+        if (TempData.TryGetValue("PublishValidationErrors", out var raw) &&
+            raw is string json &&
+            !string.IsNullOrWhiteSpace(json))
+        {
+            try
+            {
+                var errs =
+                    JsonSerializer.Deserialize<List<PagePublishValidator.PageSectionPublishError>>(json)
+                    ?? new List<PagePublishValidator.PageSectionPublishError>();
+
+                PublishValidationErrors = errs;
+
+                PublishValidationSectionIds = errs
+                    .Where(e => e.SectionId > 0)
+                    .Select(e => e.SectionId)
+                    .ToHashSet();
+            }
+            catch
+            {
+                // fail silently
+                PublishValidationErrors = new();
+                PublishValidationSectionIds = new();
+            }
+        }
 
         return Page();
     }

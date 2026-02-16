@@ -36,6 +36,42 @@
     </div>
 </div>
 
+@* ✅ Publish validation errors MUST be outside the flex header *@
+@if (Model.PublishValidationErrors?.Count > 0)
+{
+    <div class="alert alert-danger mb-3">
+        <div class="fw-semibold mb-2">Publish blocked due to invalid section settings:</div>
+
+        <ul class="mb-0">
+            @foreach (var e in Model.PublishValidationErrors)
+            {
+                if (e.SectionId == 0)
+                {
+                    foreach (var msg in e.Messages)
+                    {
+                        <li>@msg</li>
+                    }
+                }
+                else
+                {
+                    <li>
+                        <a href="#section-@e.SectionId" class="text-decoration-underline">
+                            Section #@e.SectionId (@e.TypeKey)
+                        </a>
+
+                        <ul class="mb-0">
+                            @foreach (var msg in e.Messages)
+                            {
+                                <li>@msg</li>
+                            }
+                        </ul>
+                    </li>
+                }
+            }
+        </ul>
+    </div>
+}
+
 @if (!string.IsNullOrWhiteSpace(Model.Banner))
 {
     <div class="alert alert-info">@Model.Banner</div>
@@ -231,272 +267,292 @@
             let draftRevisionRowVersion =
                 @Html.Raw(JsonSerializer.Serialize(Model.DraftRevisionRowVersionBase64 ?? ""));
 
-            function getAntiForgeryToken() {
-                const el = document.querySelector('#antiForgeryForm input[name="__RequestVerificationToken"]');
-                return el ? el.value : null;
+            // ✅ publish-validation highlight list from server
+            const invalidSectionIds =
+                @Html.Raw(JsonSerializer.Serialize(
+                    Model.PublishValidationErrors?
+                            .Where(e => e.SectionId > 0)
+                            .Select(e => e.SectionId)
+                            .Distinct()
+                            .ToList() ?? new List<int>()
+                        ));
+
+        function getAntiForgeryToken() {
+            const el = document.querySelector('#antiForgeryForm input[name="__RequestVerificationToken"]');
+            return el ? el.value : null;
+        }
+
+        async function postJson(url, body) {
+            const token = getAntiForgeryToken();
+
+            const res = await fetch(url, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    ...(token ? { "RequestVerificationToken": token } : {})
+                },
+                body: JSON.stringify(body)
+            });
+
+            let json = null;
+            try { json = await res.json(); } catch { }
+
+            // ✅ Concurrency conflict
+            if (res.status === 409) {
+                const msg = json?.error || json?.message || "This draft was changed by someone else.";
+                alert(msg + " Reloading…");
+                window.location.reload();
+                return null;
             }
 
-            async function postJson(url, body) {
-                const token = getAntiForgeryToken();
-
-                const res = await fetch(url, {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                        ...(token ? { "RequestVerificationToken": token } : {})
-                    },
-                    body: JSON.stringify(body)
-                });
-
-                let json = null;
-                try { json = await res.json(); } catch { }
-
-                // ✅ Concurrency conflict
-                if (res.status === 409) {
-                    const msg = json?.error || json?.message || "This draft was changed by someone else.";
-                    alert(msg + " Reloading…");
-                    window.location.reload();
-                    return null;
-                }
-
-                if (!res.ok || json?.ok === false) {
-                    const msg = json?.error || json?.message || ("Request failed: " + res.status);
-                    throw new Error(msg);
-                }
-
-                // ✅ Keep token fresh
-                if (json?.draftRevisionRowVersion) {
-                    draftRevisionRowVersion = json.draftRevisionRowVersion;
-                }
-
-                return json;
+            if (!res.ok || json?.ok === false) {
+                const msg = json?.error || json?.message || ("Request failed: " + res.status);
+                throw new Error(msg);
             }
 
-            // =========================
-            // Helpers: list + Sortable
-            // =========================
-            let sortableInstance = null;
-
-            function ensureSectionsListExists() {
-                let list = document.getElementById("sectionsList");
-                if (list) return list;
-
-                const host = document.getElementById("sectionsHost");
-                if (!host) return null;
-
-                const alertEl = document.getElementById("noSectionsAlert") || host.querySelector(".alert");
-                if (alertEl) alertEl.remove();
-
-                list = document.createElement("div");
-                list.id = "sectionsList";
-                list.className = "d-grid gap-2";
-                host.appendChild(list);
-
-                bindDeleteHandler(list);
-                bindSortable(list);
-
-                return list;
+            // ✅ Keep token fresh
+            if (json?.draftRevisionRowVersion) {
+                draftRevisionRowVersion = json.draftRevisionRowVersion;
             }
 
-            function currentOrder(list) {
-                return Array.from(list.querySelectorAll('.section-item[data-revision-section-id]'))
-                    .map(el => Number(el.getAttribute('data-revision-section-id')))
-                    .filter(n => Number.isFinite(n) && n > 0);
+            return json;
+        }
+
+        // =========================
+        // Publish validation highlight + scroll
+        // =========================
+        if (Array.isArray(invalidSectionIds) && invalidSectionIds.length) {
+            invalidSectionIds.forEach(id => {
+                const el = document.getElementById("section-" + id);
+                if (el) el.classList.add("border", "border-danger");
+            });
+
+            const first = document.getElementById("section-" + invalidSectionIds[0]);
+            if (first) first.scrollIntoView({ behavior: "smooth", block: "center" });
+        }
+
+        // =========================
+        // Helpers: list + Sortable
+        // =========================
+        let sortableInstance = null;
+
+        function ensureSectionsListExists() {
+            let list = document.getElementById("sectionsList");
+            if (list) return list;
+
+            const host = document.getElementById("sectionsHost");
+            if (!host) return null;
+
+            const alertEl = document.getElementById("noSectionsAlert") || host.querySelector(".alert");
+            if (alertEl) alertEl.remove();
+
+            list = document.createElement("div");
+            list.id = "sectionsList";
+            list.className = "d-grid gap-2";
+            host.appendChild(list);
+
+            bindDeleteHandler(list);
+            bindSortable(list);
+
+            return list;
+        }
+
+        function currentOrder(list) {
+            return Array.from(list.querySelectorAll('.section-item[data-revision-section-id]'))
+                .map(el => Number(el.getAttribute('data-revision-section-id')))
+                .filter(n => Number.isFinite(n) && n > 0);
+        }
+
+        async function persistOrder(list) {
+            const orderedRevisionSectionIds = currentOrder(list);
+            if (!orderedRevisionSectionIds.length)
+                throw new Error("No sections found to reorder.");
+
+            const url = `/Admin/Pages/Sections/${pageId}?handler=ReorderRevisionSections`;
+
+            const payload = await postJson(url, {
+                pageId,
+                orderedRevisionSectionIds,
+                draftRevisionRowVersion
+            });
+
+            if (payload?.missingFromClient || payload?.extraFromClient) {
+                console.warn("Reorder mismatch details:", payload);
+            }
+        }
+
+        function bindSortable(list) {
+            if (!window.Sortable) return;
+
+            if (sortableInstance && typeof sortableInstance.destroy === "function") {
+                try { sortableInstance.destroy(); } catch { }
+                sortableInstance = null;
             }
 
-            async function persistOrder(list) {
-                const orderedRevisionSectionIds = currentOrder(list);
-                if (!orderedRevisionSectionIds.length)
-                    throw new Error("No sections found to reorder.");
-
-                // ✅ Use SectionsModel reorder handler
-                const url = `/Admin/Pages/Sections/${pageId}?handler=ReorderRevisionSections`;
-
-                const payload = await postJson(url, {
-                    pageId,
-                    orderedRevisionSectionIds,
-                    draftRevisionRowVersion
-                });
-
-                if (payload?.missingFromClient || payload?.extraFromClient) {
-                    console.warn("Reorder mismatch details:", payload);
-                }
-            }
-
-            function bindSortable(list) {
-                if (!window.Sortable) return;
-
-                if (sortableInstance && typeof sortableInstance.destroy === "function") {
-                    try { sortableInstance.destroy(); } catch { }
-                    sortableInstance = null;
-                }
-
-                sortableInstance = new Sortable(list, {
-                    animation: 150,
-                    handle: ".section-drag-handle",
-                    draggable: ".section-item",
-                    onEnd: async function () {
-                        try {
-                            await persistOrder(list);
-                        } catch (err) {
-                            alert(err.message || "Reorder failed.");
-                            window.location.reload();
-                        }
-                    }
-                });
-            }
-
-            // =========================
-            // DELETE (delegation)
-            // =========================
-            function bindDeleteHandler(list) {
-                if (list.__deleteBound) return;
-                list.__deleteBound = true;
-
-                list.addEventListener("click", async (e) => {
-                    const btn = e.target.closest('[data-delete-revision-section]');
-                    if (!btn) return;
-
-                    const id = Number(btn.getAttribute("data-delete-revision-section"));
-                    if (!Number.isFinite(id) || id <= 0) return;
-
-                    if (!confirm("Delete this section?")) return;
-
-                    btn.disabled = true;
-
+            sortableInstance = new Sortable(list, {
+                animation: 150,
+                handle: ".section-drag-handle",
+                draggable: ".section-item",
+                onEnd: async function () {
                     try {
-                        // ✅ Use SectionsModel delete handler
-                        const url = `/Admin/Pages/Sections/${pageId}?handler=DeleteRevisionSection`;
-
-                        await postJson(url, {
-                            revisionSectionId: id,
-                            draftRevisionRowVersion
-                        });
-
-                        const row = document.getElementById("section-" + id);
-                        if (row) row.remove();
-
-                        const insertAfterSelect = document.getElementById("insertAfter");
-                        if (insertAfterSelect) {
-                            const opt = insertAfterSelect.querySelector(`option[value="${id}"]`);
-                            if (opt) opt.remove();
-                        }
-
-                        if (list.querySelectorAll(".section-item").length === 0) {
-                            list.remove();
-                            const host = document.getElementById("sectionsHost");
-                            if (host) {
-                                const msg = document.createElement("div");
-                                msg.className = "alert alert-light border mb-0";
-                                msg.id = "noSectionsAlert";
-                                msg.innerHTML = 'No sections yet. Use <strong>Add Section</strong> to add sections.';
-                                host.appendChild(msg);
-                            }
-                        }
+                        await persistOrder(list);
                     } catch (err) {
-                        alert(err.message || "Delete failed.");
-                        btn.disabled = false;
+                        alert(err.message || "Reorder failed.");
+                        window.location.reload();
                     }
-                });
-            }
+                }
+            });
+        }
 
-            // Bind delete + sortable on load
-            (function initExistingList() {
-                const list = document.getElementById("sectionsList");
-                if (!list) return;
-                bindDeleteHandler(list);
-                bindSortable(list);
-            })();
+        // =========================
+        // DELETE (delegation)
+        // =========================
+        function bindDeleteHandler(list) {
+            if (list.__deleteBound) return;
+            list.__deleteBound = true;
 
-            // =========================
-            // Insert-at-top disables insert-after
-            // =========================
-            const insertAtTopEl = document.getElementById("insertAtTop");
-            const insertAfterEl = document.getElementById("insertAfter");
-            if (insertAtTopEl && insertAfterEl) {
-                const sync = () => insertAfterEl.disabled = !!insertAtTopEl.checked;
-                insertAtTopEl.addEventListener("change", sync);
-                sync();
-            }
+            list.addEventListener("click", async (e) => {
+                const btn = e.target.closest('[data-delete-revision-section]');
+                if (!btn) return;
 
-            // =========================
-            // ADD SECTION (AJAX - SectionsModel handler)
-            // =========================
-            const confirmAddBtn = document.getElementById("confirmAddSectionBtn");
-            if (confirmAddBtn) {
-                confirmAddBtn.addEventListener("click", async () => {
-                    const sectionTypeId = Number(document.getElementById("addSectionType")?.value || 0);
-                    const insertAtTop = !!document.getElementById("insertAtTop")?.checked;
+                const id = Number(btn.getAttribute("data-delete-revision-section"));
+                if (!Number.isFinite(id) || id <= 0) return;
 
-                    const afterRaw = document.getElementById("insertAfter")?.value || "";
-                    const insertAfterRevisionSectionId = afterRaw ? Number(afterRaw) : null;
+                if (!confirm("Delete this section?")) return;
 
-                    if (!sectionTypeId || sectionTypeId <= 0) {
-                        alert("Please select a section type.");
+                btn.disabled = true;
+
+                try {
+                    const url = `/Admin/Pages/Sections/${pageId}?handler=DeleteRevisionSection`;
+
+                    await postJson(url, {
+                        revisionSectionId: id,
+                        draftRevisionRowVersion
+                    });
+
+                    const row = document.getElementById("section-" + id);
+                    if (row) row.remove();
+
+                    const insertAfterSelect = document.getElementById("insertAfter");
+                    if (insertAfterSelect) {
+                        const opt = insertAfterSelect.querySelector(`option[value="${id}"]`);
+                        if (opt) opt.remove();
+                    }
+
+                    if (list.querySelectorAll(".section-item").length === 0) {
+                        list.remove();
+                        const host = document.getElementById("sectionsHost");
+                        if (host) {
+                            const msg = document.createElement("div");
+                            msg.className = "alert alert-light border mb-0";
+                            msg.id = "noSectionsAlert";
+                            msg.innerHTML = 'No sections yet. Use <strong>Add Section</strong> to add sections.';
+                            host.appendChild(msg);
+                        }
+                    }
+                } catch (err) {
+                    alert(err.message || "Delete failed.");
+                    btn.disabled = false;
+                }
+            });
+        }
+
+        // Bind delete + sortable on load
+        (function initExistingList() {
+            const list = document.getElementById("sectionsList");
+            if (!list) return;
+            bindDeleteHandler(list);
+            bindSortable(list);
+        })();
+
+        // =========================
+        // Insert-at-top disables insert-after
+        // =========================
+        const insertAtTopEl = document.getElementById("insertAtTop");
+        const insertAfterEl = document.getElementById("insertAfter");
+        if (insertAtTopEl && insertAfterEl) {
+            const sync = () => insertAfterEl.disabled = !!insertAtTopEl.checked;
+            insertAtTopEl.addEventListener("change", sync);
+            sync();
+        }
+
+        // =========================
+        // ADD SECTION (AJAX - SectionsModel handler)
+        // =========================
+        const confirmAddBtn = document.getElementById("confirmAddSectionBtn");
+        if (confirmAddBtn) {
+            confirmAddBtn.addEventListener("click", async () => {
+                const sectionTypeId = Number(document.getElementById("addSectionType")?.value || 0);
+                const insertAtTop = !!document.getElementById("insertAtTop")?.checked;
+
+                const afterRaw = document.getElementById("insertAfter")?.value || "";
+                const insertAfterRevisionSectionId = afterRaw ? Number(afterRaw) : null;
+
+                if (!sectionTypeId || sectionTypeId <= 0) {
+                    alert("Please select a section type.");
+                    return;
+                }
+
+                confirmAddBtn.disabled = true;
+
+                try {
+                    const url = `/Admin/Pages/Sections/${pageId}?handler=AddRevisionSection`;
+
+                    const res = await postJson(url, {
+                        pageId,
+                        sectionTypeId,
+                        insertAtTop,
+                        insertAfterRevisionSectionId,
+                        draftRevisionRowVersion
+                    });
+
+                    if (!res || !res.html) {
+                        window.location.reload();
                         return;
                     }
 
-                    confirmAddBtn.disabled = true;
+                    const list = ensureSectionsListExists();
+                    if (!list) throw new Error("Sections list host not found.");
+
+                    if (insertAtTop) {
+                        list.insertAdjacentHTML("afterbegin", res.html);
+                    } else if (insertAfterRevisionSectionId) {
+                        const afterRow = document.getElementById("section-" + insertAfterRevisionSectionId);
+                        if (afterRow) afterRow.insertAdjacentHTML("afterend", res.html);
+                        else list.insertAdjacentHTML("beforeend", res.html);
+                    } else {
+                        list.insertAdjacentHTML("beforeend", res.html);
+                    }
+
+                    const insertAfterSelect = document.getElementById("insertAfter");
+                    if (insertAfterSelect && res.revisionSectionId) {
+                        const opt = document.createElement("option");
+                        opt.value = String(res.revisionSectionId);
+                        opt.textContent = res.title || ("Section " + res.revisionSectionId);
+                        insertAfterSelect.appendChild(opt);
+                    }
 
                     try {
-                        // ✅ Use SectionsModel add handler
-                        const url = `/Admin/Pages/Sections/${pageId}?handler=AddRevisionSection`;
+                        const modalEl = document.getElementById("addSectionModal");
+                        const instance = bootstrap.Modal.getInstance(modalEl);
+                        if (instance) instance.hide();
+                    } catch { }
 
-                        const res = await postJson(url, {
-                            pageId,
-                            sectionTypeId,
-                            insertAtTop,
-                            insertAfterRevisionSectionId,
-                            draftRevisionRowVersion
-                        });
+                    document.getElementById("addSectionType").value = "";
+                    document.getElementById("insertAtTop").checked = false;
+                    document.getElementById("insertAfter").value = "";
+                    if (insertAfterEl) insertAfterEl.disabled = false;
 
-                        if (!res || !res.html) {
-                            window.location.reload();
-                            return;
-                        }
+                    bindSortable(list);
 
-                        const list = ensureSectionsListExists();
-                        if (!list) throw new Error("Sections list host not found.");
+                    confirmAddBtn.disabled = false;
+                } catch (err) {
+                    alert(err.message || "Add section failed.");
+                    confirmAddBtn.disabled = false;
+                }
+            });
+        }
 
-                        if (insertAtTop) {
-                            list.insertAdjacentHTML("afterbegin", res.html);
-                        } else if (insertAfterRevisionSectionId) {
-                            const afterRow = document.getElementById("section-" + insertAfterRevisionSectionId);
-                            if (afterRow) afterRow.insertAdjacentHTML("afterend", res.html);
-                            else list.insertAdjacentHTML("beforeend", res.html);
-                        } else {
-                            list.insertAdjacentHTML("beforeend", res.html);
-                        }
-
-                        const insertAfterSelect = document.getElementById("insertAfter");
-                        if (insertAfterSelect && res.revisionSectionId) {
-                            const opt = document.createElement("option");
-                            opt.value = String(res.revisionSectionId);
-                            opt.textContent = res.title || ("Section " + res.revisionSectionId);
-                            insertAfterSelect.appendChild(opt);
-                        }
-
-                        try {
-                            const modalEl = document.getElementById("addSectionModal");
-                            const instance = bootstrap.Modal.getInstance(modalEl);
-                            if (instance) instance.hide();
-                        } catch { }
-
-                        document.getElementById("addSectionType").value = "";
-                        document.getElementById("insertAtTop").checked = false;
-                        document.getElementById("insertAfter").value = "";
-                        if (insertAfterEl) insertAfterEl.disabled = false;
-
-                        bindSortable(list);
-
-                        confirmAddBtn.disabled = false;
-                    } catch (err) {
-                        alert(err.message || "Add section failed.");
-                        confirmAddBtn.disabled = false;
-                    }
-                });
-            }
-
-        })();
-    </script>
+    })();
+</script>
 }

@@ -9,7 +9,9 @@ using WebsiteBuilder.IRF.Infrastructure.Sections;
 using WebsiteBuilder.IRF.Infrastructure.Sections.Settings;
 using WebsiteBuilder.IRF.Infrastructure.Tenancy;
 using WebsiteBuilder.IRF.ViewModels.Admin.Pages;
+using WebsiteBuilder.IRF.ViewModels.Admin.Pages.SectionSettings;
 using WebsiteBuilder.Models;
+using Page = WebsiteBuilder.Models.Page;
 
 namespace WebsiteBuilder.IRF.Pages.Admin.Pages;
 
@@ -20,19 +22,22 @@ public sealed class SectionsModel : PageModel
     private readonly ISectionRegistry _sections;
     private readonly IPageRevisionSectionService _pageRevisionSectionService;
     private readonly IRazorPartialRenderer _partial;
+    private readonly ISectionValidationService _sectionValidation;
 
     public SectionsModel(
         DataContext db,
         ITenantContext tenant,
         ISectionRegistry sections,
         IPageRevisionSectionService pageRevisionSectionService,
-        IRazorPartialRenderer partial)
+        IRazorPartialRenderer partial,
+        ISectionValidationService sectionValidation)
     {
         _db = db;
         _tenant = tenant;
         _sections = sections;
         _pageRevisionSectionService = pageRevisionSectionService;
         _partial = partial;
+        _sectionValidation = sectionValidation;
     }
 
     [BindProperty(SupportsGet = true)]
@@ -504,6 +509,83 @@ public sealed class SectionsModel : PageModel
         TempData["Success"] = "Section added.";
         return RedirectToPage(new { id = Id });
     }
+    public async Task<IActionResult> OnPostSaveSectionSettingsAsync(
+        [FromBody] SaveSectionSettingsRequestVm req,
+        CancellationToken ct)
+    {
+        if (!_tenant.IsResolved) return NotFound("Tenant not resolved.");
+        if (req is null) return BadRequest();
+
+        var page = await _db.Pages
+            .AsNoTracking()
+            .Where(p => p.Id == Id && p.TenantId == _tenant.TenantId && !p.IsDeleted)
+            .Select(p => new { p.Id, p.DraftRevisionId })
+            .FirstOrDefaultAsync(ct);
+
+        if (page == null) return NotFound();
+        if (page.DraftRevisionId is null) return BadRequest("No draft revision exists.");
+
+        var draft = await _db.PageRevisions
+            .FirstOrDefaultAsync(r =>
+                r.Id == page.DraftRevisionId.Value &&
+                r.TenantId == _tenant.TenantId &&
+                r.PageId == Id &&
+                !r.IsDeleted, ct);
+
+        if (draft == null) return NotFound("Draft revision not found.");
+
+        var section = await _db.PageRevisionSections
+            .Include(s => s.SectionType)
+            .FirstOrDefaultAsync(s =>
+                s.Id == req.SectionId &&
+                s.TenantId == _tenant.TenantId &&
+                !s.IsDeleted &&
+                s.PageRevisionId == page.DraftRevisionId.Value, ct);
+
+        if (section == null) return NotFound("Section not found.");
+        if (section.SectionType == null) return BadRequest("Section type not found.");
+
+        var typeKey = (section.SectionType.Key ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(typeKey))
+            return BadRequest(new { ok = false, errors = new[] { "SectionType.Key is required." } });
+
+        var json = string.IsNullOrWhiteSpace(req.SettingsJson) ? "{}" : req.SettingsJson;
+
+        try
+        {
+            ApplyOptimisticConcurrency(draft, req.DraftRevisionRowVersion);
+
+            // Optional (recommended): section-level concurrency
+            var secToken = FromBase64(req.SectionRowVersion);
+            if (secToken is not null && secToken.Length > 0)
+                _db.Entry(section).Property(x => x.RowVersion).OriginalValue = secToken;
+
+            var validation = await _sectionValidation.ValidateAsync(typeKey, json);
+            if (!validation.IsValid)
+                return BadRequest(new { ok = false, errors = validation.Errors });
+
+            section.SettingsJson = json;
+            draft.UpdatedAt = DateTime.UtcNow;
+
+            await _db.SaveChangesAsync(ct);
+
+            return new JsonResult(new
+            {
+                ok = true,
+                draftRevisionRowVersion = ToBase64(draft.RowVersion),
+                sectionRowVersion = ToBase64(section.RowVersion)
+            });
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return ConcurrencyConflict();
+        }
+        catch (InvalidOperationException ex)
+        {
+            return new JsonResult(new { ok = false, error = ex.Message }) { StatusCode = 400 };
+        }
+    }
+
 
     // =========================
     // LOAD
@@ -646,6 +728,12 @@ public sealed class SectionsModel : PageModel
             return JsonSerializer.Serialize(new GallerySettings { Layout = "grid", ImageAssetIds = new List<int>() });
 
         return "{}";
+    }
+    private IQueryable<Page> PagesForCurrentUser()
+    {
+        return _db.Pages
+            .AsNoTracking()
+            .Where(p => p.TenantId == _tenant.TenantId && !p.IsDeleted);
     }
 
     // =========================
