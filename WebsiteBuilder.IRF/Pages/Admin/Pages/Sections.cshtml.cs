@@ -679,8 +679,12 @@ public sealed class SectionsModel : PageModel
                     CollapseId = $"sec-editor-{s.Id}",
                     EditorPartialPath = editorPartialPath,
                     IsEditable = true,
+                    SectionRowVersionBase64 = (s.RowVersion is { Length: > 0 } rv)
+                        ? Convert.ToBase64String(rv)
+                        : "",
                     Section = s
                 });
+
             }
         }
 

@@ -1,43 +1,58 @@
 ﻿@model WebsiteBuilder.IRF.ViewModels.Admin.Pages.SectionRowVm
+@using System.Text.Json
 
 @{
-    // Hero uses SettingsJson (same as Gallery/Text)
-    var initialJson = Model?.SettingsJson ?? "";
+    // Settings JSON stored on the section row
+    var initialJson = Model?.SettingsJson ?? "{}";
     var sectionId = Model?.Id ?? 0;
+
+    // (Optional) If your VM still carries it; we won't rely on it for concurrency anymore
+    // because we read/write section rowversion on the section card (data-section-rowversion).
+    var _ = Model?.SectionRowVersionBase64 ?? "";
 }
 
-<div class="hero-editor">
+<div class="hero-editor" data-section-id="@sectionId">
     <div class="mb-3">
         <label class="form-label">Headline</label>
         <input type="text"
-               class="form-control"
-               id="hero-headline"
+               class="form-control hero-headline"
+               data-section-id="@sectionId"
                placeholder="Enter headline" />
     </div>
 
     <div class="mb-3">
         <label class="form-label">Subheadline</label>
-        <textarea class="form-control"
-                  id="hero-subheadline"
+        <textarea class="form-control hero-subheadline"
+                  data-section-id="@sectionId"
                   rows="2"
                   placeholder="Optional subheadline"></textarea>
     </div>
 
-    <div class="text-muted small" id="hero-save-status"></div>
+    <div class="text-muted small hero-save-status" data-section-id="@sectionId"></div>
 </div>
 
 <script>
     (function () {
         const sectionId = @sectionId;
+        if (!sectionId) return;
 
-        const headlineInput = document.getElementById("hero-headline");
-        const subheadlineInput = document.getElementById("hero-subheadline");
-        const statusEl = document.getElementById("hero-save-status");
+        // Scoped selectors (safe when multiple sections exist)
+        const headlineInput = document.querySelector(`.hero-headline[data-section-id="${sectionId}"]`);
+        const subheadlineInput = document.querySelector(`.hero-subheadline[data-section-id="${sectionId}"]`);
+        const statusEl = document.querySelector(`.hero-save-status[data-section-id="${sectionId}"]`);
 
-        // --- Helpers ------------------------------------------------------------
+        // The section card (rendered by _PageRevisionSectionRow.cshtml)
+        const card = document.getElementById("section-" + sectionId);
 
+        if (!headlineInput || !subheadlineInput || !statusEl || !card) return;
+
+        // ----------------------------
+        // Helpers
+        // ----------------------------
         function getAntiForgeryToken() {
-            return document.querySelector('input[name="__RequestVerificationToken"]')?.value;
+            return document.querySelector('#antiForgeryForm input[name="__RequestVerificationToken"]')?.value
+                || document.querySelector('input[name="__RequestVerificationToken"]')?.value
+                || null;
         }
 
         function buildJson() {
@@ -47,48 +62,92 @@
             });
         }
 
+        function setStatus(text, isError) {
+            statusEl.textContent = text || "";
+            statusEl.classList.toggle("text-danger", !!isError);
+            statusEl.classList.toggle("text-success", !isError && !!text && text !== "Saving...");
+        }
+
         async function saveSection() {
             const token = getAntiForgeryToken();
 
+            // Draft rowversion is owned by the host page script (Sections.cshtml / Edit.cshtml)
+            const draftRv = window.__draftRevisionRowVersionBase64 || "";
+            if (!draftRv) {
+                alert("Draft token missing. Reloading…");
+                window.location.reload();
+                return;
+            }
+
+            // Section rowversion is stored on the section card attribute
+            const sectionRv = card.dataset.sectionRowversion || "";
+
             const payload = {
                 sectionId: sectionId,
-                typeKey: "Hero",
+                draftRevisionRowVersionBase64: draftRv,
+                sectionRowVersionBase64: sectionRv,
                 settingsJson: buildJson()
             };
 
+            setStatus("Saving...", false);
+
             try {
-                const res = await fetch(`?handler=SaveSection`, {
+                const res = await fetch(`?handler=SaveSectionSettings`, {
                     method: "POST",
                     headers: {
                         "Content-Type": "application/json",
-                        "RequestVerificationToken": token
+                        ...(token ? { "RequestVerificationToken": token } : {})
                     },
                     body: JSON.stringify(payload)
                 });
 
-                if (!res.ok) {
-                    statusEl.textContent = "Error saving";
-                    statusEl.classList.add("text-danger");
+                let json = null;
+                try { json = await res.json(); } catch { }
+
+                // Concurrency conflict: reload to refresh DOM + tokens
+                if (res.status === 409) {
+                    const msg = json?.error || json?.message || "This draft was changed by someone else.";
+                    alert(msg + " Reloading…");
+                    window.location.reload();
                     return;
                 }
 
-                statusEl.textContent = "Saved";
-                statusEl.classList.remove("text-danger");
+                if (!res.ok || json?.ok === false) {
+                    const vErrs = json?.validation?.errors;
+                    const msg = (Array.isArray(vErrs) && vErrs.length)
+                        ? vErrs.join(" • ")
+                        : (json?.message || json?.error || "Error saving");
+                    setStatus(msg, true);
+                    return;
+                }
+
+                // Update tokens from server
+                if (json?.draftRevisionRowVersionBase64) {
+                    window.__draftRevisionRowVersionBase64 = json.draftRevisionRowVersionBase64;
+                }
+                if (json?.sectionRowVersionBase64) {
+                    card.dataset.sectionRowversion = json.sectionRowVersionBase64;
+                }
+
+                setStatus("Saved", false);
+
+                // Remove red border + remove ID from invalidSectionIds in URL
+                if (typeof window.__clearInvalidStyling === "function") {
+                    window.__clearInvalidStyling(sectionId);
+                }
             }
             catch {
-                statusEl.textContent = "Error saving";
-                statusEl.classList.add("text-danger");
+                setStatus("Error saving", true);
             }
         }
 
-        // --- Init ---------------------------------------------------------------
-
+        // ----------------------------
+        // Init from JSON
+        // ----------------------------
         function initFromJson() {
-            if (!@Html.Raw(string.IsNullOrWhiteSpace(initialJson) ? "false" : "true"))
-                return;
-
             try {
-                const parsed = JSON.parse(@Html.Raw(System.Text.Json.JsonSerializer.Serialize(initialJson)));
+                const raw = @Html.Raw(JsonSerializer.Serialize(initialJson));
+                const parsed = JSON.parse(raw || "{}");
 
                 if (typeof parsed.headline === "string")
                     headlineInput.value = parsed.headline;
@@ -101,8 +160,9 @@
             }
         }
 
-        // --- Events -------------------------------------------------------------
-
+        // ----------------------------
+        // Events (debounced autosave)
+        // ----------------------------
         let debounceTimer;
 
         function scheduleSave() {

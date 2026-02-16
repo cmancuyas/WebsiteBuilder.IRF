@@ -190,3 +190,18 @@ body {
 .dropdown-menu .dropdown-item.disabled {
     cursor: not-allowed;
 }
+
+/* shared editor states */
+.is-invalid-section {
+    border: 2px solid #dc3545 !important; /* bootstrap danger */
+    border-radius: 0.5rem;
+}
+
+.is-saving {
+    opacity: 0.92;
+}
+
+/* optional tiny save badge */
+[data-save-status] {
+    min-height: 1rem;
+}

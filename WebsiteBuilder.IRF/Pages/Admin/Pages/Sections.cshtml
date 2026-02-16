@@ -91,11 +91,97 @@ else
             const pageId = @Model.Id;
 
             // ✅ draft revision concurrency token (base64 rowversion)
-            // Provided by SectionsModel.DraftRevisionRowVersionBase64
             let draftRevisionRowVersion =
                 @Html.Raw(JsonSerializer.Serialize(Model.DraftRevisionRowVersionBase64 ?? ""));
 
             let sortableInstance = null;
+
+            // ============================================
+            // ✅ INVALID ID TRACKING (URL + UI)
+            // ============================================
+
+            function parseInvalidIdsFromQuery() {
+                const params = new URLSearchParams(window.location.search);
+                const csv = params.get("invalidSectionIds");
+                if (!csv) return [];
+
+                return csv
+                    .split(",")
+                    .map(x => Number(x.trim()))
+                    .filter(n => Number.isFinite(n) && n > 0);
+            }
+
+            let invalidIdSet = new Set(parseInvalidIdsFromQuery());
+
+            function updateInvalidIdsInUrl() {
+                const params = new URLSearchParams(window.location.search);
+
+                const ids = Array.from(invalidIdSet.values());
+                if (ids.length > 0) {
+                    params.set("invalidSectionIds", ids.join(","));
+                } else {
+                    params.delete("invalidSectionIds");
+                }
+
+                const qs = params.toString();
+                const newUrl = window.location.pathname + (qs ? ("?" + qs) : "");
+                history.replaceState({}, "", newUrl);
+            }
+
+            function clearInvalidStyling(sectionId) {
+                const card = document.getElementById("section-" + sectionId);
+                if (card) {
+                    card.classList.remove("border", "border-danger");
+                }
+
+                if (invalidIdSet.has(sectionId)) {
+                    invalidIdSet.delete(sectionId);
+                    updateInvalidIdsInUrl();
+                }
+            }
+
+            function highlightAndExpandInvalid(ids) {
+                if (!ids || !ids.length) return;
+
+                ids.forEach(id => {
+                    invalidIdSet.add(id);
+
+                    // Highlight card
+                    const row = document.getElementById("section-" + id);
+                    if (row) row.classList.add("border", "border-danger");
+
+                    // Expand collapse
+                    const collapseEl = document.getElementById("sec-editor-" + id);
+                    if (collapseEl && window.bootstrap?.Collapse) {
+                        try {
+                            const instance = bootstrap.Collapse.getOrCreateInstance(collapseEl, { toggle: false });
+                            instance.show();
+                        } catch { }
+                    }
+                });
+
+                // Scroll to first invalid
+                const first = document.getElementById("section-" + ids[0]);
+                if (first) first.scrollIntoView({ behavior: "smooth", block: "center" });
+
+                updateInvalidIdsInUrl();
+            }
+
+            // ============================================
+            // ✅ GLOBAL BRIDGE FOR EDITOR PARTIALS
+            // ============================================
+
+            function syncDraftTokenGlobal() {
+                window.__draftRevisionRowVersionBase64 = draftRevisionRowVersion;
+            }
+
+            // expose once
+            window.__clearInvalidStyling = clearInvalidStyling;
+            syncDraftTokenGlobal();
+
+            // ============================================
+            // Helpers
+            // ============================================
 
             function getAntiForgeryToken() {
                 const el = document.querySelector('#antiForgeryForm input[name="__RequestVerificationToken"]');
@@ -117,10 +203,9 @@ else
                 let json = null;
                 try { json = await res.json(); } catch { }
 
-                // ✅ Concurrency conflict (rowversion mismatch)
+                // ✅ Concurrency conflict
                 if (res.status === 409) {
                     const msg = json?.error || json?.message || "This draft was changed by someone else.";
-                    // safest UX: reload to refresh DOM + token
                     alert(msg + " Reloading…");
                     window.location.reload();
                     return null;
@@ -130,17 +215,25 @@ else
                     throw new Error(json?.error || json?.message || ("Request failed: " + res.status));
                 }
 
-                // ✅ refresh token if server returns it
+                // ✅ Refresh draft token (server returns draftRevisionRowVersion)
                 if (json?.draftRevisionRowVersion) {
                     draftRevisionRowVersion = json.draftRevisionRowVersion;
+                    syncDraftTokenGlobal();
                 }
 
                 return json;
             }
 
-            // =========================
+            // ============================================
+            // ✅ AUTO EXPAND INVALID SECTIONS (from query)
+            // ============================================
+
+            highlightAndExpandInvalid(parseInvalidIdsFromQuery());
+
+            // ============================================
             // DELETE (AJAX + concurrency token)
-            // =========================
+            // ============================================
+
             document.addEventListener("click", async function (e) {
                 const btn = e.target.closest("[data-delete-revision-section]");
                 if (!btn) return;
@@ -163,15 +256,18 @@ else
                     const row = document.getElementById("section-" + id);
                     if (row) row.remove();
 
+                    // If it was marked invalid, clear it from tracking
+                    clearInvalidStyling(id);
+
                 } catch (err) {
                     alert(err.message || "Delete failed.");
                     btn.disabled = false;
                 }
             });
 
-            // =========================
+            // ============================================
             // REORDER (SortableJS + concurrency token)
-            // =========================
+            // ============================================
 
             function currentOrder(list) {
                 return Array.from(list.querySelectorAll('.section-item[data-revision-section-id]'))
@@ -192,12 +288,9 @@ else
                     draftRevisionRowVersion
                 });
 
-                // Hardened backend mismatch details (optional debug)
                 if (payload?.missingFromClient || payload?.extraFromClient) {
                     console.warn("Reorder mismatch details:", payload);
                 }
-
-                return true;
             }
 
             function bindSortable(list) {
@@ -225,12 +318,30 @@ else
                 });
             }
 
-            document.addEventListener("DOMContentLoaded", function () {
-                const list = document.getElementById("sectionsList");
-                if (!list) return;
+            const list = document.getElementById("sectionsList");
+            if (list) bindSortable(list);
 
-                bindSortable(list);
-            });
+            window.__saveSectionSettings = async function(sectionId, settingsJson) {
+              const row = document.getElementById("section-" + sectionId);
+              const sectionRowVersionBase64 = row?.getAttribute("data-section-rowversion") || "";
+
+              const res = await fetch(`/Admin/Pages/Sections/${pageId}?handler=SaveSectionSettings`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", ...(token?) },
+                body: JSON.stringify({
+                  sectionId,
+                  draftRevisionRowVersionBase64: window.__draftRevisionRowVersionBase64 || "",
+                  sectionRowVersionBase64,
+                  settingsJson: settingsJson || "{}"
+                })
+              });
+
+              // handle 409 draft mismatch → reload
+              // handle 409 section mismatch → show "section changed" and reload (or re-fetch)
+              // handle 400 validation → mark invalid + show errors
+              // handle success → update both tokens, update section rowversion on DOM, clear red border
+            };
+
 
         })();
     </script>

@@ -12,8 +12,6 @@
         ? Model.CollapseId
         : $"sec-editor-{revisionSectionId}";
 
-    // If your registry stores paths like "Shared/Sections/_Text", keep it.
-    // If it stores absolute paths, those also work.
     var editorPath = !string.IsNullOrWhiteSpace(Model.EditorPartialPath)
         ? Model.EditorPartialPath
         : "Shared/Sections/_Unknown";
@@ -22,12 +20,21 @@
 
     // Optional: set to true if you want to display IDs in UI
     var showDebugIds = false;
+
+    // ✅ NEW: section-level concurrency token (base64 rowversion)
+    // Prefer VM-provided token; fallback to model's RowVersion if Section is available.
+    var sectionRowVersionBase64 =
+        !string.IsNullOrWhiteSpace(Model.SectionRowVersionBase64)
+            ? Model.SectionRowVersionBase64
+            : (editorModel?.RowVersion is { Length: > 0 } rv ? Convert.ToBase64String(rv) : "");
 }
 
 <div class="card section-item"
      id="section-@revisionSectionId"
      data-revision-section-id="@revisionSectionId"
-     data-section-type-id="@sectionTypeId">
+     data-section-type-id="@sectionTypeId"
+     data-collapse-id="@collapseId"
+     data-section-rowversion="@sectionRowVersionBase64">
 
     <div class="card-body py-2 d-flex align-items-center justify-content-between">
         <div class="d-flex align-items-center gap-2">

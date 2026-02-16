@@ -1,0 +1,57 @@
+﻿@page "{id:int}"
+@model WebsiteBuilder.IRF.Pages.Admin.Pages.PreviewModel
+@{
+    Layout = null; // important: we want clean iframe content
+}
+
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Preview - @Model.PageTitle</title>
+
+    <link rel="stylesheet" href="~/lib/bootstrap/dist/css/bootstrap.min.css" />
+    <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
+
+    <style>
+        body {
+            margin: 0;
+        }
+
+        .preview-wrap {
+            padding: 24px;
+        }
+    </style>
+</head>
+<body>
+    <div class="preview-wrap">
+        @* Optionally show a small badge *@
+        <div class="d-flex align-items-center justify-content-between mb-3">
+            <div class="fw-semibold">@Model.PageTitle</div>
+            <span class="badge text-bg-secondary">Draft Preview</span>
+        </div>
+
+        @foreach (var s in Model.Sections)
+        {
+            <div class="mb-4">
+                @* Replace this with your real section renderer *@
+                @await Html.PartialAsync($"~/Pages/Shared/Sections/{s.TypeKey}.cshtml", s.SettingsJson)
+            </div>
+        }
+    </div>
+
+    <script>
+        // Optional: accept postMessage refresh command (soft refresh)
+        window.addEventListener("message", (e) => {
+          if (!e?.data) return;
+          if (e.data.type === "PAGEBUILDER_REFRESH") {
+            // Acknowledge so parent can stop spinners if needed
+            e.source?.postMessage({ type: "PAGEBUILDER_REFRESH_ACK" }, "*");
+            // Do a reload (simplest)
+            window.location.reload();
+          }
+        });
+    </script>
+</body>
+</html>
