@@ -20,6 +20,7 @@ namespace WebsiteBuilder.IRF.DataAccess
         public DbSet<MediaCleanupRunLog> MediaCleanupRunLogs => Set<MediaCleanupRunLog>();
         public DbSet<MediaAlert> MediaAlerts => Set<MediaAlert>();
         public DbSet<NavigationMenuItem> NavigationMenuItems => Set<NavigationMenuItem>();
+        public DbSet<PageSlugHistory> PageSlugHistories => Set<PageSlugHistory>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -42,8 +43,18 @@ namespace WebsiteBuilder.IRF.DataAccess
 
             ConfigureSectionTypes(modelBuilder);
 
-        }
+            ConfigurePageSlugHistory(modelBuilder);
 
+        }
+        private static void ConfigurePageSlugHistory(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Tenant>(b =>
+            {
+
+                b.HasIndex(x => x.Slug)
+                .IsUnique();
+            });
+        }
         private static void ConfigureBaseModelConventions(ModelBuilder modelBuilder)
         {
             foreach (var entityType in modelBuilder.Model.GetEntityTypes())
