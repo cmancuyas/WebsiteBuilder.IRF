@@ -3,6 +3,17 @@
 @model WebsiteBuilder.IRF.Pages.Admin.Pages.EditModel
 @{
     ViewData["Title"] = "Edit Page";
+
+    // ✅ Single source of truth for initial blocked state:
+    // block if ANY publish validation errors exist (including General errors where SectionId == 0)
+    var publishBlockedInitial = (Model.PublishValidationErrors?.Count ?? 0) > 0;
+
+    // ✅ Compute invalid section ids ONCE (used for banner + JS init)
+    var invalidSectionIdsInitial = (Model.PublishValidationErrors ?? new())
+        .Where(e => e.SectionId > 0)
+        .Select(e => e.SectionId)
+        .Distinct()
+        .ToList();
 }
 
 <form id="antiForgeryForm" method="post" class="d-none">
@@ -18,35 +29,48 @@
     <div class="d-flex gap-2 align-items-center">
         <a class="btn btn-outline-secondary" asp-page="/Admin/Pages/Index">Back</a>
 
-        @* ✅ Standalone publish form (not nested) *@
+        @* ✅ Hybrid hard guard: ALWAYS render form, disable button server-side if blocked *@
         @if (Model.CanPublish)
         {
-            <form method="post" asp-page-handler="Publish" class="m-0">
+            <form method="post" asp-page-handler="Publish" class="m-0" id="publishForm">
                 @Html.AntiForgeryToken()
-                <button class="btn btn-success" type="submit">Publish</button>
+                <button id="publishBtn"
+                        class="btn btn-success"
+                        type="submit"
+                        @(publishBlockedInitial ? "disabled" : "")
+                        title="@(publishBlockedInitial ? "Fix validation errors before publishing" : "Publish")">
+                    Publish
+                </button>
             </form>
         }
 
         @if (Model.CanRestoreDraft)
         {
-            <a class="btn btn-outline-primary" asp-page="/Admin/Pages/Revisions" asp-route-id="@Model.Id">
+            <a class="btn btn-outline-primary"
+               asp-page="/Admin/Pages/Revisions"
+               asp-route-id="@Model.Id">
                 Revisions
             </a>
         }
     </div>
 </div>
 
+@* ✅ Client-side banner (initial state aligned with server-side guard) *@
+@if (Model.CanPublish)
+{
+    <div id="publishBlockedBanner"
+         class="alert alert-danger mb-3 @(publishBlockedInitial ? "" : "d-none")"
+         data-initial-invalid-ids='@Html.Raw(JsonSerializer.Serialize(invalidSectionIdsInitial))'>
+        Publish is disabled because the draft has validation errors. Fix the highlighted sections below.
+    </div>
+}
+
 @* ✅ Publish validation errors MUST be outside the flex header *@
 @if (Model.PublishValidationErrors?.Count > 0)
 {
     <div class="alert alert-danger mb-3">
         @{
-            var invalidIdsCsv = string.Join(",",
-            (Model.PublishValidationErrors ?? new())
-            .Where(e => e.SectionId > 0)
-            .Select(e => e.SectionId)
-            .Distinct()
-            );
+            var invalidIdsCsv = string.Join(",", invalidSectionIdsInitial);
         }
 
         <div class="d-flex align-items-center justify-content-between mb-2">
@@ -194,7 +218,14 @@
                             <div id="sectionsList" class="d-grid gap-2">
                                 @foreach (var row in Model.SectionRows)
                                 {
-                                    <partial name="Partials/_PageRevisionSectionRow" model="row" />
+                                    @* ✅ Wrap every row with a consistent "section-card" + id used by validation links *@
+                                    <div class="card section-card"
+                                         id="section-@row.RevisionSectionId"
+                                         data-section-id="@row.RevisionSectionId">
+                                        <div class="card-body p-0">
+                                            <partial name="Partials/_PageRevisionSectionRow" model="row" />
+                                        </div>
+                                    </div>
                                 }
                             </div>
                         }
@@ -238,7 +269,17 @@
     <div class="col-12 col-lg-6">
         <div class="card h-100">
             <div class="card-header d-flex align-items-center justify-content-between">
-                <div class="fw-semibold">Live Preview</div>
+                <div class="fw-semibold">
+                    Live Preview
+                    @if (!Model.HasDraft)
+                    {
+                        <span class="badge text-bg-success ms-2">Published</span>
+                    }
+                    else
+                    {
+                        <span class="badge text-bg-secondary ms-2">Draft</span>
+                    }
+                </div>
 
                 <div class="d-flex align-items-center gap-2">
                     <button type="button" class="btn btn-sm btn-outline-secondary" id="previewRefreshBtn">
@@ -249,10 +290,21 @@
             </div>
 
             <div class="card-body p-0" style="height: 75vh;">
+                @{
+                    var draftPreviewUrl = Url.Page("/Admin/Pages/Preview", new { id = Model.Id, rev = "draft" });
+
+                    var publishedPath = string.IsNullOrWhiteSpace(Model.PageSlug)
+                    ? "/"
+                    : "/" + Model.PageSlug.Trim('/');
+
+                    var previewSrc = Model.HasDraft ? draftPreviewUrl : publishedPath;
+
+                    var previewTitle = Model.HasDraft ? "Draft Preview" : "Published (Live) Preview";
+                }
                 <iframe id="previewFrame"
-                        title="Draft Preview"
+                        title="@previewTitle"
                         style="border:0;width:100%;height:100%;"
-                        src="@Url.Page("/Admin/Pages/Preview", new { id = Model.Id, rev = "draft" })">
+                        src="@previewSrc">
                 </iframe>
             </div>
         </div>
@@ -325,18 +377,129 @@
 
     <script src="~/js/pagebuilder/section-list-controller.js" asp-append-version="true"></script>
 
-    <script>
-        document.addEventListener("DOMContentLoaded", function () {
-            window.PageBuilder.initSectionList({
-                pageId: @Model.Id,
-                draftRevisionRowVersionBase64: @Html.Raw(JsonSerializer.Serialize(Model.DraftRevisionRowVersionBase64 ?? "")),
-                invalidSectionIds: @Html.Raw(JsonSerializer.Serialize(
-                                    Model.PublishValidationErrors?
-                                            .Where(e => e.SectionId > 0)
-                                            .Select(e => e.SectionId)
-                                            .Distinct()
-                                            .ToList() ?? new List<int>()))
-        });
-    });
-</script>
+    @if (Model.HasDraft)
+    {
+        <script>
+            document.addEventListener("DOMContentLoaded", function () {
+
+                const pageId = @Model.Id;
+
+                // ✅ Read initial invalid IDs from banner (single source of truth)
+                const publishBannerEl = document.getElementById('publishBlockedBanner');
+                let initialInvalidSectionIds = [];
+                if (publishBannerEl?.dataset?.initialInvalidIds) {
+                    try { initialInvalidSectionIds = JSON.parse(publishBannerEl.dataset.initialInvalidIds); }
+                    catch { initialInvalidSectionIds = []; }
+                }
+
+                function getSectionCard(sectionId) {
+                    return document.querySelector(`.section-card[data-section-id="${sectionId}"]`);
+                }
+
+                function clearInvalidMarks() {
+                    document.querySelectorAll('.section-card.is-invalid').forEach(el => {
+                        el.classList.remove('is-invalid', 'pulse');
+                    });
+                }
+
+                function markInvalidSections(invalidIds) {
+                    clearInvalidMarks();
+                    if (!invalidIds || invalidIds.length === 0) return;
+
+                    invalidIds.forEach(id => {
+                        const card = getSectionCard(id);
+                        if (card) card.classList.add('is-invalid');
+                    });
+                }
+
+                function scrollToFirstInvalid(invalidIds) {
+                    if (!invalidIds || invalidIds.length === 0) return;
+
+                    const card = getSectionCard(invalidIds[0]);
+                    if (!card) return;
+
+                    card.classList.add('pulse');
+                    card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
+
+                window.PageBuilder.initSectionList({
+                    pageId: pageId,
+                    draftRevisionRowVersionBase64: @Html.Raw(JsonSerializer.Serialize(Model.DraftRevisionRowVersionBase64 ?? "")),
+                    invalidSectionIds: initialInvalidSectionIds
+                });
+
+                const publishBtn = document.getElementById('publishBtn');
+                const publishBanner = document.getElementById('publishBlockedBanner');
+
+                function applyPublishState(isValid, invalidIds) {
+                    const blocked = !isValid;
+
+                    if (publishBtn) {
+                        publishBtn.disabled = blocked;
+                        publishBtn.title = blocked ? "Fix validation errors before publishing" : "Publish";
+                    }
+
+                    if (publishBanner) {
+                        publishBanner.classList.toggle('d-none', !blocked);
+                    }
+
+                    markInvalidSections(invalidIds || []);
+                }
+
+                async function fetchDraftValidation() {
+                    const url = `${window.location.pathname}?handler=ValidateDraft&id=${pageId}`;
+                    const res = await fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+                    if (!res.ok) return null;
+                    return await res.json();
+                }
+
+                async function refreshPublishValidity(options) {
+                    const opts = options || {};
+                    const scrollIfInvalid = !!opts.scrollIfInvalid;
+
+                    const data = await fetchDraftValidation();
+                    if (!data) return null;
+
+                    applyPublishState(!!data.isValid, data.invalidSectionIds || []);
+
+                    if (scrollIfInvalid && data.isValid === false) {
+                        scrollToFirstInvalid(data.invalidSectionIds || []);
+                    }
+
+                    return data;
+                }
+
+                window.PageBuilder = window.PageBuilder || {};
+                window.PageBuilder.refreshPublishValidity = refreshPublishValidity;
+
+                // Initial paint behavior
+                applyPublishState(initialInvalidSectionIds.length === 0, initialInvalidSectionIds);
+
+                if (initialInvalidSectionIds.length > 0) {
+                    scrollToFirstInvalid(initialInvalidSectionIds);
+                }
+
+                // Live sync (no scrolling)
+                refreshPublishValidity({ scrollIfInvalid: false });
+
+                // Scroll ONLY if user tries to publish while invalid
+                publishBtn?.addEventListener('click', async function (e) {
+                    const data = await refreshPublishValidity({ scrollIfInvalid: true });
+
+                    if (!data || data.isValid === false) {
+                        e.preventDefault();
+                        return;
+                    }
+                });
+
+                document.querySelectorAll('a[href^="#section-"]').forEach(a => {
+                    a.addEventListener('click', function () {
+                        const id = (this.getAttribute('href') || '').replace('#', '');
+                        const el = document.getElementById(id);
+                        if (el) el.classList.add('pulse');
+                    });
+                });
+            });
+        </script>
+    }
 }

@@ -12,9 +12,25 @@
 
         let invalidSectionIds = Array.isArray(opts.invalidSectionIds) ? opts.invalidSectionIds.slice() : [];
 
-        const sectionsListEl = document.getElementById("sectionsList");
-        // If no list yet, nothing to bind.
-        if (!sectionsListEl) return;
+        // Host exists even when no sections yet
+        const sectionsHostEl = document.getElementById("sectionsHost") || document.body;
+
+        // List might not exist if SectionCount == 0
+        let sectionsListEl = document.getElementById("sectionsList");
+
+        // ----------------------------
+        // Publish validation refresh hook (optional)
+        // ----------------------------
+        function notifyValidationChanged() {
+            try {
+                const fn = window.PageBuilder?.refreshPublishValidity;
+                if (typeof fn === "function") {
+                    fn({ scrollIfInvalid: false });
+                }
+            } catch (e) {
+                console.warn("refreshPublishValidity failed:", e);
+            }
+        }
 
         // ----------------------------
         // Anti-forgery
@@ -67,7 +83,6 @@
                     json?.message ||
                     ("Request failed: " + res.status);
 
-                // Prefer `detail` from your backend
                 const detail = json?.detail || json?.raw || null;
 
                 console.error("Request failed:", {
@@ -78,7 +93,6 @@
                     detail
                 });
 
-                // Surface detail in alert for dev (optional)
                 throw new Error(detail ? `${msg}\n\n${detail}` : msg);
             }
 
@@ -92,7 +106,6 @@
 
             return json;
         }
-
 
         // ----------------------------
         // Invalid highlighting (optional)
@@ -111,7 +124,6 @@
         // Robust order reading
         // ----------------------------
         function readRevisionSectionId(el) {
-            // Prefer dataset (handles both data-revision-section-id and data-revisionSectionId)
             const ds = el.dataset || {};
             const raw =
                 ds.revisionSectionId ||
@@ -130,32 +142,29 @@
                 .map(readRevisionSectionId)
                 .filter(n => Number.isFinite(n) && n > 0);
 
-            // Remove duplicates defensively
-            const unique = Array.from(new Set(ids));
-
-            return unique;
+            return Array.from(new Set(ids));
         }
 
         async function persistOrder(list) {
             const orderedRevisionSectionIds = currentOrder(list);
 
             if (!orderedRevisionSectionIds.length) {
-                // If this happens, your DOM doesn't match the selector or dataset
                 console.error("Reorder aborted: could not compute order from DOM.");
                 throw new Error("Reorder failed: section IDs not found in DOM.");
             }
 
             const url = `/Admin/Pages/Sections/${pageId}?handler=ReorderRevisionSections`;
 
-            // IMPORTANT: send token with the base64 name
-            return await postJson(url, {
+            const result = await postJson(url, {
                 pageId,
                 orderedRevisionSectionIds,
-
                 draftRevisionRowVersionBase64: draftRevisionRowVersionBase64
             });
 
+            // ✅ after reorder: refresh publish validity (UX)
+            notifyValidationChanged();
 
+            return result;
         }
 
         // ----------------------------
@@ -164,7 +173,8 @@
         let sortableInstance = null;
 
         function bindSortable(list) {
-            // You are using SortableJS (window.Sortable), not jquery-sortablejs
+            if (!list) return;
+
             if (!window.Sortable) {
                 console.warn("SortableJS not found (window.Sortable). Reorder disabled.");
                 return;
@@ -184,18 +194,159 @@
                         await persistOrder(list);
                     } catch (err) {
                         alert(err?.message || "Reorder failed.");
-                        // window.location.reload();
                     }
                 }
             });
         }
 
-        bindSortable(sectionsListEl);
+        // Bind sortable if list already exists
+        if (sectionsListEl) bindSortable(sectionsListEl);
+
+        // ----------------------------
+        // ADD SECTION wiring (modal)
+        // ----------------------------
+        const addBtn = document.getElementById("confirmAddSectionBtn");
+        const addTypeEl = document.getElementById("addSectionType");
+        const insertAtTopEl = document.getElementById("insertAtTop");
+        const insertAfterEl = document.getElementById("insertAfter");
+        const noSectionsAlert = document.getElementById("noSectionsAlert");
+
+        function ensureSectionsListExists() {
+            sectionsListEl = document.getElementById("sectionsList");
+            if (sectionsListEl) return sectionsListEl;
+
+            // Remove "No sections yet" alert if present
+            if (noSectionsAlert && noSectionsAlert.parentElement) {
+                noSectionsAlert.parentElement.removeChild(noSectionsAlert);
+            }
+
+            // Create container identical to server-rendered
+            const div = document.createElement("div");
+            div.id = "sectionsList";
+            div.className = "d-grid gap-2";
+
+            sectionsHostEl.appendChild(div);
+            sectionsListEl = div;
+
+            // Bind sortable now that list exists
+            bindSortable(sectionsListEl);
+
+            return sectionsListEl;
+        }
+
+        function wrapRowHtml(revisionSectionId, innerHtml) {
+            // Must match Edit.cshtml wrapper so highlighting + anchors work
+            const wrapper = document.createElement("div");
+            wrapper.className = "card section-card";
+            wrapper.id = "section-" + revisionSectionId;
+            wrapper.setAttribute("data-section-id", String(revisionSectionId));
+
+            const body = document.createElement("div");
+            body.className = "card-body p-0";
+            body.innerHTML = innerHtml;
+
+            wrapper.appendChild(body);
+            return wrapper;
+        }
+
+        function insertOptionIntoInsertAfter(revisionSectionId, title) {
+            if (!insertAfterEl) return;
+
+            const opt = document.createElement("option");
+            opt.value = String(revisionSectionId);
+            opt.textContent = title || ("Section " + revisionSectionId);
+            insertAfterEl.appendChild(opt);
+        }
+
+        async function addSection() {
+            if (!addTypeEl) throw new Error("Add Section: #addSectionType not found.");
+            const typeId = Number(addTypeEl.value || 0);
+            if (!typeId) {
+                alert("Please select a Section Type.");
+                return;
+            }
+
+            const insertAtTop = !!insertAtTopEl?.checked;
+
+            let insertAfterRevisionSectionId = null;
+            if (!insertAtTop && insertAfterEl) {
+                const raw = insertAfterEl.value;
+                const n = raw ? Number(raw) : null;
+                insertAfterRevisionSectionId = (Number.isFinite(n) && n > 0) ? n : null;
+            }
+
+            const url = `${window.location.pathname}?handler=AddRevisionSection`;
+
+            const result = await postJson(url, {
+                SectionTypeId: typeId,
+                InsertAfterRevisionSectionId: insertAfterRevisionSectionId,
+                InsertAtTop: insertAtTop
+            });
+
+            if (!result) return;
+
+            const revisionSectionId = Number(result.revisionSectionId || 0);
+            const title = result.title || "Section";
+            const html = result.html || "";
+
+            if (!revisionSectionId || !html) {
+                throw new Error("Add Section failed: server did not return expected html/id.");
+            }
+
+            const list = ensureSectionsListExists();
+            const wrapper = wrapRowHtml(revisionSectionId, html);
+
+            // Decide insertion point in DOM
+            if (insertAtTop) {
+                list.insertBefore(wrapper, list.firstChild);
+            } else if (insertAfterRevisionSectionId) {
+                const afterEl = document.getElementById("section-" + insertAfterRevisionSectionId);
+                if (afterEl && afterEl.parentElement === list) {
+                    afterEl.insertAdjacentElement("afterend", wrapper);
+                } else {
+                    // fallback to bottom
+                    list.appendChild(wrapper);
+                }
+            } else {
+                // bottom
+                list.appendChild(wrapper);
+            }
+
+            // Update the "Insert after" dropdown so the new section can be targeted next time
+            insertOptionIntoInsertAfter(revisionSectionId, title);
+
+            // Clear initial red border marking (we will re-validate and re-highlight properly)
+            invalidSectionIds = [];
+
+            // Refresh publish validity + highlights (UX)
+            notifyValidationChanged();
+
+            // Close modal (Bootstrap 5)
+            const modalEl = document.getElementById("addSectionModal");
+            if (modalEl && window.bootstrap?.Modal) {
+                const inst = window.bootstrap.Modal.getInstance(modalEl) || new window.bootstrap.Modal(modalEl);
+                inst.hide();
+            }
+        }
+
+        if (addBtn) {
+            addBtn.addEventListener("click", async function () {
+                try {
+                    addBtn.disabled = true;
+                    await addSection();
+                } catch (err) {
+                    alert(err?.message || "Add Section failed.");
+                } finally {
+                    addBtn.disabled = false;
+                }
+            });
+        }
 
         // expose for debugging if needed
         window.PageBuilder.__sectionList = {
             getToken: () => draftRevisionRowVersionBase64,
-            getOrder: () => currentOrder(sectionsListEl)
+            getOrder: () => sectionsListEl ? currentOrder(sectionsListEl) : [],
+            refreshValidity: () => notifyValidationChanged()
         };
     };
 })();

@@ -88,6 +88,45 @@ else
     <script>
         (function () {
 
+            function getSectionCard(sectionId) {
+              return document.querySelector(`.section-card[data-section-id="${sectionId}"]`);
+            }
+
+            function markInvalidSections(invalidIds) {
+              // Clear prior
+              document.querySelectorAll('.section-card.is-invalid').forEach(el => {
+                el.classList.remove('is-invalid', 'pulse');
+              });
+
+              if (!invalidIds || invalidIds.length === 0) return;
+
+              invalidIds.forEach(id => {
+                const card = getSectionCard(id);
+                if (card) card.classList.add('is-invalid');
+              });
+            }
+
+            function scrollToFirstInvalid(invalidIds) {
+              if (!invalidIds || invalidIds.length === 0) return;
+
+              const firstId = invalidIds[0];
+              const card = getSectionCard(firstId);
+              if (!card) return;
+
+              // Optional pulse on the first invalid
+              card.classList.add('pulse');
+
+              // Smooth scroll + focus
+              card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+              // If you have an edit button/input inside, focus it:
+              const focusTarget =
+                card.querySelector('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+
+              if (focusTarget) setTimeout(() => focusTarget.focus({ preventScroll: true }), 350);
+            }
+
+
             const pageId = @Model.Id;
 
             // ✅ draft revision concurrency token (base64 rowversion)
