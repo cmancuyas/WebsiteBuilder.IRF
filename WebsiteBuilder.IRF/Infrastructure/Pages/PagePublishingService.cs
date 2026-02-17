@@ -1,4 +1,5 @@
-﻿using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.AspNetCore.OutputCaching;
+using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using WebsiteBuilder.IRF.DataAccess;
@@ -14,30 +15,37 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
         private readonly DataContext _db;
         private readonly ITenantContext _tenant;
         private readonly ISectionValidationService _sectionValidation;
+        private readonly IOutputCacheStore _outputCache;
 
-        public PagePublishingService(DataContext db, ITenantContext tenant, ISectionValidationService sectionValidation)
+        public PagePublishingService(DataContext db, ITenantContext tenant, ISectionValidationService sectionValidation, IOutputCacheStore outputCache)
         {
             _db = db;
             _tenant = tenant;
             _sectionValidation = sectionValidation;
+            _outputCache = outputCache;
         }
 
+
         public async Task<PublishResult> PublishAsync(
-            int pageId,
-            Guid actorUserId,
-            CancellationToken ct = default)
+    int pageId,
+    Guid actorUserId,
+    CancellationToken ct = default)
         {
-            // IMPORTANT: SQL retry strategy + transactions require ExecuteAsync wrapper
             var strategy = _db.Database.CreateExecutionStrategy();
 
             try
             {
-                return await strategy.ExecuteAsync(async () =>
+                // We'll return these out of the transaction so we can evict caches AFTER commit
+                Guid? tenantIdForEvict = null;
+                int? pageIdForEvict = null;
+                int publishedRevisionIdForResult = 0;
+
+                var result = await strategy.ExecuteAsync(async () =>
                 {
                     if (!_tenant.IsResolved)
                         return PublishResult.Fail("Tenant not resolved.");
 
-                    // Load page + draft pointer (tracked)
+                    // Load page (tracked)
                     var page = await _db.Pages
                         .FirstOrDefaultAsync(p =>
                             p.Id == pageId &&
@@ -51,7 +59,7 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
                     if (page.DraftRevisionId == null)
                         return PublishResult.Fail("Cannot publish: no draft revision found.");
 
-                    // Load draft revision (no tracking ok; we only read it)
+                    // Load draft revision (no tracking)
                     var draft = await _db.PageRevisions
                         .AsNoTracking()
                         .FirstOrDefaultAsync(r =>
@@ -64,7 +72,7 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
                     if (draft == null)
                         return PublishResult.Fail("Cannot publish: draft revision not found.");
 
-                    // Load draft sections (TRACKED: we may mutate SettingsJson during gallery migration)
+                    // Load draft sections (TRACKED)
                     var draftSections = await _db.PageRevisionSections
                         .Where(s =>
                             s.TenantId == _tenant.TenantId &&
@@ -88,17 +96,9 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
 
                     var now = DateTime.UtcNow;
 
-                    // We only start a transaction AFTER all basic guards are passed.
                     await using var tx = await _db.Database.BeginTransactionAsync(ct);
 
-                    // Helper: fail safely with rollback
-                    async Task<PublishResult> FailAsync(string message)
-                    {
-                        try { await tx.RollbackAsync(ct); } catch { /* ignore */ }
-                        return PublishResult.Fail(message);
-                    }
-
-                    // 1) Auto-migrate legacy gallery JSON (items -> images) on draft sections
+                    // 1) Auto-migrate legacy gallery JSON (items -> images)
                     var anyMigrated = false;
 
                     foreach (var s in draftSections)
@@ -209,7 +209,7 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
                         await _db.SaveChangesAsync(ct);
                     }
 
-                    // 2) Validate all sections (after migration + url resolution)
+                    // 2) Validate all sections
                     var errors = new List<string>();
 
                     foreach (var s in draftSections)
@@ -234,7 +234,7 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
                         return new PublishResult { Success = false, Errors = errors };
                     }
 
-                    // 3) Create published snapshot revision from draft content
+                    // 3) Create published snapshot revision
                     var nextVersion =
                         (await _db.PageRevisions
                             .Where(r => r.TenantId == _tenant.TenantId &&
@@ -285,13 +285,11 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
                     _db.PageRevisions.Add(publishedRevision);
                     await _db.SaveChangesAsync(ct);
 
-                    // 4) Update canonical publish pointer + CANONICAL PAGE FIELDS
-                    // This is the piece that fixes your home dropdown + root redirect consistency.
+                    // 4) Update page pointers + canonical columns
                     page.PublishedRevisionId = publishedRevision.Id;
                     page.PublishedAt = now;
                     page.PageStatusId = PageStatusIds.Published;
 
-                    // Sync canonical columns used across the app (lists, redirects, SEO, etc.)
                     page.Title = publishedRevision.Title;
                     page.Slug = publishedRevision.Slug;
                     page.LayoutKey = publishedRevision.LayoutKey;
@@ -304,7 +302,7 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
 
                     await _db.SaveChangesAsync(ct);
 
-                    // 5) Create a fresh draft revision cloned from the published snapshot (new version)
+                    // 5) Create fresh draft cloned from published snapshot
                     var newDraft = new PageRevision
                     {
                         TenantId = _tenant.TenantId,
@@ -354,12 +352,28 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
 
                     await tx.CommitAsync(ct);
 
+                    // capture for post-commit cache eviction
+                    tenantIdForEvict = page.TenantId;
+                    pageIdForEvict = page.Id;
+                    publishedRevisionIdForResult = publishedRevision.Id;
+
                     return PublishResult.Ok(publishedRevision.Id);
                 });
+
+                // ✅ Evict output cache AFTER commit (outside transaction)
+                if (result.Success && tenantIdForEvict.HasValue && pageIdForEvict.HasValue)
+                {
+                    await _outputCache.EvictByTagAsync($"page:{pageIdForEvict.Value}", ct);
+                    await _outputCache.EvictByTagAsync($"tenant:{tenantIdForEvict.Value}", ct);
+
+                    // Optional global flush (usually unnecessary if tags are correct)
+                    await _outputCache.EvictByTagAsync("public-pages", ct);
+                }
+
+                return result;
             }
             catch (Exception ex)
             {
-                // Return a friendly error to the UI (instead of throwing)
                 return PublishResult.Fail("Publish failed: " + ex.Message);
             }
         }

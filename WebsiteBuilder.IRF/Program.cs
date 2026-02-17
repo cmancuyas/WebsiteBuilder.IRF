@@ -6,6 +6,7 @@ using System.Security.Cryptography;
 using System.Text;
 using WebsiteBuilder.IRF.DataAccess;
 using WebsiteBuilder.IRF.Infrastructure.Auth;
+using WebsiteBuilder.IRF.Infrastructure.Caching;
 using WebsiteBuilder.IRF.Infrastructure.Media;
 using WebsiteBuilder.IRF.Infrastructure.Middleware;
 using WebsiteBuilder.IRF.Infrastructure.Pages;
@@ -128,6 +129,7 @@ builder.Services.Configure<GzipCompressionProviderOptions>(o =>
     o.Level = System.IO.Compression.CompressionLevel.Fastest;
 });
 
+
 // Tenant services
 builder.Services.AddMemoryCache();
 builder.Services.AddScoped<ITenantNavigationService, TenantNavigationService>();
@@ -185,6 +187,29 @@ builder.Services.AddScoped<IMediaAlertNotifier>(sp => sp.GetRequiredService<Comp
 builder.Services.AddScoped<ITenantSitemapIndexService, TenantSitemapIndexService>();
 
 builder.Services.AddScoped<ITenantUrlResolver, TenantUrlResolver>();
+builder.Services.AddSingleton<PublicPageOutputCachePolicy>();
+
+var cacheProvider = builder.Configuration["OutputCache:Provider"]?.Trim();
+
+if (string.Equals(cacheProvider, "Redis", StringComparison.OrdinalIgnoreCase))
+{
+    // Cloud-ready path (only used when you switch Provider=Redis)
+    builder.Services.AddStackExchangeRedisOutputCache(options =>
+    {
+        options.Configuration = builder.Configuration["OutputCache:Redis:Configuration"];
+        options.InstanceName = builder.Configuration["OutputCache:Redis:InstanceName"];
+    });
+}
+
+// OutputCache policies always registered (works for both stores)
+builder.Services.AddOutputCache(options =>
+{
+    options.AddPolicy("PublicPages", policy =>
+    {
+        policy.AddPolicy<PublicPageOutputCachePolicy>();
+    });
+});
+
 
 var app = builder.Build();
 
@@ -250,6 +275,7 @@ app.Use(async (ctx, next) =>
     {
         return p.StartsWith("/Admin", StringComparison.OrdinalIgnoreCase)
             || p.StartsWith("/Preview", StringComparison.OrdinalIgnoreCase)
+            || p.StartsWith("/api", StringComparison.OrdinalIgnoreCase)   // ← ADD THIS LINE
             || p.StartsWith("/sitemap", StringComparison.OrdinalIgnoreCase)
             || p.StartsWith("/sitemaps", StringComparison.OrdinalIgnoreCase)
             || p.Equals("/robots.txt", StringComparison.OrdinalIgnoreCase)
@@ -260,6 +286,7 @@ app.Use(async (ctx, next) =>
             || p.StartsWith("/images", StringComparison.OrdinalIgnoreCase)
             || p.StartsWith("/favicon", StringComparison.OrdinalIgnoreCase);
     }
+
 
     if (IsExcluded(path))
     {
@@ -317,7 +344,7 @@ app.Use(async (context, next) =>
 
         context.Response.ContentType = "text/plain; charset=utf-8";
         context.Response.Headers["Cache-Control"] = "public, max-age=300";
-        context.Response.Headers["Vary"] = "Accept-Encoding";
+        context.Response.Headers["Vary"] = "Accept-Encoding, Host";
 
         if (!env.IsProduction())
         {
@@ -353,6 +380,25 @@ app.UseStaticFiles();
 
 app.UseAuthentication();
 app.UseAuthorization();
+
+app.UseMiddleware<OutputCacheDiagnosticsMiddleware>();
+
+app.Use(async (ctx, next) =>
+{
+    if (ctx.Request.Query.ContainsKey("preview"))
+    {
+        ctx.Response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0";
+        ctx.Response.Headers["Pragma"] = "no-cache";
+        ctx.Response.Headers["Expires"] = "0";
+        ctx.Response.Headers["Surrogate-Control"] = "no-store";
+    }
+
+    await next();
+});
+
+app.UseOutputCache();
+
+
 
 static string ComputeETag(string content)
 {
@@ -458,11 +504,17 @@ app.MapGet("/sitemaps/pages-{part:int}.xml", async (HttpContext http, int part, 
     return XmlResult(xml);
 });
 
-app.UseStatusCodePagesWithReExecute("/Admin/Errors/{0}");
+app.UseWhen(ctx => ctx.Request.Path.StartsWithSegments("/Admin", StringComparison.OrdinalIgnoreCase),
+    adminApp => adminApp.UseStatusCodePagesWithReExecute("/Admin/Errors/{0}"));
+
 
 app.MapRazorPages();
 
+
 // IMPORTANT: fallback to CMS page renderer
-app.MapFallbackToPage("/{slug?}", "/[slug]");
+app.MapFallbackToPage("/{slug?}", "/[slug]")
+   .CacheOutput("PublicPages");
+
+
 
 app.Run();

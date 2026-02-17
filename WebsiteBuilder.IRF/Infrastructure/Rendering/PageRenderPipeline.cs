@@ -75,7 +75,12 @@ public sealed class PageRenderPipeline : IPageRenderPipeline
         // ==========================
         if (page.PublishedRevisionId is null) return null;
 
-        return await BuildPublishedAsync(page, page.PublishedRevisionId.Value, ct);
+        return await BuildPublishedAsync(
+            page,
+            page.PublishedRevisionId.Value,
+            normalizedSlug,
+            ct);
+
     }
 
     public async Task<PageRenderContext?> BuildDraftForPageIdAsync(int pageId, CancellationToken ct = default)
@@ -117,15 +122,18 @@ public sealed class PageRenderPipeline : IPageRenderPipeline
     // ==========================
     // Published builder (cached)
     // ==========================
-    private async Task<PageRenderContext?> BuildPublishedAsync(Page page, int publishedRevisionId, CancellationToken ct)
+    private async Task<PageRenderContext?> BuildPublishedAsync(
+        Page page,
+        int publishedRevisionId,
+        string requestedSlug,
+        CancellationToken ct)
     {
         var cacheKey = $"render:published:{_tenant.TenantId}:{publishedRevisionId}";
 
-        PageRevision? revision = null;
-
         if (!_cache.TryGetValue(cacheKey, out CachedPublishedRenderData? cached) || cached is null)
         {
-            revision = await _db.PageRevisions.AsNoTracking()
+            // Only hit DB on cache miss
+            var revision = await _db.PageRevisions.AsNoTracking()
                 .FirstOrDefaultAsync(r =>
                     r.Id == publishedRevisionId &&
                     r.TenantId == _tenant.TenantId &&
@@ -141,8 +149,15 @@ public sealed class PageRenderPipeline : IPageRenderPipeline
             {
                 PageId = page.Id,
                 PublishedRevisionId = publishedRevisionId,
+
                 RevisionTitle = revision.Title,
                 RevisionSlug = revision.Slug,
+
+                // ✅ cache SEO snapshot fields
+                MetaTitle = revision.MetaTitle,
+                MetaDescription = revision.MetaDescription,
+                OgImageAssetId = revision.OgImageAssetId,
+
                 Sections = sections
             };
 
@@ -152,57 +167,39 @@ public sealed class PageRenderPipeline : IPageRenderPipeline
             });
         }
 
-        // Ensure we have the revision for SEO fields even on cache hit.
-        // We keep this DB call lightweight (single row, no includes).
-        revision ??= await _db.PageRevisions.AsNoTracking()
-            .FirstOrDefaultAsync(r =>
-                r.Id == publishedRevisionId &&
-                r.TenantId == _tenant.TenantId &&
-                r.IsPublishedSnapshot &&
-                !r.IsDeleted &&
-                r.IsActive, ct);
-
-        if (revision is null) return null;
-
         // Canonical computed per-request (NOT cached)
         var (scheme, host) = await _url.GetCanonicalAsync(ct);
+
         var publishedSlug = NormalizeSlug(cached.RevisionSlug);
         var canonicalPath = string.IsNullOrWhiteSpace(publishedSlug) ? "/" : "/" + publishedSlug;
         var canonicalUrl = $"{scheme}://{host}{canonicalPath}";
 
-        // Redirect if Page.Slug drifted from published snapshot slug
+        // 301 redirect if requested slug != published slug (slug history + normalization)
         string? redirectToUrl = null;
-        var pageSlugNormalized = NormalizeSlug(page.Slug);
-        if (!string.Equals(pageSlugNormalized, publishedSlug, StringComparison.OrdinalIgnoreCase))
-        {
+        var normalizedRequestedSlug = NormalizeSlug(requestedSlug);
+
+        if (!string.Equals(normalizedRequestedSlug, publishedSlug, StringComparison.OrdinalIgnoreCase))
             redirectToUrl = canonicalUrl;
-        }
 
-        // ---- SEO fields FROM PUBLISHED SNAPSHOT (revision) ----
-        // Revision fields are non-nullable in your model but may be empty strings.
-        var metaTitle = !string.IsNullOrWhiteSpace(revision.MetaTitle)
-            ? revision.MetaTitle
-            : (!string.IsNullOrWhiteSpace(revision.Title) ? revision.Title : page.Title);
+        // ---- SEO fields FROM CACHED PUBLISHED SNAPSHOT ----
+        var metaTitle = !string.IsNullOrWhiteSpace(cached.MetaTitle)
+            ? cached.MetaTitle
+            : (!string.IsNullOrWhiteSpace(cached.RevisionTitle) ? cached.RevisionTitle : page.Title);
 
-        var metaDesc = !string.IsNullOrWhiteSpace(revision.MetaDescription)
-            ? revision.MetaDescription
+        var metaDesc = !string.IsNullOrWhiteSpace(cached.MetaDescription)
+            ? cached.MetaDescription
             : page.MetaDescription;
 
-        // OG image: simplest absolute URL strategy (adjust to your real media route)
-        // If you already have a canonical media endpoint, update the path below.
         string? ogImageUrl = null;
-        if (revision.OgImageAssetId.HasValue)
-        {
-            // Example route — change if your actual media endpoint differs:
-            // ogImageUrl = $"{scheme}://{host}/media/{revision.OgImageAssetId.Value}";
-            ogImageUrl = $"{scheme}://{host}/media/{revision.OgImageAssetId.Value}";
-        }
+        if (cached.OgImageAssetId.HasValue)
+            ogImageUrl = $"{scheme}://{host}/media/{cached.OgImageAssetId.Value}";
 
         return new PageRenderContext
         {
             PageEntity = page,
             IsPreview = false,
             RobotsNoIndex = false,
+
             CanonicalUrl = canonicalUrl,
             RedirectToUrl = redirectToUrl,
 
@@ -213,6 +210,8 @@ public sealed class PageRenderPipeline : IPageRenderPipeline
             RenderSections = cached.Sections
         };
     }
+
+
 
 
     // ==========================
@@ -236,14 +235,39 @@ public sealed class PageRenderPipeline : IPageRenderPipeline
                     !p.IsDeleted, ct);
         }
 
-        // slug requested
-        return await _db.Pages.AsNoTracking()
+        // 1) Try direct slug match (current slug)
+        var page = await _db.Pages.AsNoTracking()
             .FirstOrDefaultAsync(p =>
                 p.TenantId == _tenant.TenantId &&
                 p.IsActive &&
                 !p.IsDeleted &&
                 p.Slug == normalizedSlug, ct);
+
+        if (page is not null)
+            return page;
+
+        // 2) Fallback: slug history -> resolve PageId
+        var history = await _db.PageSlugHistories.AsNoTracking()
+            .Where(h =>
+                h.TenantId == _tenant.TenantId &&
+                h.IsActive &&
+                !h.IsDeleted &&
+                h.OldSlug == normalizedSlug)
+            .OrderByDescending(h => h.ChangedAt)
+            .FirstOrDefaultAsync(ct);
+
+        if (history is null)
+            return null;
+
+        // 3) Load page by id
+        return await _db.Pages.AsNoTracking()
+            .FirstOrDefaultAsync(p =>
+                p.Id == history.PageId &&
+                p.TenantId == _tenant.TenantId &&
+                p.IsActive &&
+                !p.IsDeleted, ct);
     }
+
 
     private async Task<IReadOnlyList<PageRenderContext.RenderSectionDto>> LoadSectionsAsync(int pageRevisionId, CancellationToken ct)
     {

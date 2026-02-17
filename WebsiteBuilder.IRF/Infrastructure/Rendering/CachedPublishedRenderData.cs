@@ -8,5 +8,10 @@ public sealed class CachedPublishedRenderData
     public string? RevisionTitle { get; init; }
     public string? RevisionSlug { get; init; }
 
-    public required IReadOnlyList<PageRenderContext.RenderSectionDto> Sections { get; init; }
+    public string? MetaTitle { get; set; }
+    public string? MetaDescription { get; set; }
+    public int? OgImageAssetId { get; set; }
+
+    public IReadOnlyList<PageRenderContext.RenderSectionDto> Sections { get; set; }
+        = Array.Empty<PageRenderContext.RenderSectionDto>();
 }
