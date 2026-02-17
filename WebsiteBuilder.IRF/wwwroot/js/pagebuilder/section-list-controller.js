@@ -36,24 +36,53 @@
                 body: JSON.stringify(body)
             });
 
-            let json = null;
-            try { json = await res.json(); } catch { /* ignore */ }
+            // Always read the response once
+            const text = await res.text();
 
+            // Try parse JSON, but keep raw text too
+            let json = null;
+            try { json = text ? JSON.parse(text) : null; }
+            catch { json = { raw: text }; }
+
+            // Handle optimistic concurrency cleanly
             if (res.status === 409) {
                 const msg = json?.error || json?.message || "This draft was changed by someone else.";
+                const newToken =
+                    json?.draftRevisionRowVersionBase64 ||
+                    json?.draftRevisionRowVersion ||
+                    null;
+
+                // Update token if server sent one (so reload isn't strictly required)
+                if (newToken) draftRevisionRowVersionBase64 = String(newToken);
+
                 alert(msg + " Reloading…");
                 window.location.reload();
                 return null;
             }
 
+            // Non-OK or ok=false => show server detail
             if (!res.ok || json?.ok === false) {
-                const msg = json?.error || json?.message || ("Request failed: " + res.status);
-                // Helpful debug
-                console.error("Request failed:", { url, status: res.status, body, response: json });
-                throw new Error(msg);
+                const msg =
+                    json?.error ||
+                    json?.message ||
+                    ("Request failed: " + res.status);
+
+                // Prefer `detail` from your backend
+                const detail = json?.detail || json?.raw || null;
+
+                console.error("Request failed:", {
+                    url,
+                    status: res.status,
+                    requestBody: body,
+                    response: json,
+                    detail
+                });
+
+                // Surface detail in alert for dev (optional)
+                throw new Error(detail ? `${msg}\n\n${detail}` : msg);
             }
 
-            // token refresh: accept either field name
+            // Token refresh: accept either field name
             const newToken =
                 json?.draftRevisionRowVersionBase64 ||
                 json?.draftRevisionRowVersion ||
@@ -63,6 +92,7 @@
 
             return json;
         }
+
 
         // ----------------------------
         // Invalid highlighting (optional)
@@ -122,11 +152,9 @@
                 pageId,
                 orderedRevisionSectionIds,
 
-                // send multiple aliases to satisfy server DTO naming
-                draftRevisionRowVersionBase64: draftRevisionRowVersionBase64,
-                draftRevisionRowVersion: draftRevisionRowVersionBase64,
-                draftRevisionRowVersionToken: draftRevisionRowVersionBase64
+                draftRevisionRowVersionBase64: draftRevisionRowVersionBase64
             });
+
 
         }
 
@@ -156,7 +184,7 @@
                         await persistOrder(list);
                     } catch (err) {
                         alert(err?.message || "Reorder failed.");
-                        window.location.reload();
+                        // window.location.reload();
                     }
                 }
             });

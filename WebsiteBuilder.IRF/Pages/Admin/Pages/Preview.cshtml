@@ -2,7 +2,8 @@
 @model WebsiteBuilder.IRF.Pages.Admin.Pages.PreviewModel
 @{
     Layout = null; // iframe-friendly
-    var ctx = Model.Ctx!;
+    var ctx = Model.Ctx;
+    var title = ctx?.PageEntity?.Title ?? "Page";
 }
 
 <!DOCTYPE html>
@@ -10,7 +11,7 @@
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Preview - @(ctx.PageEntity?.Title ?? "Page")</title>
+    <title>Preview - @title</title>
 
     <meta name="robots" content="noindex,nofollow,noarchive,nosnippet" />
     <meta name="googlebot" content="noindex,nofollow,noarchive,nosnippet" />
@@ -26,25 +27,56 @@
         .preview-wrap {
             padding: 24px;
         }
+
+        .preview-empty {
+            border: 1px dashed rgba(0,0,0,.25);
+            border-radius: 12px;
+            padding: 16px;
+            background: rgba(0,0,0,.03);
+        }
+
+        .preview-muted {
+            color: rgba(0,0,0,.6);
+        }
     </style>
 </head>
 <body>
     <div class="preview-wrap">
         <div class="d-flex align-items-center justify-content-between mb-3">
-            <div class="fw-semibold">@ctx.PageEntity?.Title</div>
+            <div class="fw-semibold">@title</div>
             <span class="badge text-bg-secondary">Draft Preview</span>
         </div>
 
-        @foreach (var section in ctx.RenderSections)
+        @* ✅ If draft is missing (e.g., after publish), show friendly message instead of 404 *@
+        @if (!string.IsNullOrWhiteSpace(Model.Message))
         {
-            <div class="mb-4">
-                @await Component.InvokeAsync("PageSection", new
-                {
-                    sectionTypeId = section.SectionTypeId,
+            <div class="preview-empty">
+                <div class="fw-semibold mb-1">@Model.Message</div>
+                <div class="preview-muted small">
+                    If you just published this page, the draft is cleared. Create a new draft by editing a section.
+                </div>
+            </div>
+        }
+        else if (ctx is null || ctx.RenderSections is null || ctx.RenderSections.Count == 0)
+        {
+            <div class="preview-empty">
+                <div class="fw-semibold mb-1">Nothing to preview.</div>
+                <div class="preview-muted small">This draft has no sections yet.</div>
+            </div>
+        }
+        else
+        {
+            @foreach (var section in ctx.RenderSections)
+            {
+                <div class="mb-4">
+                    @await Component.InvokeAsync("PageSection", new
+                    {
+                        sectionTypeId = section.SectionTypeId,
                         settingsJson = section.SettingsJson
                         })
         </div>
                 }
+        }
     </div>
 
     <script>

@@ -339,7 +339,7 @@ public sealed class SectionsModel : PageModel
     }
 
     // =========================
-    // AJAX: REORDER (HARDENED + Optimistic Concurrency)
+    // AJAX: REORDER (HARDENED + Optimistic Concurrency + Two-Phase + Transaction)
     // POST: /Admin/Pages/Sections/{id}?handler=ReorderRevisionSections
     // =========================
     public sealed class ReorderRevisionSectionsRequest
@@ -383,6 +383,7 @@ public sealed class SectionsModel : PageModel
 
         var draftRevisionId = page.DraftRevisionId.Value;
 
+        // IMPORTANT: tracked entity (we need rowversion + update timestamps)
         var draft = await _db.PageRevisions
             .FirstOrDefaultAsync(r =>
                 r.Id == draftRevisionId &&
@@ -392,8 +393,20 @@ public sealed class SectionsModel : PageModel
         if (draft is null)
             return NotFound("Draft revision not found.");
 
-        // ✅ concurrency check (your existing helper)
-        ApplyOptimisticConcurrency(draft, req.DraftRevisionRowVersionBase64);
+        // ✅ concurrency check -> return 409 with refreshed token
+        try
+        {
+            ApplyOptimisticConcurrency(draft, req.DraftRevisionRowVersionBase64);
+        }
+        catch
+        {
+            return StatusCode(StatusCodes.Status409Conflict, new
+            {
+                ok = false,
+                error = "Draft has changed. Refresh and try again.",
+                draftRevisionRowVersionBase64 = Convert.ToBase64String(draft.RowVersion)
+            });
+        }
 
         // Load ALL sections in the revision (do NOT filter IsActive/IsDeleted for uniqueness safety)
         var all = await _db.PageRevisionSections
@@ -411,7 +424,7 @@ public sealed class SectionsModel : PageModel
 
         var visibleIds = visible.Select(x => x.Id).ToHashSet();
 
-        // sanitize + distinct preserving order
+        // sanitize + distinct (preserve order of first occurrence)
         var clientOrder = req.OrderedRevisionSectionIds
             .Where(x => x > 0)
             .Distinct()
@@ -454,50 +467,72 @@ public sealed class SectionsModel : PageModel
 
         var finalOrder = clientOrder.Concat(hiddenOrdered).ToList();
 
+        // Defensive: ensure finalOrder covers all rows exactly once
+        if (finalOrder.Count != all.Count || finalOrder.Distinct().Count() != all.Count)
+        {
+            return StatusCode(StatusCodes.Status409Conflict, new
+            {
+                ok = false,
+                error = "Section set changed. Refresh and try again.",
+                draftRevisionRowVersionBase64 = Convert.ToBase64String(draft.RowVersion)
+            });
+        }
+
         // ---- Two-phase update to avoid transient unique collisions ----
-
-        // Phase 1: assign temp unique SortOrders (guaranteed unique, e.g. -Id)
-        foreach (var s in all)
-            s.SortOrder = -s.Id;
-
-        draft.UpdatedAt = DateTime.UtcNow;
+        // IMPORTANT: With EnableRetryOnFailure, wrap user transactions in ExecutionStrategy
+        var strategy = _db.Database.CreateExecutionStrategy();
 
         try
         {
-            await _db.SaveChangesAsync(ct); // flush temp values first
+            await strategy.ExecuteAsync(async () =>
+            {
+                // Ensure there isn't an ambient transaction already
+                await using var tx = await _db.Database.BeginTransactionAsync(ct);
+
+                // Phase 1: assign temp unique SortOrders (guaranteed unique, e.g. -Id)
+                foreach (var s in all)
+                    s.SortOrder = -s.Id;
+
+                // bump revision to advance rowversion
+                draft.UpdatedAt = DateTime.UtcNow;
+
+                await _db.SaveChangesAsync(ct); // flush temp values first
+
+                // Phase 2: assign final SortOrder 1..N
+                var byIdAll = all.ToDictionary(x => x.Id);
+                for (var i = 0; i < finalOrder.Count; i++)
+                {
+                    var id2 = finalOrder[i];
+                    byIdAll[id2].SortOrder = i + 1;
+                }
+
+                draft.UpdatedAt = DateTime.UtcNow;
+
+                await _db.SaveChangesAsync(ct);
+
+                await tx.CommitAsync(ct);
+            });
         }
         catch (DbUpdateException ex)
         {
-            return StatusCode(500, new
+            return StatusCode(StatusCodes.Status500InternalServerError, new
             {
                 ok = false,
-                error = "Failed to save reorder (phase 1).",
-                detail = ex.InnerException?.Message ?? ex.Message
+                error = "Failed to save reorder.",
+                detail = ex.GetBaseException().Message
+            });
+        }
+        catch (Exception ex)
+        {
+            // catches InvalidOperationException and anything else unexpected
+            return StatusCode(StatusCodes.Status500InternalServerError, new
+            {
+                ok = false,
+                error = "Unexpected error while saving reorder.",
+                detail = ex.GetBaseException().Message
             });
         }
 
-        // Phase 2: assign final SortOrder 1..N
-        var byIdAll = all.ToDictionary(x => x.Id);
-        for (var i = 0; i < finalOrder.Count; i++)
-        {
-            byIdAll[finalOrder[i]].SortOrder = i + 1;
-        }
-
-        draft.UpdatedAt = DateTime.UtcNow;
-
-        try
-        {
-            await _db.SaveChangesAsync(ct);
-        }
-        catch (DbUpdateException ex)
-        {
-            return StatusCode(500, new
-            {
-                ok = false,
-                error = "Failed to save reorder (phase 2).",
-                detail = ex.InnerException?.Message ?? ex.Message
-            });
-        }
 
         var newToken = Convert.ToBase64String(draft.RowVersion);
 
@@ -508,8 +543,8 @@ public sealed class SectionsModel : PageModel
             missingFromClient,
             extraFromClient
         });
-
     }
+
 
     // =========================
     // LEGACY POSTBACK ADD (optional)
