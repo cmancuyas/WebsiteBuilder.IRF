@@ -77,13 +77,6 @@ public sealed class SectionsModel : PageModel
         public string? DraftRevisionRowVersion { get; init; } // base64
     }
 
-    public sealed class ReorderRevisionSectionsRequest
-    {
-        public int PageId { get; init; }
-        public List<int> OrderedRevisionSectionIds { get; init; } = new();
-        public string? DraftRevisionRowVersion { get; init; } // base64
-    }
-
     public sealed class SectionItemVm
     {
         public int Id { get; init; }
@@ -349,39 +342,44 @@ public sealed class SectionsModel : PageModel
     // AJAX: REORDER (HARDENED + Optimistic Concurrency)
     // POST: /Admin/Pages/Sections/{id}?handler=ReorderRevisionSections
     // =========================
+    public sealed class ReorderRevisionSectionsRequest
+    {
+        public int PageId { get; init; }
+        public List<int> OrderedRevisionSectionIds { get; init; } = new();
+
+        // ✅ single canonical token name (match your JS)
+        public string? DraftRevisionRowVersionBase64 { get; init; }
+    }
+
     public async Task<IActionResult> OnPostReorderRevisionSectionsAsync(
         int id,
         [FromBody] ReorderRevisionSectionsRequest req,
-        CancellationToken ct = default)
+        CancellationToken ct)
     {
         if (!_tenant.IsResolved)
-            return new JsonResult(new { ok = false, error = "Tenant not resolved." }) { StatusCode = 404 };
+            return NotFound("Tenant not resolved.");
 
-        if (req is null || req.PageId <= 0 || req.PageId != id)
-            return BadRequest(new { ok = false, error = "Invalid request." });
+        // page id from route
+        var pageId = id;
 
-        if (req.OrderedRevisionSectionIds is null || req.OrderedRevisionSectionIds.Count == 0)
-            return BadRequest(new { ok = false, error = "No section IDs provided." });
+        // ✅ basic validation
+        if (req is null || req.OrderedRevisionSectionIds is null || req.OrderedRevisionSectionIds.Count == 0)
+            return BadRequest(new { ok = false, error = "No section order provided." });
 
-        var ordered = req.OrderedRevisionSectionIds.ToList();
-        if (ordered.Any(x => x <= 0))
-            return BadRequest(new { ok = false, error = "Invalid section IDs." });
-
-        var dupes = ordered.GroupBy(x => x).Where(g => g.Count() > 1).Select(g => g.Key).ToList();
-        if (dupes.Count > 0)
-            return BadRequest(new { ok = false, error = "Duplicate section IDs.", duplicates = dupes });
+        if (string.IsNullOrWhiteSpace(req.DraftRevisionRowVersionBase64))
+            return BadRequest(new { ok = false, error = "Missing or invalid draft revision concurrency token." });
 
         var page = await _db.Pages
-            .AsNoTracking()
-            .Where(p => p.Id == id && p.TenantId == _tenant.TenantId && !p.IsDeleted)
-            .Select(p => new { p.Id, p.DraftRevisionId })
-            .FirstOrDefaultAsync(ct);
+            .FirstOrDefaultAsync(p =>
+                p.Id == pageId &&
+                p.TenantId == _tenant.TenantId &&
+                !p.IsDeleted, ct);
 
         if (page is null)
-            return NotFound(new { ok = false, error = "Page not found." });
+            return NotFound();
 
         if (page.DraftRevisionId is null)
-            return BadRequest(new { ok = false, error = "No draft exists. Restore or create a draft first." });
+            return BadRequest(new { ok = false, error = "No draft exists for this page." });
 
         var draftRevisionId = page.DraftRevisionId.Value;
 
@@ -389,71 +387,128 @@ public sealed class SectionsModel : PageModel
             .FirstOrDefaultAsync(r =>
                 r.Id == draftRevisionId &&
                 r.TenantId == _tenant.TenantId &&
-                r.PageId == id &&
                 !r.IsDeleted, ct);
 
         if (draft is null)
-            return NotFound(new { ok = false, error = "Draft revision not found." });
+            return NotFound("Draft revision not found.");
 
-        // authoritative set
-        var existingIds = await _db.PageRevisionSections
-            .AsNoTracking()
-            .Where(s => s.TenantId == _tenant.TenantId
-                        && s.PageRevisionId == draftRevisionId
-                        && !s.IsDeleted)
-            .Select(s => s.Id)
+        // ✅ concurrency check (your existing helper)
+        ApplyOptimisticConcurrency(draft, req.DraftRevisionRowVersionBase64);
+
+        // Load ALL sections in the revision (do NOT filter IsActive/IsDeleted for uniqueness safety)
+        var all = await _db.PageRevisionSections
+            .Where(s =>
+                s.TenantId == _tenant.TenantId &&
+                s.PageRevisionId == draftRevisionId)
             .ToListAsync(ct);
 
-        var missingFromClient = existingIds.Except(ordered).ToList();
-        var extraFromClient = ordered.Except(existingIds).ToList();
+        if (all.Count == 0)
+            return BadRequest(new { ok = false, error = "No sections found to reorder." });
 
-        if (missingFromClient.Count > 0 || extraFromClient.Count > 0)
+        // These are what the UI is actually reordering:
+        var visible = all.Where(s => s.IsActive && !s.IsDeleted).ToList();
+        var hidden = all.Except(visible).ToList(); // includes deleted OR inactive
+
+        var visibleIds = visible.Select(x => x.Id).ToHashSet();
+
+        // sanitize + distinct preserving order
+        var clientOrder = req.OrderedRevisionSectionIds
+            .Where(x => x > 0)
+            .Distinct()
+            .ToList();
+
+        var missingFromClient = visibleIds.Except(clientOrder).ToList();
+        var extraFromClient = clientOrder.Except(visibleIds).ToList();
+
+        if (extraFromClient.Count > 0)
         {
             return BadRequest(new
             {
                 ok = false,
-                error = "Reorder list does not match current draft sections.",
-                missingFromClient,
+                error = "Reorder list contains unknown section IDs.",
                 extraFromClient
             });
         }
 
+        // append missing visible rows in stable existing order
+        if (missingFromClient.Count > 0)
+        {
+            var missingOrdered = visible
+                .Where(x => missingFromClient.Contains(x.Id))
+                .OrderBy(x => x.SortOrder)
+                .ThenBy(x => x.Id)
+                .Select(x => x.Id)
+                .ToList();
+
+            clientOrder.AddRange(missingOrdered);
+        }
+
+        // Build FINAL total order for ALL rows in this revision:
+        // - visible first (client order)
+        // - then the rest (stable by current SortOrder/Id)
+        var hiddenOrdered = hidden
+            .OrderBy(x => x.SortOrder)
+            .ThenBy(x => x.Id)
+            .Select(x => x.Id)
+            .ToList();
+
+        var finalOrder = clientOrder.Concat(hiddenOrdered).ToList();
+
+        // ---- Two-phase update to avoid transient unique collisions ----
+
+        // Phase 1: assign temp unique SortOrders (guaranteed unique, e.g. -Id)
+        foreach (var s in all)
+            s.SortOrder = -s.Id;
+
+        draft.UpdatedAt = DateTime.UtcNow;
+
         try
         {
-            ApplyOptimisticConcurrency(draft, req.DraftRevisionRowVersion);
-
-            var tracked = await _db.PageRevisionSections
-                .Where(s => s.TenantId == _tenant.TenantId
-                            && s.PageRevisionId == draftRevisionId
-                            && !s.IsDeleted)
-                .ToListAsync(ct);
-
-            var byId = tracked.ToDictionary(x => x.Id);
-
-            for (int i = 0; i < ordered.Count; i++)
-                byId[ordered[i]].SortOrder = i + 1;
-
-            // bump draft rowversion
-            draft.UpdatedAt = DateTime.UtcNow;
-
-            await _db.SaveChangesAsync(ct);
-
-            await _pageRevisionSectionService.CompactSortOrderAsync(_tenant.TenantId, draftRevisionId, ct);
-
-            return new JsonResult(new
+            await _db.SaveChangesAsync(ct); // flush temp values first
+        }
+        catch (DbUpdateException ex)
+        {
+            return StatusCode(500, new
             {
-                ok = true,
-                draftRevisionRowVersion = ToBase64(draft.RowVersion)
+                ok = false,
+                error = "Failed to save reorder (phase 1).",
+                detail = ex.InnerException?.Message ?? ex.Message
             });
         }
-        catch (DbUpdateConcurrencyException)
+
+        // Phase 2: assign final SortOrder 1..N
+        var byIdAll = all.ToDictionary(x => x.Id);
+        for (var i = 0; i < finalOrder.Count; i++)
         {
-            return ConcurrencyConflict();
+            byIdAll[finalOrder[i]].SortOrder = i + 1;
         }
-        catch (InvalidOperationException ex)
+
+        draft.UpdatedAt = DateTime.UtcNow;
+
+        try
         {
-            return new JsonResult(new { ok = false, error = ex.Message }) { StatusCode = 400 };
+            await _db.SaveChangesAsync(ct);
         }
+        catch (DbUpdateException ex)
+        {
+            return StatusCode(500, new
+            {
+                ok = false,
+                error = "Failed to save reorder (phase 2).",
+                detail = ex.InnerException?.Message ?? ex.Message
+            });
+        }
+
+        var newToken = Convert.ToBase64String(draft.RowVersion);
+
+        return new JsonResult(new
+        {
+            ok = true,
+            draftRevisionRowVersionBase64 = newToken,
+            missingFromClient,
+            extraFromClient
+        });
+
     }
 
     // =========================

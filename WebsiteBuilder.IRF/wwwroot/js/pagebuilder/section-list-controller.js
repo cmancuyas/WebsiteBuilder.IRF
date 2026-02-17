@@ -1,219 +1,173 @@
 ﻿(function () {
-    "use strict";
+    window.PageBuilder = window.PageBuilder || {};
 
-    function getAntiForgeryToken() {
-        const el = document.querySelector('#antiForgeryForm input[name="__RequestVerificationToken"]');
-        return el ? el.value : null;
-    }
+    window.PageBuilder.initSectionList = function initSectionList(opts) {
+        if (!opts) throw new Error("initSectionList: opts required.");
 
-    async function postJson(url, body) {
-        const token = getAntiForgeryToken();
+        const pageId = Number(opts.pageId);
+        if (!Number.isFinite(pageId) || pageId <= 0) throw new Error("initSectionList: invalid pageId.");
 
-        const res = await fetch(url, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                ...(token ? { "RequestVerificationToken": token } : {})
-            },
-            body: JSON.stringify(body),
-            credentials: "same-origin"
-        });
+        // keep one token variable, always base64 string
+        let draftRevisionRowVersionBase64 = String(opts.draftRevisionRowVersionBase64 || "");
 
-        let json = null;
-        try { json = await res.json(); } catch { }
+        let invalidSectionIds = Array.isArray(opts.invalidSectionIds) ? opts.invalidSectionIds.slice() : [];
 
-        if (res.status === 409) {
-            alert(json?.message || "This draft was modified elsewhere. Reloading…");
-            window.location.reload();
-            return null;
+        const sectionsListEl = document.getElementById("sectionsList");
+        // If no list yet, nothing to bind.
+        if (!sectionsListEl) return;
+
+        // ----------------------------
+        // Anti-forgery
+        // ----------------------------
+        function getAntiForgeryToken() {
+            const el = document.querySelector('#antiForgeryForm input[name="__RequestVerificationToken"]');
+            return el ? el.value : null;
         }
 
-        if (!res.ok || json?.ok === false) {
-            throw new Error(json?.message || "Request failed.");
-        }
+        async function postJson(url, body) {
+            const token = getAntiForgeryToken();
 
-        if (json?.newDraftRevisionRowVersionBase64) {
-            window.__draftRevisionRowVersionBase64 = json.newDraftRevisionRowVersionBase64;
-        }
+            const res = await fetch(url, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    ...(token ? { "RequestVerificationToken": token } : {})
+                },
+                body: JSON.stringify(body)
+            });
 
-        return json;
-    }
+            let json = null;
+            try { json = await res.json(); } catch { /* ignore */ }
 
-    function parseInvalidIdsFromQuery() {
-        const params = new URLSearchParams(window.location.search);
-        const csv = params.get("invalidSectionIds");
-        if (!csv) return [];
-
-        return csv
-            .split(",")
-            .map(x => Number(x.trim()))
-            .filter(n => Number.isFinite(n) && n > 0);
-    }
-
-    function highlightInvalid(ids, scrollFirst = false) {
-        if (!ids?.length) return;
-
-        ids.forEach(id => {
-            const row = document.getElementById("section-" + id);
-            if (row) row.classList.add("border", "border-danger");
-        });
-
-        if (scrollFirst) {
-            const first = document.getElementById("section-" + ids[0]);
-            if (first) first.scrollIntoView({ behavior: "smooth", block: "center" });
-        }
-    }
-
-    function bindSortable(list, pageId) {
-        if (!window.Sortable) return;
-
-        new Sortable(list, {
-            animation: 150,
-            handle: ".section-drag-handle",
-            draggable: ".section-item",
-            onEnd: async function () {
-
-                const orderedRevisionSectionIds = Array.from(
-                    list.querySelectorAll('.section-item[data-revision-section-id]')
-                )
-                    .map(el => Number(el.getAttribute("data-revision-section-id")))
-                    .filter(n => Number.isFinite(n) && n > 0);
-
-                try {
-                    await postJson(`/Admin/Pages/Sections/${pageId}?handler=ReorderRevisionSections`, {
-                        pageId,
-                        orderedRevisionSectionIds,
-                        draftRevisionRowVersionBase64: window.__draftRevisionRowVersionBase64
-                    });
-                }
-                catch (err) {
-                    alert(err.message || "Reorder failed.");
-                    window.location.reload();
-                }
+            if (res.status === 409) {
+                const msg = json?.error || json?.message || "This draft was changed by someone else.";
+                alert(msg + " Reloading…");
+                window.location.reload();
+                return null;
             }
-        });
-    }
 
-    function bindDelete(list, pageId) {
-        list.addEventListener("click", async (e) => {
-            const btn = e.target.closest("[data-delete-revision-section]");
-            if (!btn) return;
-
-            const revisionSectionId = Number(btn.getAttribute("data-delete-revision-section"));
-            if (!revisionSectionId) return;
-
-            if (!confirm("Delete this section?")) return;
-
-            btn.disabled = true;
-
-            try {
-                await postJson(`/Admin/Pages/Sections/${pageId}?handler=DeleteRevisionSection`, {
-                    revisionSectionId,
-                    draftRevisionRowVersionBase64: window.__draftRevisionRowVersionBase64
-                });
-
-                const row = document.getElementById("section-" + revisionSectionId);
-                if (row) row.remove();
+            if (!res.ok || json?.ok === false) {
+                const msg = json?.error || json?.message || ("Request failed: " + res.status);
+                // Helpful debug
+                console.error("Request failed:", { url, status: res.status, body, response: json });
+                throw new Error(msg);
             }
-            catch (err) {
-                alert(err.message || "Delete failed.");
-                btn.disabled = false;
+
+            // token refresh: accept either field name
+            const newToken =
+                json?.draftRevisionRowVersionBase64 ||
+                json?.draftRevisionRowVersion ||
+                null;
+
+            if (newToken) draftRevisionRowVersionBase64 = String(newToken);
+
+            return json;
+        }
+
+        // ----------------------------
+        // Invalid highlighting (optional)
+        // ----------------------------
+        function markInvalidSections() {
+            if (!invalidSectionIds.length) return;
+            invalidSectionIds.forEach(id => {
+                const el = document.getElementById("section-" + id);
+                if (el) el.classList.add("border", "border-danger");
+            });
+        }
+
+        markInvalidSections();
+
+        // ----------------------------
+        // Robust order reading
+        // ----------------------------
+        function readRevisionSectionId(el) {
+            // Prefer dataset (handles both data-revision-section-id and data-revisionSectionId)
+            const ds = el.dataset || {};
+            const raw =
+                ds.revisionSectionId ||
+                ds.revisionsectionid ||
+                el.getAttribute("data-revision-section-id") ||
+                el.getAttribute("data-revisionSectionId") ||
+                "";
+
+            const n = Number(raw);
+            return Number.isFinite(n) && n > 0 ? n : null;
+        }
+
+        function currentOrder(list) {
+            const items = Array.from(list.querySelectorAll(".section-item"));
+            const ids = items
+                .map(readRevisionSectionId)
+                .filter(n => Number.isFinite(n) && n > 0);
+
+            // Remove duplicates defensively
+            const unique = Array.from(new Set(ids));
+
+            return unique;
+        }
+
+        async function persistOrder(list) {
+            const orderedRevisionSectionIds = currentOrder(list);
+
+            if (!orderedRevisionSectionIds.length) {
+                // If this happens, your DOM doesn't match the selector or dataset
+                console.error("Reorder aborted: could not compute order from DOM.");
+                throw new Error("Reorder failed: section IDs not found in DOM.");
             }
-        });
-    }
 
-    function bindAddSection(pageId) {
-        const btn = document.getElementById("confirmAddSectionBtn");
-        if (!btn) return;
+            const url = `/Admin/Pages/Sections/${pageId}?handler=ReorderRevisionSections`;
 
-        btn.addEventListener("click", async () => {
+            // IMPORTANT: send token with the base64 name
+            return await postJson(url, {
+                pageId,
+                orderedRevisionSectionIds,
 
-            const sectionTypeId = Number(document.getElementById("addSectionType")?.value || 0);
-            const insertAtTop = !!document.getElementById("insertAtTop")?.checked;
-            const afterRaw = document.getElementById("insertAfter")?.value || "";
-            const insertAfterRevisionSectionId = afterRaw ? Number(afterRaw) : null;
+                // send multiple aliases to satisfy server DTO naming
+                draftRevisionRowVersionBase64: draftRevisionRowVersionBase64,
+                draftRevisionRowVersion: draftRevisionRowVersionBase64,
+                draftRevisionRowVersionToken: draftRevisionRowVersionBase64
+            });
 
-            if (!sectionTypeId) {
-                alert("Select a section type.");
+        }
+
+        // ----------------------------
+        // SortableJS binding
+        // ----------------------------
+        let sortableInstance = null;
+
+        function bindSortable(list) {
+            // You are using SortableJS (window.Sortable), not jquery-sortablejs
+            if (!window.Sortable) {
+                console.warn("SortableJS not found (window.Sortable). Reorder disabled.");
                 return;
             }
 
-            btn.disabled = true;
-
-            try {
-                const res = await postJson(`/Admin/Pages/Sections/${pageId}?handler=AddRevisionSection`, {
-                    pageId,
-                    sectionTypeId,
-                    insertAtTop,
-                    insertAfterRevisionSectionId,
-                    draftRevisionRowVersionBase64: window.__draftRevisionRowVersionBase64
-                });
-
-                if (!res?.html) {
-                    window.location.reload();
-                    return;
-                }
-
-                const list = document.getElementById("sectionsList");
-                if (!list) {
-                    window.location.reload();
-                    return;
-                }
-
-                if (insertAtTop) {
-                    list.insertAdjacentHTML("afterbegin", res.html);
-                }
-                else if (insertAfterRevisionSectionId) {
-                    const afterRow = document.getElementById("section-" + insertAfterRevisionSectionId);
-                    if (afterRow)
-                        afterRow.insertAdjacentHTML("afterend", res.html);
-                    else
-                        list.insertAdjacentHTML("beforeend", res.html);
-                }
-                else {
-                    list.insertAdjacentHTML("beforeend", res.html);
-                }
-
-                if (window.PageBuilder?.initHeroEditors) {
-                    window.PageBuilder.initHeroEditors();
-                }
-
-                bootstrap.Modal.getInstance(document.getElementById("addSectionModal"))?.hide();
-
-                btn.disabled = false;
+            if (sortableInstance && typeof sortableInstance.destroy === "function") {
+                try { sortableInstance.destroy(); } catch { /* ignore */ }
+                sortableInstance = null;
             }
-            catch (err) {
-                alert(err.message || "Add failed.");
-                btn.disabled = false;
-            }
-        });
-    }
 
-    function init(options) {
-
-        if (!options?.pageId)
-            throw new Error("SectionListController requires pageId.");
-
-        window.__draftRevisionRowVersionBase64 =
-            options.draftRevisionRowVersionBase64 || "";
-
-        const invalidIds =
-            options.invalidSectionIds?.length
-                ? options.invalidSectionIds
-                : parseInvalidIdsFromQuery();
-
-        highlightInvalid(invalidIds, true);
-
-        const list = document.getElementById("sectionsList");
-        if (list) {
-            bindSortable(list, options.pageId);
-            bindDelete(list, options.pageId);
+            sortableInstance = new Sortable(list, {
+                animation: 150,
+                handle: ".section-drag-handle",
+                draggable: ".section-item",
+                onEnd: async function () {
+                    try {
+                        await persistOrder(list);
+                    } catch (err) {
+                        alert(err?.message || "Reorder failed.");
+                        window.location.reload();
+                    }
+                }
+            });
         }
 
-        bindAddSection(options.pageId);
-    }
+        bindSortable(sectionsListEl);
 
-    window.PageBuilder = window.PageBuilder || {};
-    window.PageBuilder.initSectionList = init;
-
+        // expose for debugging if needed
+        window.PageBuilder.__sectionList = {
+            getToken: () => draftRevisionRowVersionBase64,
+            getOrder: () => currentOrder(sectionsListEl)
+        };
+    };
 })();

@@ -1,77 +1,41 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
-using Microsoft.EntityFrameworkCore;
-using WebsiteBuilder.IRF.DataAccess;
+using WebsiteBuilder.IRF.Infrastructure.Rendering;
 using WebsiteBuilder.IRF.Infrastructure.Tenancy;
-// using WebsiteBuilder.IRF.Infrastructure.Pages;  // if you have a renderer service
 
 namespace WebsiteBuilder.IRF.Pages.Admin.Pages
 {
-    [IgnoreAntiforgeryToken] // it's GET, but optional
+    [IgnoreAntiforgeryToken] // GET only
     public class PreviewModel : PageModel
     {
-        private readonly DataContext _db;
         private readonly ITenantContext _tenant;
+        private readonly IPageRenderPipeline _pipeline;
 
-        public PreviewModel(DataContext db, ITenantContext tenant)
+        public PreviewModel(ITenantContext tenant, IPageRenderPipeline pipeline)
         {
-            _db = db;
             _tenant = tenant;
+            _pipeline = pipeline;
         }
 
-        public string PageTitle { get; private set; } = "";
-        public string Slug { get; private set; } = "";
-        public IReadOnlyList<PreviewSectionVm> Sections { get; private set; } = Array.Empty<PreviewSectionVm>();
-
-        public sealed record PreviewSectionVm(
-            int RevisionSectionId,
-            string TypeKey,
-            string SettingsJson,
-            int SortOrder
-        );
+        public PageRenderContext? Ctx { get; private set; }
 
         public async Task<IActionResult> OnGetAsync(int id, string? rev = "draft", CancellationToken ct = default)
         {
             if (!_tenant.IsResolved)
                 return NotFound("Tenant not resolved.");
 
-            // ✅ Tenant + authorization: ensure this page belongs to this tenant (and user allowed)
-            var page = await _db.Pages
-                .AsNoTracking()
-                .FirstOrDefaultAsync(p => p.Id == id && p.TenantId == _tenant.TenantId && !p.IsDeleted, ct);
+            // For now we only support draft preview in iframe
+            // (rev param can be extended later to published snapshot)
+            Ctx = await _pipeline.BuildDraftForPageIdAsync(id, ct);
 
-            if (page == null)
-                return NotFound();
+            if (Ctx is null)
+                return NotFound("Draft preview not available.");
 
-            // Load draft revision
-            if (page.DraftRevisionId == null)
-                return Content("No draft exists for this page.", "text/plain");
-
-            var draft = await _db.PageRevisions
-                .AsNoTracking()
-                .Include(r => r.Sections.Where(s => !s.IsDeleted && s.IsActive))
-                    .ThenInclude(s => s.SectionType)
-                .FirstOrDefaultAsync(r =>
-                    r.Id == page.DraftRevisionId &&
-                    r.TenantId == _tenant.TenantId &&
-                    r.PageId == page.Id &&
-                    !r.IsDeleted, ct);
-
-            if (draft == null)
-                return NotFound("Draft revision not found.");
-
-            PageTitle = draft.Title ?? page.Title ?? "";
-            Slug = draft.Slug ?? page.Slug ?? "";
-
-            Sections = draft.Sections
-                .OrderBy(s => s.SortOrder)
-                .Select(s => new PreviewSectionVm(
-                    s.Id,
-                    s.SectionType.Key,
-                    s.SettingsJson ?? "{}",
-                    s.SortOrder
-                ))
-                .ToList();
+            // Ensure no indexing/caching
+            Response.Headers["X-Robots-Tag"] = "noindex, nofollow, noarchive, nosnippet";
+            Response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0";
+            Response.Headers["Pragma"] = "no-cache";
+            Response.Headers["Expires"] = "0";
 
             return Page();
         }

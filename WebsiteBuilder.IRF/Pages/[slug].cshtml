@@ -3,8 +3,6 @@
 
 @{
     var isPreview = Model.IsPreview;
-
-    // Public layout by default; admin chrome only in preview
     Layout = isPreview ? "_AdminLayout" : "_TenantLayout";
 }
 
@@ -18,7 +16,6 @@
 
 @if (isPreview)
 {
-    // Exit preview = same path (no querystring) + canonical home
     var exitUrl = (Request.Path.Value?.Equals("/home", StringComparison.OrdinalIgnoreCase) == true)
         ? "/"
         : (Request.Path.Value ?? "/");
@@ -35,8 +32,7 @@
 
                 @if (Model.PageEntity != null)
                 {
-                    <a class="btn btn-sm btn-outline-light"
-                       href="/Admin/Pages/Edit/@Model.PageEntity.Id">
+                    <a class="btn btn-sm btn-outline-light" href="/Admin/Pages/Edit/@Model.PageEntity.Id">
                         Back to Edit
                     </a>
                 }
@@ -47,11 +43,9 @@
 
 @foreach (var section in Model.RenderSections)
 {
-    @await Component.InvokeAsync(
-    "PageSection",
-        new
-        {
-            sectionTypeId = section.SectionTypeId,
-            settingsJson = section.SettingsJson
-        })
+    @await Component.InvokeAsync("PageSection", new
+    {
+        sectionTypeId = section.SectionTypeId,
+        settingsJson = section.SettingsJson
+    })
 }
