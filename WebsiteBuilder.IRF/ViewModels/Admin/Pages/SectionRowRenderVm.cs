@@ -15,5 +15,8 @@ public sealed class SectionRowRenderVm
     public string EditorPartialPath { get; init; } = "";
     public bool IsEditable { get; init; }
 
+    // ✅ NEW: section-level concurrency token (base64 rowversion)
+    public string SectionRowVersionBase64 { get; init; } = "";
+
     public PageRevisionSection Section { get; init; } = default!;
 }

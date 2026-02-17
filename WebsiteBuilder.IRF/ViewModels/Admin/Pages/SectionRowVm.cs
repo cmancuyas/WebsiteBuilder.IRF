@@ -6,5 +6,8 @@
         public int SectionTypeId { get; set; }
         public int SortOrder { get; set; }
         public string? SettingsJson { get; set; }
+
+        // ✅ NEW: section-level concurrency token
+        public string SectionRowVersionBase64 { get; set; } = "";
     }
 }

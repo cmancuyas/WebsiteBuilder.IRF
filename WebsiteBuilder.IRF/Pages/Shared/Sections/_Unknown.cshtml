@@ -1,0 +1,19 @@
+﻿@model string?
+
+<div class="alert alert-warning border mb-4">
+    <div class="fw-semibold">Unknown section type</div>
+
+    @if (!string.IsNullOrWhiteSpace(Model))
+    {
+        <div class="small text-muted mt-2">
+            Settings JSON:
+            <pre class="mb-0"><code>@Model</code></pre>
+        </div>
+    }
+    else
+    {
+        <div class="small text-muted mt-2">
+            No settings provided.
+        </div>
+    }
+</div>

@@ -23,19 +23,22 @@ public sealed class EditModel : PageModel
     private readonly ISectionRegistry _sections;
     private readonly IPageRevisionSectionService _pageRevisionSectionService;
     private readonly IRazorPartialRenderer _partialRenderer;
+    private readonly PagePublishValidator _pagePublishValidator;
 
     public EditModel(
         DataContext db,
         ITenantContext tenant,
         ISectionRegistry sections,
         IPageRevisionSectionService pageRevisionSectionService,
-        IRazorPartialRenderer partialRenderer)
+        IRazorPartialRenderer partialRenderer,
+        PagePublishValidator pagePublishValidator)
     {
         _db = db;
         _tenant = tenant;
         _sections = sections;
         _pageRevisionSectionService = pageRevisionSectionService;
         _partialRenderer = partialRenderer;
+        _pagePublishValidator = pagePublishValidator;
     }
 
     [BindProperty(SupportsGet = true)]
@@ -59,11 +62,9 @@ public sealed class EditModel : PageModel
 
     public List<SectionRowRenderVm> SectionRows { get; private set; } = new();
 
-    // ✅ NEW: base64 rowversion for the current draft revision
-    // Edit.cshtml uses this for AJAX calls to SectionsModel to prevent lost updates.
+    // ✅ base64 rowversion for current draft revision
     public int? DraftRevisionId { get; private set; }
     public string DraftRevisionRowVersionBase64 { get; private set; } = "";
-
 
     public sealed class InputModel
     {
@@ -95,8 +96,66 @@ public sealed class EditModel : PageModel
     [BindProperty]
     public InputModel Input { get; set; } = new();
 
+    public List<PagePublishValidator.PageSectionPublishError> PublishValidationErrors { get; private set; } = new();
+    public HashSet<int> PublishValidationSectionIds { get; private set; } = new();
+
     public async Task<IActionResult> OnGetAsync(CancellationToken ct) => await LoadAsync(ct);
 
+    // =========================
+    // ✅ AJAX: Validate Draft UX
+    // =========================
+    public record ValidateDraftResult(bool isValid, int[] invalidSectionIds, string[] errors);
+
+    public async Task<IActionResult> OnGetValidateDraftAsync(int id, CancellationToken ct = default)
+    {
+        if (!_tenant.IsResolved)
+            return NotFound("Tenant not resolved.");
+
+        // ✅ Same tenant-safe lookup pattern used by Save/Publish
+        var page = await _db.Pages
+            .AsNoTracking()
+            .FirstOrDefaultAsync(p =>
+                p.Id == id &&
+                p.TenantId == _tenant.TenantId &&
+                !p.IsDeleted, ct);
+
+        if (page is null)
+            return NotFound();
+
+        // No draft => treat as valid
+        if (page.DraftRevisionId is null)
+            return new JsonResult(new ValidateDraftResult(
+                isValid: true,
+                invalidSectionIds: Array.Empty<int>(),
+                errors: Array.Empty<string>()));
+
+        // ✅ Re-use your existing validator (matches your provided implementation)
+        var validation = await _pagePublishValidator.ValidateDraftSectionsAsync(page.Id, ct);
+
+        // Errors: List<PageSectionPublishError> where SectionId is int and Messages is List<string>
+        var invalidIds = (validation.Errors ?? new List<PagePublishValidator.PageSectionPublishError>())
+            .Where(e => e.SectionId > 0)
+            .Select(e => e.SectionId)
+            .Distinct()
+            .ToArray();
+
+        var errors = (validation.Errors ?? new List<PagePublishValidator.PageSectionPublishError>())
+            .SelectMany(e => e.Messages ?? new List<string>())
+            .Where(m => !string.IsNullOrWhiteSpace(m))
+            .Distinct()
+            .ToArray();
+
+        return new JsonResult(new ValidateDraftResult(
+            isValid: validation.IsValid,
+            invalidSectionIds: invalidIds,
+            errors: errors));
+    }
+
+
+
+    // =========================
+    // Save Draft
+    // =========================
     public async Task<IActionResult> OnPostSaveAsync(CancellationToken ct)
     {
         if (!_tenant.IsResolved)
@@ -150,6 +209,9 @@ public sealed class EditModel : PageModel
         return await LoadAsync(ct);
     }
 
+    // =========================
+    // Publish
+    // =========================
     public async Task<IActionResult> OnPostPublishAsync(CancellationToken ct)
     {
         if (!_tenant.IsResolved)
@@ -167,53 +229,85 @@ public sealed class EditModel : PageModel
             return RedirectToPage(new { id = Id });
         }
 
-        var maxVersion = await _db.PageRevisions
-            .AsNoTracking()
-            .Where(r => r.TenantId == _tenant.TenantId && r.PageId == page.Id && !r.IsDeleted)
-            .MaxAsync(r => (int?)r.VersionNumber, ct) ?? 0;
-
-        var now = DateTime.UtcNow;
-
-        var published = new PageRevision
+        var publishValidation = await _pagePublishValidator.ValidateDraftSectionsAsync(page.Id, ct);
+        if (!publishValidation.IsValid)
         {
-            TenantId = _tenant.TenantId,
-            PageId = page.Id,
-            VersionNumber = maxVersion + 1,
-            IsPublishedSnapshot = true,
-            Title = page.DraftRevision.Title,
-            Slug = page.DraftRevision.Slug,
-            LayoutKey = page.DraftRevision.LayoutKey,
-            MetaTitle = page.DraftRevision.MetaTitle,
-            MetaDescription = page.DraftRevision.MetaDescription,
-            OgImageAssetId = page.DraftRevision.OgImageAssetId,
-            PublishedAt = now
-        };
-
-        foreach (var s in page.DraftRevision.Sections.OrderBy(x => x.SortOrder))
-        {
-            published.Sections.Add(new PageRevisionSection
-            {
-                TenantId = _tenant.TenantId,
-                SectionTypeId = s.SectionTypeId,
-                SortOrder = s.SortOrder,
-                SettingsJson = s.SettingsJson
-            });
+            TempData["Error"] = "Cannot publish. One or more sections have invalid settings.";
+            TempData["PublishValidationErrors"] = JsonSerializer.Serialize(publishValidation.Errors);
+            return RedirectToPage(new { id = Id });
         }
 
-        _db.PageRevisions.Add(published);
-        await _db.SaveChangesAsync(ct);
+        var now = DateTime.UtcNow;
+        var strategy = _db.Database.CreateExecutionStrategy();
 
-        page.PublishedRevisionId = published.Id;
-        page.PublishedAt = now;
-        page.PageStatusId = PageStatusIds.Published;
-        page.DraftRevisionId = null;
+        try
+        {
+            await strategy.ExecuteAsync(async () =>
+            {
+                await using var tx = await _db.Database.BeginTransactionAsync(ct);
 
-        await _db.SaveChangesAsync(ct);
+                var maxVersion = await _db.PageRevisions
+                    .AsNoTracking()
+                    .Where(r => r.TenantId == _tenant.TenantId && r.PageId == page.Id && !r.IsDeleted)
+                    .MaxAsync(r => (int?)r.VersionNumber, ct) ?? 0;
+
+                var published = new PageRevision
+                {
+                    TenantId = _tenant.TenantId,
+                    PageId = page.Id,
+                    VersionNumber = maxVersion + 1,
+                    IsPublishedSnapshot = true,
+                    Title = page.DraftRevision!.Title,
+                    Slug = page.DraftRevision!.Slug,
+                    LayoutKey = page.DraftRevision!.LayoutKey,
+                    MetaTitle = page.DraftRevision!.MetaTitle,
+                    MetaDescription = page.DraftRevision!.MetaDescription,
+                    OgImageAssetId = page.DraftRevision!.OgImageAssetId,
+                    PublishedAt = now
+                };
+
+                foreach (var s in page.DraftRevision!.Sections
+                             .Where(x => !x.IsDeleted && x.IsActive)
+                             .OrderBy(x => x.SortOrder)
+                             .ThenBy(x => x.Id))
+                {
+                    published.Sections.Add(new PageRevisionSection
+                    {
+                        TenantId = _tenant.TenantId,
+                        SectionTypeId = s.SectionTypeId,
+                        SortOrder = s.SortOrder,
+                        SettingsJson = s.SettingsJson
+                    });
+                }
+
+                _db.PageRevisions.Add(published);
+                await _db.SaveChangesAsync(ct);
+
+                page.PublishedRevisionId = published.Id;
+                page.PublishedAt = now;
+                page.PageStatusId = PageStatusIds.Published;
+
+                page.DraftRevisionId = null;
+                page.DraftRevision = null;
+
+                await _db.SaveChangesAsync(ct);
+
+                await tx.CommitAsync(ct);
+            });
+        }
+        catch (DbUpdateException ex)
+        {
+            TempData["Error"] = "Publish failed. " + ex.GetBaseException().Message;
+            return RedirectToPage(new { id = Id });
+        }
 
         TempData["Success"] = "Page published.";
         return RedirectToPage(new { id = Id });
     }
 
+    // =========================
+    // Restore Draft
+    // =========================
     public async Task<IActionResult> OnPostRestoreDraftAsync(int revisionId, CancellationToken ct)
     {
         if (!_tenant.IsResolved)
@@ -290,7 +384,7 @@ public sealed class EditModel : PageModel
         return RedirectToPage(new { id = Id });
     }
 
-    // ✅ AJAX: Add a section to the current draft revision (kept as-is; Edit.cshtml uses SectionsModel for mutations)
+    // ✅ AJAX: Add section (kept as-is)
     public async Task<IActionResult> OnPostAddRevisionSectionAsync([FromBody] AddSectionRequest req, CancellationToken ct)
     {
         if (!_tenant.IsResolved)
@@ -340,7 +434,7 @@ public sealed class EditModel : PageModel
         }
         else
         {
-            insertIndex = sections.Count; // bottom
+            insertIndex = sections.Count;
         }
 
         var newSection = new PageRevisionSection
@@ -424,7 +518,6 @@ public sealed class EditModel : PageModel
 
         HasDraft = page.DraftRevisionId != null;
 
-        // ✅ expose draft revision id + rowversion
         DraftRevisionId = page.DraftRevisionId;
         DraftRevisionRowVersionBase64 =
             (page.DraftRevision?.RowVersion is { Length: > 0 } rv)
@@ -511,18 +604,47 @@ public sealed class EditModel : PageModel
                     Title = title,
                     CollapseId = $"sec-editor-{s.Id}",
                     EditorPartialPath = editorPartialPath,
-                    IsEditable = false, // Edit page requirement: delete+reorder on, edit off
+                    IsEditable = false,
                     Section = s
                 });
             }
         }
 
-        if (TempData.TryGetValue("Success", out var ok)) Banner = ok?.ToString();
-        if (TempData.TryGetValue("Error", out var err)) Banner = err?.ToString();
+        if (TempData.TryGetValue("Success", out var ok))
+            Banner = ok?.ToString();
+
+        if (TempData.TryGetValue("Error", out var err))
+            Banner = err?.ToString();
+
+        PublishValidationErrors = new();
+        PublishValidationSectionIds = new();
+
+        if (TempData.TryGetValue("PublishValidationErrors", out var raw) &&
+            raw is string json &&
+            !string.IsNullOrWhiteSpace(json))
+        {
+            try
+            {
+                var errs =
+                    JsonSerializer.Deserialize<List<PagePublishValidator.PageSectionPublishError>>(json)
+                    ?? new List<PagePublishValidator.PageSectionPublishError>();
+
+                PublishValidationErrors = errs;
+
+                PublishValidationSectionIds = errs
+                    .Where(e => e.SectionId > 0)
+                    .Select(e => e.SectionId)
+                    .ToHashSet();
+            }
+            catch
+            {
+                PublishValidationErrors = new();
+                PublishValidationSectionIds = new();
+            }
+        }
 
         return Page();
     }
-
 
     private static string GetDefaultJsonByKey(string key)
     {

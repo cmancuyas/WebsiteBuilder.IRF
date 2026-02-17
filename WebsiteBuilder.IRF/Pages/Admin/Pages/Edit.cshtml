@@ -3,6 +3,17 @@
 @model WebsiteBuilder.IRF.Pages.Admin.Pages.EditModel
 @{
     ViewData["Title"] = "Edit Page";
+
+    // ✅ Single source of truth for initial blocked state:
+    // block if ANY publish validation errors exist (including General errors where SectionId == 0)
+    var publishBlockedInitial = (Model.PublishValidationErrors?.Count ?? 0) > 0;
+
+    // ✅ Compute invalid section ids ONCE (used for banner + JS init)
+    var invalidSectionIdsInitial = (Model.PublishValidationErrors ?? new())
+        .Where(e => e.SectionId > 0)
+        .Select(e => e.SectionId)
+        .Distinct()
+        .ToList();
 }
 
 <form id="antiForgeryForm" method="post" class="d-none">
@@ -18,132 +29,285 @@
     <div class="d-flex gap-2 align-items-center">
         <a class="btn btn-outline-secondary" asp-page="/Admin/Pages/Index">Back</a>
 
-        @* ✅ Standalone publish form (not nested) *@
+        @* ✅ Hybrid hard guard: ALWAYS render form, disable button server-side if blocked *@
         @if (Model.CanPublish)
         {
-            <form method="post" asp-page-handler="Publish" class="m-0">
+            <form method="post" asp-page-handler="Publish" class="m-0" id="publishForm">
                 @Html.AntiForgeryToken()
-                <button class="btn btn-success" type="submit">Publish</button>
+                <button id="publishBtn"
+                        class="btn btn-success"
+                        type="submit"
+                        @(publishBlockedInitial ? "disabled" : "")
+                        title="@(publishBlockedInitial ? "Fix validation errors before publishing" : "Publish")">
+                    Publish
+                </button>
             </form>
         }
 
         @if (Model.CanRestoreDraft)
         {
-            <a class="btn btn-outline-primary" asp-page="/Admin/Pages/Revisions" asp-route-id="@Model.Id">
+            <a class="btn btn-outline-primary"
+               asp-page="/Admin/Pages/Revisions"
+               asp-route-id="@Model.Id">
                 Revisions
             </a>
         }
     </div>
 </div>
 
+@* ✅ Client-side banner (initial state aligned with server-side guard) *@
+@if (Model.CanPublish)
+{
+    <div id="publishBlockedBanner"
+         class="alert alert-danger mb-3 @(publishBlockedInitial ? "" : "d-none")"
+         data-initial-invalid-ids='@Html.Raw(JsonSerializer.Serialize(invalidSectionIdsInitial))'>
+        Publish is disabled because the draft has validation errors. Fix the highlighted sections below.
+    </div>
+}
+
+@* ✅ Publish validation errors MUST be outside the flex header *@
+@if (Model.PublishValidationErrors?.Count > 0)
+{
+    <div class="alert alert-danger mb-3">
+        @{
+            var invalidIdsCsv = string.Join(",", invalidSectionIdsInitial);
+        }
+
+        <div class="d-flex align-items-center justify-content-between mb-2">
+            <div class="fw-semibold">Publish blocked due to invalid section settings:</div>
+
+            @if (!string.IsNullOrWhiteSpace(invalidIdsCsv))
+            {
+                <a class="btn btn-sm btn-outline-light"
+                   asp-page="/Admin/Pages/Sections"
+                   asp-route-id="@Model.Id"
+                   asp-route-invalidSectionIds="@invalidIdsCsv">
+                    Fix in Sections
+                </a>
+            }
+        </div>
+
+        <ul class="mb-0">
+            @foreach (var e in Model.PublishValidationErrors)
+            {
+                if (e.SectionId == 0)
+                {
+                    foreach (var msg in e.Messages)
+                    {
+                        <li>@msg</li>
+                    }
+                }
+                else
+                {
+                    <li>
+                        <a href="#section-@e.SectionId" class="text-decoration-underline">
+                            Section #@e.SectionId (@e.TypeKey)
+                        </a>
+
+                        <ul class="mb-0">
+                            @foreach (var msg in e.Messages)
+                            {
+                                <li>@msg</li>
+                            }
+                        </ul>
+                    </li>
+                }
+            }
+        </ul>
+    </div>
+}
+
 @if (!string.IsNullOrWhiteSpace(Model.Banner))
 {
     <div class="alert alert-info">@Model.Banner</div>
 }
 
-<div class="card">
-    <div class="card-body">
-        @* ✅ Main Save form (single form only) *@
-        <form id="pageEditForm" method="post" asp-page-handler="Save">
-            <div class="row g-3">
-                <div class="col-12 col-md-6">
-                    <label class="form-label">Title</label>
-                    <input asp-for="Input.Title" class="form-control" />
-                    <span asp-validation-for="Input.Title" class="text-danger small"></span>
-                </div>
+@* ✅ Two-column layout: Editor (left) + Live Preview (right) *@
+<div class="row g-3">
+    <div class="col-12 col-lg-6">
+        <div class="card">
+            <div class="card-body">
+                @* ✅ Main Save form (single form only) *@
+                <form id="pageEditForm" method="post" asp-page-handler="Save">
+                    <div class="row g-3">
+                        <div class="col-12 col-md-6">
+                            <label class="form-label">Title</label>
+                            <input asp-for="Input.Title" class="form-control" />
+                            <span asp-validation-for="Input.Title" class="text-danger small"></span>
+                        </div>
 
-                <div class="col-12 col-md-6">
-                    <label class="form-label">Slug</label>
-                    <input asp-for="Input.Slug" class="form-control" />
-                    <div class="form-text">Empty = home.</div>
-                    <span asp-validation-for="Input.Slug" class="text-danger small"></span>
-                </div>
+                        <div class="col-12 col-md-6">
+                            <label class="form-label">Slug</label>
+                            <input asp-for="Input.Slug" class="form-control" />
+                            <div class="form-text">Empty = home.</div>
+                            <span asp-validation-for="Input.Slug" class="text-danger small"></span>
+                        </div>
 
-                <div class="col-12 col-md-6">
-                    <label class="form-label">Layout Key</label>
-                    <input asp-for="Input.LayoutKey" class="form-control" />
-                </div>
+                        <div class="col-12 col-md-6">
+                            <label class="form-label">Layout Key</label>
+                            <input asp-for="Input.LayoutKey" class="form-control" />
+                        </div>
 
-                <div class="col-12 col-md-6">
-                    <label class="form-label">Show in Navigation</label>
-                    <div class="form-check form-switch">
-                        <input asp-for="Input.ShowInNavigation" class="form-check-input" />
-                        <label class="form-check-label" asp-for="Input.ShowInNavigation">Enabled</label>
+                        <div class="col-12 col-md-6">
+                            <label class="form-label">Show in Navigation</label>
+                            <div class="form-check form-switch">
+                                <input asp-for="Input.ShowInNavigation" class="form-check-input" />
+                                <label class="form-check-label" asp-for="Input.ShowInNavigation">Enabled</label>
+                            </div>
+                        </div>
+
+                        <div class="col-12">
+                            <label class="form-label">Meta Title</label>
+                            <input asp-for="Input.MetaTitle" class="form-control" />
+                        </div>
+
+                        <div class="col-12">
+                            <label class="form-label">Meta Description</label>
+                            <textarea asp-for="Input.MetaDescription" class="form-control" rows="3"></textarea>
+                        </div>
                     </div>
-                </div>
 
-                <div class="col-12">
-                    <label class="form-label">Meta Title</label>
-                    <input asp-for="Input.MetaTitle" class="form-control" />
-                </div>
+                    <hr class="my-4" />
 
-                <div class="col-12">
-                    <label class="form-label">Meta Description</label>
-                    <textarea asp-for="Input.MetaDescription" class="form-control" rows="3"></textarea>
-                </div>
-            </div>
+                    @* ✅ Sections header *@
+                    <div class="d-flex align-items-center justify-content-between">
+                        <div>
+                            <div class="fw-semibold">Sections</div>
+                            <div class="text-muted small">
+                                Draft sections: @Model.SectionCount
+                                @if (!Model.HasDraft)
+                                {
+                                    <span class="ms-2 badge text-bg-warning">No Draft</span>
+                                }
+                            </div>
+                        </div>
 
-            <hr class="my-4" />
+                        <div class="d-flex gap-2">
+                            <button type="button"
+                                    class="btn btn-outline-primary"
+                                    id="addSectionBtn"
+                                    data-bs-toggle="modal"
+                                    data-bs-target="#addSectionModal"
+                                    @(Model.HasDraft ? null : "disabled")>
+                                Add Section
+                            </button>
 
-            @* ✅ Sections header *@
-            <div class="d-flex align-items-center justify-content-between">
-                <div>
-                    <div class="fw-semibold">Sections</div>
-                    <div class="text-muted small">
-                        Draft sections: @Model.SectionCount
+                            <a class="btn btn-outline-secondary"
+                               asp-page="/Admin/Pages/Sections"
+                               asp-route-id="@Model.Id">
+                                Manage Sections / Revisions
+                            </a>
+                        </div>
+                    </div>
+
+                    <div id="sectionsHost" class="mt-3">
                         @if (!Model.HasDraft)
                         {
-                            <span class="ms-2 badge text-bg-warning">No Draft</span>
+                            <div class="alert alert-warning mb-0">
+                                No draft exists for this page. Restore a draft from a published revision to edit sections.
+                            </div>
                         }
-                    </div>
-                </div>
-
-                <div class="d-flex gap-2">
-                    <button type="button"
-                            class="btn btn-outline-primary"
-                            id="addSectionBtn"
-                            data-bs-toggle="modal"
-                            data-bs-target="#addSectionModal"
-                            @(Model.HasDraft ? null : "disabled")>
-                        Add Section
-                    </button>
-
-                    <a class="btn btn-outline-secondary"
-                       asp-page="/Admin/Pages/Sections"
-                       asp-route-id="@Model.Id">
-                        Manage Sections / Revisions
-                    </a>
-                </div>
-            </div>
-
-            <div id="sectionsHost" class="mt-3">
-                @if (!Model.HasDraft)
-                {
-                    <div class="alert alert-warning mb-0">
-                        No draft exists for this page. Restore a draft from a published revision to edit sections.
-                    </div>
-                }
-                else if (Model.SectionCount == 0)
-                {
-                    <div class="alert alert-light border mb-0" id="noSectionsAlert">
-                        No sections yet. Use <strong>Add Section</strong> to add sections.
-                    </div>
-                }
-                else
-                {
-                    <div id="sectionsList" class="d-grid gap-2">
-                        @foreach (var row in Model.SectionRows)
+                        else if (Model.SectionCount == 0)
                         {
-                            <partial name="Partials/_PageRevisionSectionRow" model="row" />
+                            <div class="alert alert-light border mb-0" id="noSectionsAlert">
+                                No sections yet. Use <strong>Add Section</strong> to add sections.
+                            </div>
+                        }
+                        else
+                        {
+                            <div id="sectionsList" class="d-grid gap-2">
+                                @foreach (var row in Model.SectionRows)
+                                {
+                                    @* ✅ Wrap every row with a consistent "section-card" + id used by validation links *@
+                                    <div class="card section-card"
+                                         id="section-@row.RevisionSectionId"
+                                         data-section-id="@row.RevisionSectionId">
+                                        <div class="card-body p-0">
+                                            <partial name="Partials/_PageRevisionSectionRow" model="row" />
+                                        </div>
+                                    </div>
+                                }
+                            </div>
                         }
                     </div>
-                }
+
+                    <div class="mt-3 d-flex justify-content-end">
+                        <button type="submit" class="btn btn-primary">Save Draft</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        @* Published info remains under editor column *@
+        @if (Model.PublishedInfo is not null)
+        {
+            <div class="card mt-3">
+                <div class="card-body">
+                    <div class="fw-semibold">Published</div>
+                    <div class="text-muted small">
+                        Revision #@Model.PublishedInfo.VersionNumber · Slug: <code>@Model.PublishedInfo.Slug</code>
+                        @if (Model.PublishedInfo.PublishedAt is not null)
+                        {
+                            <span>· @Model.PublishedInfo.PublishedAt</span>
+                        }
+                    </div>
+
+                    @if (!Model.HasDraft)
+                    {
+                        <form method="post" asp-page-handler="RestoreDraft" class="mt-2">
+                            @Html.AntiForgeryToken()
+                            <input type="hidden" name="revisionId" value="@Model.PublishedInfo.Id" />
+                            <button class="btn btn-outline-primary" type="submit">Restore Draft From Published</button>
+                        </form>
+                    }
+                </div>
+            </div>
+        }
+    </div>
+
+    @* ✅ Live Preview column *@
+    <div class="col-12 col-lg-6">
+        <div class="card h-100">
+            <div class="card-header d-flex align-items-center justify-content-between">
+                <div class="fw-semibold">
+                    Live Preview
+                    @if (!Model.HasDraft)
+                    {
+                        <span class="badge text-bg-success ms-2">Published</span>
+                    }
+                    else
+                    {
+                        <span class="badge text-bg-secondary ms-2">Draft</span>
+                    }
+                </div>
+
+                <div class="d-flex align-items-center gap-2">
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="previewRefreshBtn">
+                        Refresh
+                    </button>
+                    <span class="text-muted small" id="previewStatus"></span>
+                </div>
             </div>
 
-            <div class="mt-3 d-flex justify-content-end">
-                <button type="submit" class="btn btn-primary">Save Draft</button>
+            <div class="card-body p-0" style="height: 75vh;">
+                @{
+                    var draftPreviewUrl = Url.Page("/Admin/Pages/Preview", new { id = Model.Id, rev = "draft" });
+
+                    var publishedPath = string.IsNullOrWhiteSpace(Model.PageSlug)
+                    ? "/"
+                    : "/" + Model.PageSlug.Trim('/');
+
+                    var previewSrc = Model.HasDraft ? draftPreviewUrl : publishedPath;
+
+                    var previewTitle = Model.HasDraft ? "Draft Preview" : "Published (Live) Preview";
+                }
+                <iframe id="previewFrame"
+                        title="@previewTitle"
+                        style="border:0;width:100%;height:100%;"
+                        src="@previewSrc">
+                </iframe>
             </div>
-        </form>
+        </div>
     </div>
 </div>
 
@@ -195,308 +359,147 @@
     </div>
 </div>
 
-@if (Model.PublishedInfo is not null)
-{
-    <div class="card mt-3">
-        <div class="card-body">
-            <div class="fw-semibold">Published</div>
-            <div class="text-muted small">
-                Revision #@Model.PublishedInfo.VersionNumber · Slug: <code>@Model.PublishedInfo.Slug</code>
-                @if (Model.PublishedInfo.PublishedAt is not null)
-                {
-                    <span>· @Model.PublishedInfo.PublishedAt</span>
-                }
-            </div>
+@section PageBuilderScripts {
+    <script src="~/js/pagebuilder/section-editor-base.js" asp-append-version="true"></script>
+    <script src="~/js/pagebuilder/editors/hero-editor.js" asp-append-version="true"></script>
+    <script src="~/js/pagebuilder/preview-controller.js" asp-append-version="true"></script>
 
-            @if (!Model.HasDraft)
-            {
-                <form method="post" asp-page-handler="RestoreDraft" class="mt-2">
-                    @Html.AntiForgeryToken()
-                    <input type="hidden" name="revisionId" value="@Model.PublishedInfo.Id" />
-                    <button class="btn btn-outline-primary" type="submit">Restore Draft From Published</button>
-                </form>
-            }
-        </div>
-    </div>
+    <script>
+        document.addEventListener("DOMContentLoaded", function () {
+            window.PageBuilder.initHeroEditors();
+            window.PageBuilder.initPreview({ iframeId: "previewFrame" });
+        });
+    </script>
 }
 
 @section Scripts {
     <partial name="_ValidationScriptsPartial" />
 
-    <script>
-        (function () {
-            const pageId = @Model.Id;
+    <script src="~/js/pagebuilder/section-list-controller.js" asp-append-version="true"></script>
 
-            // ✅ Draft revision concurrency token from EditModel.LoadAsync()
-            let draftRevisionRowVersion =
-                @Html.Raw(JsonSerializer.Serialize(Model.DraftRevisionRowVersionBase64 ?? ""));
+    @if (Model.HasDraft)
+    {
+        <script>
+            document.addEventListener("DOMContentLoaded", function () {
 
-            function getAntiForgeryToken() {
-                const el = document.querySelector('#antiForgeryForm input[name="__RequestVerificationToken"]');
-                return el ? el.value : null;
-            }
+                const pageId = @Model.Id;
 
-            async function postJson(url, body) {
-                const token = getAntiForgeryToken();
+                // ✅ Read initial invalid IDs from banner (single source of truth)
+                const publishBannerEl = document.getElementById('publishBlockedBanner');
+                let initialInvalidSectionIds = [];
+                if (publishBannerEl?.dataset?.initialInvalidIds) {
+                    try { initialInvalidSectionIds = JSON.parse(publishBannerEl.dataset.initialInvalidIds); }
+                    catch { initialInvalidSectionIds = []; }
+                }
 
-                const res = await fetch(url, {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                        ...(token ? { "RequestVerificationToken": token } : {})
-                    },
-                    body: JSON.stringify(body)
+                function getSectionCard(sectionId) {
+                    return document.querySelector(`.section-card[data-section-id="${sectionId}"]`);
+                }
+
+                function clearInvalidMarks() {
+                    document.querySelectorAll('.section-card.is-invalid').forEach(el => {
+                        el.classList.remove('is-invalid', 'pulse');
+                    });
+                }
+
+                function markInvalidSections(invalidIds) {
+                    clearInvalidMarks();
+                    if (!invalidIds || invalidIds.length === 0) return;
+
+                    invalidIds.forEach(id => {
+                        const card = getSectionCard(id);
+                        if (card) card.classList.add('is-invalid');
+                    });
+                }
+
+                function scrollToFirstInvalid(invalidIds) {
+                    if (!invalidIds || invalidIds.length === 0) return;
+
+                    const card = getSectionCard(invalidIds[0]);
+                    if (!card) return;
+
+                    card.classList.add('pulse');
+                    card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
+
+                window.PageBuilder.initSectionList({
+                    pageId: pageId,
+                    draftRevisionRowVersionBase64: @Html.Raw(JsonSerializer.Serialize(Model.DraftRevisionRowVersionBase64 ?? "")),
+                    invalidSectionIds: initialInvalidSectionIds
                 });
 
-                let json = null;
-                try { json = await res.json(); } catch { }
+                const publishBtn = document.getElementById('publishBtn');
+                const publishBanner = document.getElementById('publishBlockedBanner');
 
-                // ✅ Concurrency conflict
-                if (res.status === 409) {
-                    const msg = json?.error || json?.message || "This draft was changed by someone else.";
-                    alert(msg + " Reloading…");
-                    window.location.reload();
-                    return null;
-                }
+                function applyPublishState(isValid, invalidIds) {
+                    const blocked = !isValid;
 
-                if (!res.ok || json?.ok === false) {
-                    const msg = json?.error || json?.message || ("Request failed: " + res.status);
-                    throw new Error(msg);
-                }
-
-                // ✅ Keep token fresh
-                if (json?.draftRevisionRowVersion) {
-                    draftRevisionRowVersion = json.draftRevisionRowVersion;
-                }
-
-                return json;
-            }
-
-            // =========================
-            // Helpers: list + Sortable
-            // =========================
-            let sortableInstance = null;
-
-            function ensureSectionsListExists() {
-                let list = document.getElementById("sectionsList");
-                if (list) return list;
-
-                const host = document.getElementById("sectionsHost");
-                if (!host) return null;
-
-                const alertEl = document.getElementById("noSectionsAlert") || host.querySelector(".alert");
-                if (alertEl) alertEl.remove();
-
-                list = document.createElement("div");
-                list.id = "sectionsList";
-                list.className = "d-grid gap-2";
-                host.appendChild(list);
-
-                bindDeleteHandler(list);
-                bindSortable(list);
-
-                return list;
-            }
-
-            function currentOrder(list) {
-                return Array.from(list.querySelectorAll('.section-item[data-revision-section-id]'))
-                    .map(el => Number(el.getAttribute('data-revision-section-id')))
-                    .filter(n => Number.isFinite(n) && n > 0);
-            }
-
-            async function persistOrder(list) {
-                const orderedRevisionSectionIds = currentOrder(list);
-                if (!orderedRevisionSectionIds.length)
-                    throw new Error("No sections found to reorder.");
-
-                // ✅ Use SectionsModel reorder handler
-                const url = `/Admin/Pages/Sections/${pageId}?handler=ReorderRevisionSections`;
-
-                const payload = await postJson(url, {
-                    pageId,
-                    orderedRevisionSectionIds,
-                    draftRevisionRowVersion
-                });
-
-                if (payload?.missingFromClient || payload?.extraFromClient) {
-                    console.warn("Reorder mismatch details:", payload);
-                }
-            }
-
-            function bindSortable(list) {
-                if (!window.Sortable) return;
-
-                if (sortableInstance && typeof sortableInstance.destroy === "function") {
-                    try { sortableInstance.destroy(); } catch { }
-                    sortableInstance = null;
-                }
-
-                sortableInstance = new Sortable(list, {
-                    animation: 150,
-                    handle: ".section-drag-handle",
-                    draggable: ".section-item",
-                    onEnd: async function () {
-                        try {
-                            await persistOrder(list);
-                        } catch (err) {
-                            alert(err.message || "Reorder failed.");
-                            window.location.reload();
-                        }
+                    if (publishBtn) {
+                        publishBtn.disabled = blocked;
+                        publishBtn.title = blocked ? "Fix validation errors before publishing" : "Publish";
                     }
-                });
-            }
 
-            // =========================
-            // DELETE (delegation)
-            // =========================
-            function bindDeleteHandler(list) {
-                if (list.__deleteBound) return;
-                list.__deleteBound = true;
-
-                list.addEventListener("click", async (e) => {
-                    const btn = e.target.closest('[data-delete-revision-section]');
-                    if (!btn) return;
-
-                    const id = Number(btn.getAttribute("data-delete-revision-section"));
-                    if (!Number.isFinite(id) || id <= 0) return;
-
-                    if (!confirm("Delete this section?")) return;
-
-                    btn.disabled = true;
-
-                    try {
-                        // ✅ Use SectionsModel delete handler
-                        const url = `/Admin/Pages/Sections/${pageId}?handler=DeleteRevisionSection`;
-
-                        await postJson(url, {
-                            revisionSectionId: id,
-                            draftRevisionRowVersion
-                        });
-
-                        const row = document.getElementById("section-" + id);
-                        if (row) row.remove();
-
-                        const insertAfterSelect = document.getElementById("insertAfter");
-                        if (insertAfterSelect) {
-                            const opt = insertAfterSelect.querySelector(`option[value="${id}"]`);
-                            if (opt) opt.remove();
-                        }
-
-                        if (list.querySelectorAll(".section-item").length === 0) {
-                            list.remove();
-                            const host = document.getElementById("sectionsHost");
-                            if (host) {
-                                const msg = document.createElement("div");
-                                msg.className = "alert alert-light border mb-0";
-                                msg.id = "noSectionsAlert";
-                                msg.innerHTML = 'No sections yet. Use <strong>Add Section</strong> to add sections.';
-                                host.appendChild(msg);
-                            }
-                        }
-                    } catch (err) {
-                        alert(err.message || "Delete failed.");
-                        btn.disabled = false;
+                    if (publishBanner) {
+                        publishBanner.classList.toggle('d-none', !blocked);
                     }
-                });
-            }
 
-            // Bind delete + sortable on load
-            (function initExistingList() {
-                const list = document.getElementById("sectionsList");
-                if (!list) return;
-                bindDeleteHandler(list);
-                bindSortable(list);
-            })();
+                    markInvalidSections(invalidIds || []);
+                }
 
-            // =========================
-            // Insert-at-top disables insert-after
-            // =========================
-            const insertAtTopEl = document.getElementById("insertAtTop");
-            const insertAfterEl = document.getElementById("insertAfter");
-            if (insertAtTopEl && insertAfterEl) {
-                const sync = () => insertAfterEl.disabled = !!insertAtTopEl.checked;
-                insertAtTopEl.addEventListener("change", sync);
-                sync();
-            }
+                async function fetchDraftValidation() {
+                    const url = `${window.location.pathname}?handler=ValidateDraft&id=${pageId}`;
+                    const res = await fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+                    if (!res.ok) return null;
+                    return await res.json();
+                }
 
-            // =========================
-            // ADD SECTION (AJAX - SectionsModel handler)
-            // =========================
-            const confirmAddBtn = document.getElementById("confirmAddSectionBtn");
-            if (confirmAddBtn) {
-                confirmAddBtn.addEventListener("click", async () => {
-                    const sectionTypeId = Number(document.getElementById("addSectionType")?.value || 0);
-                    const insertAtTop = !!document.getElementById("insertAtTop")?.checked;
+                async function refreshPublishValidity(options) {
+                    const opts = options || {};
+                    const scrollIfInvalid = !!opts.scrollIfInvalid;
 
-                    const afterRaw = document.getElementById("insertAfter")?.value || "";
-                    const insertAfterRevisionSectionId = afterRaw ? Number(afterRaw) : null;
+                    const data = await fetchDraftValidation();
+                    if (!data) return null;
 
-                    if (!sectionTypeId || sectionTypeId <= 0) {
-                        alert("Please select a section type.");
+                    applyPublishState(!!data.isValid, data.invalidSectionIds || []);
+
+                    if (scrollIfInvalid && data.isValid === false) {
+                        scrollToFirstInvalid(data.invalidSectionIds || []);
+                    }
+
+                    return data;
+                }
+
+                window.PageBuilder = window.PageBuilder || {};
+                window.PageBuilder.refreshPublishValidity = refreshPublishValidity;
+
+                // Initial paint behavior
+                applyPublishState(initialInvalidSectionIds.length === 0, initialInvalidSectionIds);
+
+                if (initialInvalidSectionIds.length > 0) {
+                    scrollToFirstInvalid(initialInvalidSectionIds);
+                }
+
+                // Live sync (no scrolling)
+                refreshPublishValidity({ scrollIfInvalid: false });
+
+                // Scroll ONLY if user tries to publish while invalid
+                publishBtn?.addEventListener('click', async function (e) {
+                    const data = await refreshPublishValidity({ scrollIfInvalid: true });
+
+                    if (!data || data.isValid === false) {
+                        e.preventDefault();
                         return;
                     }
-
-                    confirmAddBtn.disabled = true;
-
-                    try {
-                        // ✅ Use SectionsModel add handler
-                        const url = `/Admin/Pages/Sections/${pageId}?handler=AddRevisionSection`;
-
-                        const res = await postJson(url, {
-                            pageId,
-                            sectionTypeId,
-                            insertAtTop,
-                            insertAfterRevisionSectionId,
-                            draftRevisionRowVersion
-                        });
-
-                        if (!res || !res.html) {
-                            window.location.reload();
-                            return;
-                        }
-
-                        const list = ensureSectionsListExists();
-                        if (!list) throw new Error("Sections list host not found.");
-
-                        if (insertAtTop) {
-                            list.insertAdjacentHTML("afterbegin", res.html);
-                        } else if (insertAfterRevisionSectionId) {
-                            const afterRow = document.getElementById("section-" + insertAfterRevisionSectionId);
-                            if (afterRow) afterRow.insertAdjacentHTML("afterend", res.html);
-                            else list.insertAdjacentHTML("beforeend", res.html);
-                        } else {
-                            list.insertAdjacentHTML("beforeend", res.html);
-                        }
-
-                        const insertAfterSelect = document.getElementById("insertAfter");
-                        if (insertAfterSelect && res.revisionSectionId) {
-                            const opt = document.createElement("option");
-                            opt.value = String(res.revisionSectionId);
-                            opt.textContent = res.title || ("Section " + res.revisionSectionId);
-                            insertAfterSelect.appendChild(opt);
-                        }
-
-                        try {
-                            const modalEl = document.getElementById("addSectionModal");
-                            const instance = bootstrap.Modal.getInstance(modalEl);
-                            if (instance) instance.hide();
-                        } catch { }
-
-                        document.getElementById("addSectionType").value = "";
-                        document.getElementById("insertAtTop").checked = false;
-                        document.getElementById("insertAfter").value = "";
-                        if (insertAfterEl) insertAfterEl.disabled = false;
-
-                        bindSortable(list);
-
-                        confirmAddBtn.disabled = false;
-                    } catch (err) {
-                        alert(err.message || "Add section failed.");
-                        confirmAddBtn.disabled = false;
-                    }
                 });
-            }
 
-        })();
-    </script>
+                document.querySelectorAll('a[href^="#section-"]').forEach(a => {
+                    a.addEventListener('click', function () {
+                        const id = (this.getAttribute('href') || '').replace('#', '');
+                        const el = document.getElementById(id);
+                        if (el) el.classList.add('pulse');
+                    });
+                });
+            });
+        </script>
+    }
 }

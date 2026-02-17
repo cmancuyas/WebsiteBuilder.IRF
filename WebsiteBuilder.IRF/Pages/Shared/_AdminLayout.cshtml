@@ -286,7 +286,7 @@
     <script src="~/js/site.js" asp-append-version="true"></script>
 
     <!-- Admin-only vendor scripts -->
-    <script src="~/lib/jquery-sortablejs/jquery-sortable.min.js"></script>
+    <script src="~/lib/Sortable/Sortable.js"></script>
 
     <!-- Global Media Picker bridge (admin-only) -->
     <script>
@@ -322,6 +322,8 @@
     <!-- Admin-only live JSON validation -->
     <script src="~/js/admin/sections/live-json-validate.js"></script>
 
+    @RenderSection("PageBuilderScripts", required: false)
     @RenderSection("Scripts", required: false)
+
 </body>
 </html>
