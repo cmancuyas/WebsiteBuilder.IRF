@@ -130,11 +130,10 @@ public sealed class PageRenderPipeline : IPageRenderPipeline
     {
         var cacheKey = $"render:published:{_tenant.TenantId}:{publishedRevisionId}";
 
-        PageRevision? revision = null;
-
         if (!_cache.TryGetValue(cacheKey, out CachedPublishedRenderData? cached) || cached is null)
         {
-            revision = await _db.PageRevisions.AsNoTracking()
+            // Only hit DB on cache miss
+            var revision = await _db.PageRevisions.AsNoTracking()
                 .FirstOrDefaultAsync(r =>
                     r.Id == publishedRevisionId &&
                     r.TenantId == _tenant.TenantId &&
@@ -150,8 +149,15 @@ public sealed class PageRenderPipeline : IPageRenderPipeline
             {
                 PageId = page.Id,
                 PublishedRevisionId = publishedRevisionId,
+
                 RevisionTitle = revision.Title,
                 RevisionSlug = revision.Slug,
+
+                // ✅ cache SEO snapshot fields
+                MetaTitle = revision.MetaTitle,
+                MetaDescription = revision.MetaDescription,
+                OgImageAssetId = revision.OgImageAssetId,
+
                 Sections = sections
             };
 
@@ -161,65 +167,39 @@ public sealed class PageRenderPipeline : IPageRenderPipeline
             });
         }
 
-        // Ensure revision loaded (for SEO fields)
-        revision ??= await _db.PageRevisions.AsNoTracking()
-            .FirstOrDefaultAsync(r =>
-                r.Id == publishedRevisionId &&
-                r.TenantId == _tenant.TenantId &&
-                r.IsPublishedSnapshot &&
-                !r.IsDeleted &&
-                r.IsActive, ct);
-
-        if (revision is null) return null;
-
-        // Compute canonical
+        // Canonical computed per-request (NOT cached)
         var (scheme, host) = await _url.GetCanonicalAsync(ct);
 
         var publishedSlug = NormalizeSlug(cached.RevisionSlug);
-        var canonicalPath = string.IsNullOrWhiteSpace(publishedSlug)
-            ? "/"
-            : "/" + publishedSlug;
-
+        var canonicalPath = string.IsNullOrWhiteSpace(publishedSlug) ? "/" : "/" + publishedSlug;
         var canonicalUrl = $"{scheme}://{host}{canonicalPath}";
 
-        // =====================================================
-        // 301 Redirect Logic (Slug History Safe)
-        // =====================================================
+        // 301 redirect if requested slug != published slug (slug history + normalization)
         string? redirectToUrl = null;
-
         var normalizedRequestedSlug = NormalizeSlug(requestedSlug);
 
         if (!string.Equals(normalizedRequestedSlug, publishedSlug, StringComparison.OrdinalIgnoreCase))
-        {
             redirectToUrl = canonicalUrl;
-        }
 
-        // =====================================================
-        // SEO Metadata FROM PUBLISHED SNAPSHOT
-        // =====================================================
+        // ---- SEO fields FROM CACHED PUBLISHED SNAPSHOT ----
+        var metaTitle = !string.IsNullOrWhiteSpace(cached.MetaTitle)
+            ? cached.MetaTitle
+            : (!string.IsNullOrWhiteSpace(cached.RevisionTitle) ? cached.RevisionTitle : page.Title);
 
-        var metaTitle = !string.IsNullOrWhiteSpace(revision.MetaTitle)
-            ? revision.MetaTitle
-            : (!string.IsNullOrWhiteSpace(revision.Title)
-                ? revision.Title
-                : page.Title);
-
-        var metaDesc = !string.IsNullOrWhiteSpace(revision.MetaDescription)
-            ? revision.MetaDescription
+        var metaDesc = !string.IsNullOrWhiteSpace(cached.MetaDescription)
+            ? cached.MetaDescription
             : page.MetaDescription;
 
-        // Absolute OG image
         string? ogImageUrl = null;
-        if (revision.OgImageAssetId.HasValue)
-        {
-            ogImageUrl = $"{scheme}://{host}/media/{revision.OgImageAssetId.Value}";
-        }
+        if (cached.OgImageAssetId.HasValue)
+            ogImageUrl = $"{scheme}://{host}/media/{cached.OgImageAssetId.Value}";
 
         return new PageRenderContext
         {
             PageEntity = page,
             IsPreview = false,
             RobotsNoIndex = false,
+
             CanonicalUrl = canonicalUrl,
             RedirectToUrl = redirectToUrl,
 
@@ -230,6 +210,7 @@ public sealed class PageRenderPipeline : IPageRenderPipeline
             RenderSections = cached.Sections
         };
     }
+
 
 
 

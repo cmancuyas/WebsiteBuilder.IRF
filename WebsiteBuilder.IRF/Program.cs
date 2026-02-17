@@ -129,17 +129,6 @@ builder.Services.Configure<GzipCompressionProviderOptions>(o =>
     o.Level = System.IO.Compression.CompressionLevel.Fastest;
 });
 
-builder.Services.AddOutputCache(options =>
-{
-    // Default policy (we will apply selectively)
-    options.AddPolicy("PublicPages", policy =>
-    {
-        policy.Expire(TimeSpan.FromMinutes(5));
-
-        // Cache only successful responses
-        policy.SetVaryByQuery(Array.Empty<string>()); // don't vary by query by default
-    });
-});
 
 // Tenant services
 builder.Services.AddMemoryCache();
@@ -200,6 +189,19 @@ builder.Services.AddScoped<ITenantSitemapIndexService, TenantSitemapIndexService
 builder.Services.AddScoped<ITenantUrlResolver, TenantUrlResolver>();
 builder.Services.AddSingleton<PublicPageOutputCachePolicy>();
 
+var cacheProvider = builder.Configuration["OutputCache:Provider"]?.Trim();
+
+if (string.Equals(cacheProvider, "Redis", StringComparison.OrdinalIgnoreCase))
+{
+    // Cloud-ready path (only used when you switch Provider=Redis)
+    builder.Services.AddStackExchangeRedisOutputCache(options =>
+    {
+        options.Configuration = builder.Configuration["OutputCache:Redis:Configuration"];
+        options.InstanceName = builder.Configuration["OutputCache:Redis:InstanceName"];
+    });
+}
+
+// OutputCache policies always registered (works for both stores)
 builder.Services.AddOutputCache(options =>
 {
     options.AddPolicy("PublicPages", policy =>
@@ -207,6 +209,7 @@ builder.Services.AddOutputCache(options =>
         policy.AddPolicy<PublicPageOutputCachePolicy>();
     });
 });
+
 
 var app = builder.Build();
 
@@ -272,6 +275,7 @@ app.Use(async (ctx, next) =>
     {
         return p.StartsWith("/Admin", StringComparison.OrdinalIgnoreCase)
             || p.StartsWith("/Preview", StringComparison.OrdinalIgnoreCase)
+            || p.StartsWith("/api", StringComparison.OrdinalIgnoreCase)   // ← ADD THIS LINE
             || p.StartsWith("/sitemap", StringComparison.OrdinalIgnoreCase)
             || p.StartsWith("/sitemaps", StringComparison.OrdinalIgnoreCase)
             || p.Equals("/robots.txt", StringComparison.OrdinalIgnoreCase)
@@ -282,6 +286,7 @@ app.Use(async (ctx, next) =>
             || p.StartsWith("/images", StringComparison.OrdinalIgnoreCase)
             || p.StartsWith("/favicon", StringComparison.OrdinalIgnoreCase);
     }
+
 
     if (IsExcluded(path))
     {
@@ -339,7 +344,7 @@ app.Use(async (context, next) =>
 
         context.Response.ContentType = "text/plain; charset=utf-8";
         context.Response.Headers["Cache-Control"] = "public, max-age=300";
-        context.Response.Headers["Vary"] = "Accept-Encoding";
+        context.Response.Headers["Vary"] = "Accept-Encoding, Host";
 
         if (!env.IsProduction())
         {
@@ -373,23 +378,27 @@ app.Use(async (context, next) =>
 
 app.UseStaticFiles();
 
+app.UseAuthentication();
+app.UseAuthorization();
+
+app.UseMiddleware<OutputCacheDiagnosticsMiddleware>();
+
 app.Use(async (ctx, next) =>
 {
-    // Block output caching for preview
     if (ctx.Request.Query.ContainsKey("preview"))
     {
         ctx.Response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0";
         ctx.Response.Headers["Pragma"] = "no-cache";
         ctx.Response.Headers["Expires"] = "0";
+        ctx.Response.Headers["Surrogate-Control"] = "no-store";
     }
 
     await next();
 });
 
-
 app.UseOutputCache();
-app.UseAuthentication();
-app.UseAuthorization();
+
+
 
 static string ComputeETag(string content)
 {
@@ -495,31 +504,16 @@ app.MapGet("/sitemaps/pages-{part:int}.xml", async (HttpContext http, int part, 
     return XmlResult(xml);
 });
 
-app.UseStatusCodePagesWithReExecute("/Admin/Errors/{0}");
+app.UseWhen(ctx => ctx.Request.Path.StartsWithSegments("/Admin", StringComparison.OrdinalIgnoreCase),
+    adminApp => adminApp.UseStatusCodePagesWithReExecute("/Admin/Errors/{0}"));
+
 
 app.MapRazorPages();
 
-app.MapFallbackToPage("/{slug?}", "/[slug]")
-   .CacheOutput("PublicPages");
 
 // IMPORTANT: fallback to CMS page renderer
 app.MapFallbackToPage("/{slug?}", "/[slug]")
-   .CacheOutput(policyBuilder =>
-   {
-       policyBuilder.Expire(TimeSpan.FromMinutes(5));
-
-       // Vary by host to isolate tenants by domain/subdomain
-       policyBuilder.SetVaryByHost(true);
-
-       // Vary by path so each slug is cached separately
-       policyBuilder.SetVaryByRouteValue("slug");
-
-       // Do not cache if preview is requested
-       policyBuilder.SetVaryByQuery(new[] { "preview" });
-
-       // Optional: tag all public pages for broad invalidation
-       policyBuilder.Tag("public-pages");
-   });
+   .CacheOutput("PublicPages");
 
 
 

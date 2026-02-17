@@ -26,6 +26,7 @@ namespace WebsiteBuilder.IRF.Pages
 
         public WebsiteBuilder.Models.Page? PageEntity { get; private set; }
         public bool IsPreview { get; private set; }
+
         public IReadOnlyList<PageRenderContext.RenderSectionDto> RenderSections { get; private set; }
             = Array.Empty<PageRenderContext.RenderSectionDto>();
 
@@ -34,9 +35,11 @@ namespace WebsiteBuilder.IRF.Pages
             if (!_tenant.IsResolved)
                 return NotFound();
 
+            // Preview gate
             var previewRequested = IsPreviewRequested();
             IsPreview = previewRequested && UserCanPreview();
 
+            // If preview is requested but not allowed, do not reveal existence
             if (previewRequested && !IsPreview)
                 return NotFound();
 
@@ -49,50 +52,66 @@ namespace WebsiteBuilder.IRF.Pages
                 ViewData["CanonicalUrl"] = null;
             }
 
+            // Build render context (published-only unless preview enabled)
             var ctx = await _pipeline.BuildForSlugAsync(slug, previewRequested: IsPreview, ct);
             if (ctx is null)
                 return NotFound();
 
             // --------------------------------------------------
+            // Cache identity for OutputCache policy & diagnostics
+            // (PUBLIC ONLY)
+            // --------------------------------------------------
+            if (!IsPreview && ctx.PageEntity != null)
+            {
+                // These are consumed by PublicPageOutputCachePolicy (tags + headers)
+                // and by OutputCacheDiagnosticsMiddleware (headers).
+                HttpContext.Items["PageId"] = ctx.PageEntity.Id;
+                HttpContext.Items["TenantId"] = ctx.PageEntity.TenantId;
+            }
+
+            // --------------------------------------------------
             // PUBLIC-ONLY REDIRECT LOGIC (SEO CONSOLIDATION)
+            // NOTE: Redirect responses should NOT be cached.
+            //       Ensure PublicPageOutputCachePolicy only stores 200 OK.
             // --------------------------------------------------
             if (!IsPreview)
             {
-                // 1️⃣ Pipeline-driven redirect (e.g., slug normalization / history)
+                // 1) Pipeline-driven redirect (slug history / normalization, etc.)
                 if (!string.IsNullOrWhiteSpace(ctx.RedirectToUrl))
                 {
                     return RedirectPermanent(ctx.RedirectToUrl);
                 }
 
-                // 2️⃣ Canonical host + path enforcement
+                // 2) Canonical host + path enforcement
                 if (!string.IsNullOrWhiteSpace(ctx.CanonicalUrl))
                 {
-                    var canonical = new Uri(ctx.CanonicalUrl, UriKind.Absolute);
-
-                    // Current absolute URL (without querystring)
-                    var currentRaw = $"{Request.Scheme}://{Request.Host.Host}{Request.PathBase}{Request.Path}";
-
-                    if (Uri.TryCreate(currentRaw, UriKind.Absolute, out var currentUri))
+                    if (Uri.TryCreate(ctx.CanonicalUrl, UriKind.Absolute, out var canonical))
                     {
-                        var currentPath = currentUri.AbsolutePath.TrimEnd('/');
-                        var canonicalPath = canonical.AbsolutePath.TrimEnd('/');
+                        // Current absolute URL (without query string)
+                        var currentRaw = $"{Request.Scheme}://{Request.Host.Host}{Request.PathBase}{Request.Path}";
 
-                        if (string.IsNullOrEmpty(currentPath)) currentPath = "/";
-                        if (string.IsNullOrEmpty(canonicalPath)) canonicalPath = "/";
-
-                        var sameHost = string.Equals(currentUri.Host, canonical.Host, StringComparison.OrdinalIgnoreCase);
-                        var samePath = string.Equals(currentPath, canonicalPath, StringComparison.OrdinalIgnoreCase);
-
-                        if (!sameHost || !samePath)
+                        if (Uri.TryCreate(currentRaw, UriKind.Absolute, out var currentUri))
                         {
-                            return RedirectPermanent(ctx.CanonicalUrl);
+                            var currentPath = currentUri.AbsolutePath.TrimEnd('/');
+                            var canonicalPath = canonical.AbsolutePath.TrimEnd('/');
+
+                            if (string.IsNullOrEmpty(currentPath)) currentPath = "/";
+                            if (string.IsNullOrEmpty(canonicalPath)) canonicalPath = "/";
+
+                            var sameHost = string.Equals(currentUri.Host, canonical.Host, StringComparison.OrdinalIgnoreCase);
+                            var samePath = string.Equals(currentPath, canonicalPath, StringComparison.OrdinalIgnoreCase);
+
+                            if (!sameHost || !samePath)
+                            {
+                                return RedirectPermanent(ctx.CanonicalUrl);
+                            }
                         }
                     }
                 }
             }
 
             // --------------------------------------------------
-            // RENDER CONTEXT
+            // RENDER CONTEXT -> VIEW
             // --------------------------------------------------
             PageEntity = ctx.PageEntity;
             RenderSections = ctx.RenderSections;
@@ -104,18 +123,8 @@ namespace WebsiteBuilder.IRF.Pages
             ViewData["MetaDescription"] = ctx.MetaDescription;
             ViewData["OgImageUrl"] = ctx.OgImageUrl;
 
-            if (!IsPreview && PageEntity != null)
-            {
-                HttpContext.Response.Headers.Append("Cache-Tag", $"tenant:{PageEntity.TenantId}");
-                HttpContext.Response.Headers.Append("Cache-Tag", $"page:{PageEntity.Id}");
-                HttpContext.Items["PageId"] = ctx.PageEntity.Id;
-                HttpContext.Items["TenantId"] = ctx.PageEntity.TenantId;
-            }
-
-
             return Page();
         }
-
 
         private bool IsPreviewRequested()
         {
@@ -123,8 +132,8 @@ namespace WebsiteBuilder.IRF.Pages
             if (string.IsNullOrWhiteSpace(val)) return false;
 
             return val.Equals("1", StringComparison.OrdinalIgnoreCase)
-                || val.Equals("true", StringComparison.OrdinalIgnoreCase)
-                || val.Equals("yes", StringComparison.OrdinalIgnoreCase);
+                   || val.Equals("true", StringComparison.OrdinalIgnoreCase)
+                   || val.Equals("yes", StringComparison.OrdinalIgnoreCase);
         }
 
         private bool UserCanPreview()

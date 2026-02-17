@@ -2,107 +2,105 @@
 using Microsoft.AspNetCore.OutputCaching;
 using WebsiteBuilder.IRF.Infrastructure.Tenancy;
 
-namespace WebsiteBuilder.IRF.Infrastructure.Caching
+namespace WebsiteBuilder.IRF.Infrastructure.Caching;
+
+public sealed class PublicPageOutputCachePolicy : IOutputCachePolicy
 {
-    public sealed class PublicPageOutputCachePolicy : IOutputCachePolicy
+    private readonly ITenantContext _tenant;
+
+    public PublicPageOutputCachePolicy(ITenantContext tenant)
     {
-        private static readonly TimeSpan DefaultTtl = TimeSpan.FromMinutes(5);
+        _tenant = tenant;
+    }
 
-        // ------------------------------------------------------------
-        // 1️⃣ Decide if request should be cached
-        // ------------------------------------------------------------
-        public ValueTask CacheRequestAsync(OutputCacheContext context, CancellationToken cancellationToken)
+    public ValueTask CacheRequestAsync(OutputCacheContext context, CancellationToken cancellationToken)
+    {
+        var http = context.HttpContext;
+
+        // preview => NO lookup + NO store
+        if (IsPreview(http))
         {
-            var http = context.HttpContext;
-            var req = http.Request;
-
-            // Only cache GET / HEAD
-            if (!HttpMethods.IsGet(req.Method) && !HttpMethods.IsHead(req.Method))
-            {
-                context.EnableOutputCaching = false;
-                return ValueTask.CompletedTask;
-            }
-
-            // Never cache preview mode
-            if (req.Query.ContainsKey("preview"))
-            {
-                context.EnableOutputCaching = false;
-                return ValueTask.CompletedTask;
-            }
-
-            // Tenant must be resolved
-            var tenant = http.RequestServices.GetRequiredService<ITenantContext>();
-            if (!tenant.IsResolved)
-            {
-                context.EnableOutputCaching = false;
-                return ValueTask.CompletedTask;
-            }
-
-            context.EnableOutputCaching = true;
-            context.AllowCacheLookup = true;
-            context.AllowCacheStorage = true;
-
-            // Expiration
-            context.ResponseExpirationTimeSpan = DefaultTtl;
-
-            // Multi-tenant safety
-            context.CacheVaryByRules.VaryByHost = true;
-
-            // Broad tag bucket for mass eviction
-            context.Tags.Add("public-pages");
-
+            Disable(context);
             return ValueTask.CompletedTask;
         }
 
-        // ------------------------------------------------------------
-        // 2️⃣ Guard when serving from cache
-        // ------------------------------------------------------------
-        public ValueTask ServeFromCacheAsync(OutputCacheContext context, CancellationToken cancellationToken)
+        // authenticated => safest default: no cache
+        if (http.User?.Identity?.IsAuthenticated == true)
         {
-            var http = context.HttpContext;
-            var req = http.Request;
-
-            // Never serve cached preview
-            if (req.Query.ContainsKey("preview"))
-            {
-                context.AllowCacheLookup = false;
-                context.AllowCacheStorage = false;
-                context.EnableOutputCaching = false;
-                return ValueTask.CompletedTask;
-            }
-
-            // Ensure tenant is still resolved
-            var tenant = http.RequestServices.GetRequiredService<ITenantContext>();
-            if (!tenant.IsResolved)
-            {
-                context.AllowCacheLookup = false;
-                context.AllowCacheStorage = false;
-                context.EnableOutputCaching = false;
-                return ValueTask.CompletedTask;
-            }
-
+            Disable(context);
             return ValueTask.CompletedTask;
         }
 
-        // ------------------------------------------------------------
-        // 3️⃣ After response executed (tag per page + tenant)
-        // ------------------------------------------------------------
-        public ValueTask ServeResponseAsync(OutputCacheContext context, CancellationToken cancellationToken)
+        // must be tenant-resolved (avoid cross-tenant pollution)
+        if (!_tenant.IsResolved)
         {
-            var http = context.HttpContext;
-
-            // These are set inside OnGetAsync
-            if (http.Items.TryGetValue("PageId", out var pageIdObj) && pageIdObj is int pageId)
-            {
-                context.Tags.Add($"page:{pageId}");
-            }
-
-            if (http.Items.TryGetValue("TenantId", out var tenantIdObj) && tenantIdObj is Guid tenantId)
-            {
-                context.Tags.Add($"tenant:{tenantId}");
-            }
-
+            Disable(context);
             return ValueTask.CompletedTask;
         }
+
+        // Enable caching for eligible anonymous public requests
+        context.EnableOutputCaching = true;
+        context.AllowCacheLookup = true;
+        context.AllowCacheStorage = true;
+
+        // Vary by host (tenant isolation)
+        var host = (http.Request.Host.HasValue ? http.Request.Host.Value : "").ToLowerInvariant();
+        context.CacheVaryByRules.VaryByValues["host"] = host;
+
+        // Tags
+        context.Tags.Add("public-pages");
+        context.Tags.Add($"tenant:{_tenant.TenantId}");
+
+        if (http.Items.TryGetValue("ResolvedPageId", out var pageIdObj) &&
+            pageIdObj is int pageId && pageId > 0)
+        {
+            context.Tags.Add($"page:{pageId}");
+        }
+
+        // Central TTL
+        context.ResponseExpirationTimeSpan = TimeSpan.FromMinutes(5);
+
+        return ValueTask.CompletedTask;
+    }
+
+    public ValueTask ServeFromCacheAsync(OutputCacheContext context, CancellationToken cancellationToken)
+        => ValueTask.CompletedTask;
+
+    public ValueTask ServeResponseAsync(OutputCacheContext context, CancellationToken cancellationToken)
+    {
+        var http = context.HttpContext;
+
+        // Defense-in-depth: preview never stored
+        if (IsPreview(http))
+        {
+            context.AllowCacheStorage = false;
+            return ValueTask.CompletedTask;
+        }
+
+        // Store 200 only (no redirects/404/500)
+        if (http.Response.StatusCode != StatusCodes.Status200OK)
+        {
+            context.AllowCacheStorage = false;
+            return ValueTask.CompletedTask;
+        }
+
+        // Don't store if response sets cookies
+        if (http.Response.Headers.ContainsKey("Set-Cookie"))
+        {
+            context.AllowCacheStorage = false;
+            return ValueTask.CompletedTask;
+        }
+
+        return ValueTask.CompletedTask;
+    }
+
+    private static bool IsPreview(HttpContext http)
+        => http.Request.Query.ContainsKey("preview");
+
+    private static void Disable(OutputCacheContext context)
+    {
+        context.EnableOutputCaching = false;
+        context.AllowCacheLookup = false;
+        context.AllowCacheStorage = false;
     }
 }
