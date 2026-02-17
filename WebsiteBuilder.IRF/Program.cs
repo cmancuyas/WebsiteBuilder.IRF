@@ -6,6 +6,7 @@ using System.Security.Cryptography;
 using System.Text;
 using WebsiteBuilder.IRF.DataAccess;
 using WebsiteBuilder.IRF.Infrastructure.Auth;
+using WebsiteBuilder.IRF.Infrastructure.Caching;
 using WebsiteBuilder.IRF.Infrastructure.Media;
 using WebsiteBuilder.IRF.Infrastructure.Middleware;
 using WebsiteBuilder.IRF.Infrastructure.Pages;
@@ -128,6 +129,18 @@ builder.Services.Configure<GzipCompressionProviderOptions>(o =>
     o.Level = System.IO.Compression.CompressionLevel.Fastest;
 });
 
+builder.Services.AddOutputCache(options =>
+{
+    // Default policy (we will apply selectively)
+    options.AddPolicy("PublicPages", policy =>
+    {
+        policy.Expire(TimeSpan.FromMinutes(5));
+
+        // Cache only successful responses
+        policy.SetVaryByQuery(Array.Empty<string>()); // don't vary by query by default
+    });
+});
+
 // Tenant services
 builder.Services.AddMemoryCache();
 builder.Services.AddScoped<ITenantNavigationService, TenantNavigationService>();
@@ -185,6 +198,15 @@ builder.Services.AddScoped<IMediaAlertNotifier>(sp => sp.GetRequiredService<Comp
 builder.Services.AddScoped<ITenantSitemapIndexService, TenantSitemapIndexService>();
 
 builder.Services.AddScoped<ITenantUrlResolver, TenantUrlResolver>();
+builder.Services.AddSingleton<PublicPageOutputCachePolicy>();
+
+builder.Services.AddOutputCache(options =>
+{
+    options.AddPolicy("PublicPages", policy =>
+    {
+        policy.AddPolicy<PublicPageOutputCachePolicy>();
+    });
+});
 
 var app = builder.Build();
 
@@ -351,6 +373,21 @@ app.Use(async (context, next) =>
 
 app.UseStaticFiles();
 
+app.Use(async (ctx, next) =>
+{
+    // Block output caching for preview
+    if (ctx.Request.Query.ContainsKey("preview"))
+    {
+        ctx.Response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0";
+        ctx.Response.Headers["Pragma"] = "no-cache";
+        ctx.Response.Headers["Expires"] = "0";
+    }
+
+    await next();
+});
+
+
+app.UseOutputCache();
 app.UseAuthentication();
 app.UseAuthorization();
 
@@ -462,7 +499,28 @@ app.UseStatusCodePagesWithReExecute("/Admin/Errors/{0}");
 
 app.MapRazorPages();
 
+app.MapFallbackToPage("/{slug?}", "/[slug]")
+   .CacheOutput("PublicPages");
+
 // IMPORTANT: fallback to CMS page renderer
-app.MapFallbackToPage("/{slug?}", "/[slug]");
+app.MapFallbackToPage("/{slug?}", "/[slug]")
+   .CacheOutput(policyBuilder =>
+   {
+       policyBuilder.Expire(TimeSpan.FromMinutes(5));
+
+       // Vary by host to isolate tenants by domain/subdomain
+       policyBuilder.SetVaryByHost(true);
+
+       // Vary by path so each slug is cached separately
+       policyBuilder.SetVaryByRouteValue("slug");
+
+       // Do not cache if preview is requested
+       policyBuilder.SetVaryByQuery(new[] { "preview" });
+
+       // Optional: tag all public pages for broad invalidation
+       policyBuilder.Tag("public-pages");
+   });
+
+
 
 app.Run();

@@ -104,6 +104,15 @@ namespace WebsiteBuilder.IRF.Pages
             ViewData["MetaDescription"] = ctx.MetaDescription;
             ViewData["OgImageUrl"] = ctx.OgImageUrl;
 
+            if (!IsPreview && PageEntity != null)
+            {
+                HttpContext.Response.Headers.Append("Cache-Tag", $"tenant:{PageEntity.TenantId}");
+                HttpContext.Response.Headers.Append("Cache-Tag", $"page:{PageEntity.Id}");
+                HttpContext.Items["PageId"] = ctx.PageEntity.Id;
+                HttpContext.Items["TenantId"] = ctx.PageEntity.TenantId;
+            }
+
+
             return Page();
         }
 
