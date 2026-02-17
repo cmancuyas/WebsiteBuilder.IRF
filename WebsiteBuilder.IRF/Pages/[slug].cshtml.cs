@@ -53,14 +53,60 @@ namespace WebsiteBuilder.IRF.Pages
             if (ctx is null)
                 return NotFound();
 
+            // --------------------------------------------------
+            // PUBLIC-ONLY REDIRECT LOGIC (SEO CONSOLIDATION)
+            // --------------------------------------------------
+            if (!IsPreview)
+            {
+                // 1️⃣ Pipeline-driven redirect (e.g., slug normalization / history)
+                if (!string.IsNullOrWhiteSpace(ctx.RedirectToUrl))
+                {
+                    return RedirectPermanent(ctx.RedirectToUrl);
+                }
+
+                // 2️⃣ Canonical host + path enforcement
+                if (!string.IsNullOrWhiteSpace(ctx.CanonicalUrl))
+                {
+                    var canonical = new Uri(ctx.CanonicalUrl, UriKind.Absolute);
+
+                    // Current absolute URL (without querystring)
+                    var currentRaw = $"{Request.Scheme}://{Request.Host.Host}{Request.PathBase}{Request.Path}";
+
+                    if (Uri.TryCreate(currentRaw, UriKind.Absolute, out var currentUri))
+                    {
+                        var currentPath = currentUri.AbsolutePath.TrimEnd('/');
+                        var canonicalPath = canonical.AbsolutePath.TrimEnd('/');
+
+                        if (string.IsNullOrEmpty(currentPath)) currentPath = "/";
+                        if (string.IsNullOrEmpty(canonicalPath)) canonicalPath = "/";
+
+                        var sameHost = string.Equals(currentUri.Host, canonical.Host, StringComparison.OrdinalIgnoreCase);
+                        var samePath = string.Equals(currentPath, canonicalPath, StringComparison.OrdinalIgnoreCase);
+
+                        if (!sameHost || !samePath)
+                        {
+                            return RedirectPermanent(ctx.CanonicalUrl);
+                        }
+                    }
+                }
+            }
+
+            // --------------------------------------------------
+            // RENDER CONTEXT
+            // --------------------------------------------------
             PageEntity = ctx.PageEntity;
             RenderSections = ctx.RenderSections;
 
-            ViewData["CanonicalUrl"] = ctx.CanonicalUrl;
+            ViewData["CanonicalUrl"] = IsPreview ? null : ctx.CanonicalUrl;
             ViewData["RobotsNoIndex"] = ctx.RobotsNoIndex;
+
+            ViewData["MetaTitle"] = ctx.MetaTitle;
+            ViewData["MetaDescription"] = ctx.MetaDescription;
+            ViewData["OgImageUrl"] = ctx.OgImageUrl;
 
             return Page();
         }
+
 
         private bool IsPreviewRequested()
         {

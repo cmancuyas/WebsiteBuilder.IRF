@@ -12,7 +12,48 @@
         <meta name="robots" content="noindex,nofollow,noarchive,nosnippet" />
         <meta name="googlebot" content="noindex,nofollow,noarchive,nosnippet" />
     }
+    else
+    {
+        var canonicalUrl = ViewData["CanonicalUrl"] as string;
+        var metaTitle = ViewData["MetaTitle"] as string;
+        var metaDesc = ViewData["MetaDescription"] as string;
+        var ogImageUrl = ViewData["OgImageUrl"] as string;
+
+        if (!string.IsNullOrWhiteSpace(metaDesc))
+        {
+            <meta name="description" content="@metaDesc" />
+        }
+
+        if (!string.IsNullOrWhiteSpace(canonicalUrl))
+        {
+            <link rel="canonical" href="@canonicalUrl" />
+            <meta property="og:url" content="@canonicalUrl" />
+        }
+
+        if (!string.IsNullOrWhiteSpace(metaTitle))
+        {
+            <meta property="og:title" content="@metaTitle" />
+        }
+
+        if (!string.IsNullOrWhiteSpace(metaDesc))
+        {
+            <meta property="og:description" content="@metaDesc" />
+        }
+
+        <meta property="og:type" content="website" />
+
+        if (!string.IsNullOrWhiteSpace(ogImageUrl))
+        {
+            <meta property="og:image" content="@ogImageUrl" />
+            <meta name="twitter:card" content="summary_large_image" />
+        }
+        else
+        {
+            <meta name="twitter:card" content="summary" />
+        }
+    }
 }
+
 
 @if (isPreview)
 {

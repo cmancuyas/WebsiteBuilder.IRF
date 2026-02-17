@@ -55,15 +55,19 @@ public sealed class PageRenderPipeline : IPageRenderPipeline
                     AbsoluteExpirationRelativeToNow = DraftCacheTtl
                 });
             }
-
             return new PageRenderContext
             {
                 PageEntity = page,
                 IsPreview = true,
                 RobotsNoIndex = true,
                 CanonicalUrl = null,
+                RedirectToUrl = null,
+                MetaTitle = page.MetaTitle ?? page.Title,
+                MetaDescription = page.MetaDescription,
+                OgImageUrl = null, // keep null unless you want draft OG
                 RenderSections = draftSections
             };
+
         }
 
         // ==========================
@@ -117,14 +121,17 @@ public sealed class PageRenderPipeline : IPageRenderPipeline
     {
         var cacheKey = $"render:published:{_tenant.TenantId}:{publishedRevisionId}";
 
+        PageRevision? revision = null;
+
         if (!_cache.TryGetValue(cacheKey, out CachedPublishedRenderData? cached) || cached is null)
         {
-            var revision = await _db.PageRevisions.AsNoTracking()
+            revision = await _db.PageRevisions.AsNoTracking()
                 .FirstOrDefaultAsync(r =>
                     r.Id == publishedRevisionId &&
                     r.TenantId == _tenant.TenantId &&
                     r.IsPublishedSnapshot &&
-                    !r.IsDeleted, ct);
+                    !r.IsDeleted &&
+                    r.IsActive, ct);
 
             if (revision is null) return null;
 
@@ -145,20 +152,68 @@ public sealed class PageRenderPipeline : IPageRenderPipeline
             });
         }
 
+        // Ensure we have the revision for SEO fields even on cache hit.
+        // We keep this DB call lightweight (single row, no includes).
+        revision ??= await _db.PageRevisions.AsNoTracking()
+            .FirstOrDefaultAsync(r =>
+                r.Id == publishedRevisionId &&
+                r.TenantId == _tenant.TenantId &&
+                r.IsPublishedSnapshot &&
+                !r.IsDeleted &&
+                r.IsActive, ct);
+
+        if (revision is null) return null;
+
         // Canonical computed per-request (NOT cached)
         var (scheme, host) = await _url.GetCanonicalAsync(ct);
         var publishedSlug = NormalizeSlug(cached.RevisionSlug);
         var canonicalPath = string.IsNullOrWhiteSpace(publishedSlug) ? "/" : "/" + publishedSlug;
+        var canonicalUrl = $"{scheme}://{host}{canonicalPath}";
+
+        // Redirect if Page.Slug drifted from published snapshot slug
+        string? redirectToUrl = null;
+        var pageSlugNormalized = NormalizeSlug(page.Slug);
+        if (!string.Equals(pageSlugNormalized, publishedSlug, StringComparison.OrdinalIgnoreCase))
+        {
+            redirectToUrl = canonicalUrl;
+        }
+
+        // ---- SEO fields FROM PUBLISHED SNAPSHOT (revision) ----
+        // Revision fields are non-nullable in your model but may be empty strings.
+        var metaTitle = !string.IsNullOrWhiteSpace(revision.MetaTitle)
+            ? revision.MetaTitle
+            : (!string.IsNullOrWhiteSpace(revision.Title) ? revision.Title : page.Title);
+
+        var metaDesc = !string.IsNullOrWhiteSpace(revision.MetaDescription)
+            ? revision.MetaDescription
+            : page.MetaDescription;
+
+        // OG image: simplest absolute URL strategy (adjust to your real media route)
+        // If you already have a canonical media endpoint, update the path below.
+        string? ogImageUrl = null;
+        if (revision.OgImageAssetId.HasValue)
+        {
+            // Example route — change if your actual media endpoint differs:
+            // ogImageUrl = $"{scheme}://{host}/media/{revision.OgImageAssetId.Value}";
+            ogImageUrl = $"{scheme}://{host}/media/{revision.OgImageAssetId.Value}";
+        }
 
         return new PageRenderContext
         {
             PageEntity = page,
             IsPreview = false,
             RobotsNoIndex = false,
-            CanonicalUrl = $"{scheme}://{host}{canonicalPath}",
+            CanonicalUrl = canonicalUrl,
+            RedirectToUrl = redirectToUrl,
+
+            MetaTitle = metaTitle,
+            MetaDescription = metaDesc,
+            OgImageUrl = ogImageUrl,
+
             RenderSections = cached.Sections
         };
     }
+
 
     // ==========================
     // Resolve page by slug or tenant home

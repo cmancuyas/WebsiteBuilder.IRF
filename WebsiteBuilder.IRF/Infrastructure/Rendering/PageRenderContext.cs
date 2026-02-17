@@ -10,6 +10,10 @@ public sealed class PageRenderContext
     public string? CanonicalUrl { get; init; }
     public bool RobotsNoIndex { get; init; }
     public required IReadOnlyList<RenderSectionDto> RenderSections { get; init; }
+    public string? RedirectToUrl { get; set; }
+    public string? MetaTitle { get; set; }
+    public string? MetaDescription { get; set; }
+    public string? OgImageUrl { get; set; }
 
     public sealed class RenderSectionDto
     {
