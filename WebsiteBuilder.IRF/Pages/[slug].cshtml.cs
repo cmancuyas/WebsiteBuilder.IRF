@@ -1,5 +1,7 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
+using Microsoft.EntityFrameworkCore;
+using WebsiteBuilder.IRF.DataAccess;
 using WebsiteBuilder.IRF.Infrastructure.Rendering;
 using WebsiteBuilder.IRF.Infrastructure.Tenancy;
 
@@ -11,17 +13,20 @@ namespace WebsiteBuilder.IRF.Pages
         private readonly IWebHostEnvironment _env;
         private readonly IConfiguration _cfg;
         private readonly IPageRenderPipeline _pipeline;
+        private readonly DataContext _db;
 
         public _slug_Model(
             ITenantContext tenant,
             IWebHostEnvironment env,
             IConfiguration cfg,
-            IPageRenderPipeline pipeline)
+            IPageRenderPipeline pipeline,
+            DataContext db)
         {
             _tenant = tenant;
             _env = env;
             _cfg = cfg;
             _pipeline = pipeline;
+            _db = db;
         }
 
         public WebsiteBuilder.Models.Page? PageEntity { get; private set; }
@@ -35,7 +40,9 @@ namespace WebsiteBuilder.IRF.Pages
             if (!_tenant.IsResolved)
                 return NotFound();
 
-            // Preview gate
+            // --------------------------------------------------
+            // Preview gate (single source of truth)
+            // --------------------------------------------------
             var previewRequested = IsPreviewRequested();
             IsPreview = previewRequested && UserCanPreview();
 
@@ -43,6 +50,32 @@ namespace WebsiteBuilder.IRF.Pages
             if (previewRequested && !IsPreview)
                 return NotFound();
 
+            // --------------------------------------------------
+            // SEO HARDENING A: Canonical host enforcement (PUBLIC ONLY)
+            // - bypass for preview + authenticated
+            // - preserve path + query
+            // --------------------------------------------------
+            if (!IsPreview && User.Identity?.IsAuthenticated != true)
+            {
+                var primaryHost = await GetTenantPrimaryHostAsync(ct);
+
+                if (!string.IsNullOrWhiteSpace(primaryHost))
+                {
+                    var reqHost = Request.Host.Host?.Trim().ToLowerInvariant();
+
+                    if (!string.Equals(reqHost, primaryHost, StringComparison.OrdinalIgnoreCase))
+                    {
+                        var scheme = Request.Scheme;
+                        var pathAndQuery = $"{Request.PathBase}{Request.Path}{Request.QueryString}";
+                        var target = $"{scheme}://{primaryHost}{pathAndQuery}";
+                        return RedirectPermanent(target);
+                    }
+                }
+            }
+
+            // --------------------------------------------------
+            // Preview response hardening
+            // --------------------------------------------------
             if (IsPreview)
             {
                 Response.Headers["X-Robots-Tag"] = "noindex, nofollow, noarchive, nosnippet";
@@ -52,61 +85,76 @@ namespace WebsiteBuilder.IRF.Pages
                 ViewData["CanonicalUrl"] = null;
             }
 
+            // --------------------------------------------------
             // Build render context (published-only unless preview enabled)
+            // --------------------------------------------------
             var ctx = await _pipeline.BuildForSlugAsync(slug, previewRequested: IsPreview, ct);
+
             if (ctx is null)
                 return NotFound();
 
             // --------------------------------------------------
-            // Cache identity for OutputCache policy & diagnostics
-            // (PUBLIC ONLY)
+            // Cache identity for OutputCache policy & diagnostics (PUBLIC ONLY)
             // --------------------------------------------------
             if (!IsPreview && ctx.PageEntity != null)
             {
-                // These are consumed by PublicPageOutputCachePolicy (tags + headers)
-                // and by OutputCacheDiagnosticsMiddleware (headers).
                 HttpContext.Items["PageId"] = ctx.PageEntity.Id;
                 HttpContext.Items["TenantId"] = ctx.PageEntity.TenantId;
+
+                // PublicPageOutputCachePolicy compatibility (if used)
+                HttpContext.Items["ResolvedPageId"] = ctx.PageEntity.Id;
             }
 
             // --------------------------------------------------
             // PUBLIC-ONLY REDIRECT LOGIC (SEO CONSOLIDATION)
             // NOTE: Redirect responses should NOT be cached.
-            //       Ensure PublicPageOutputCachePolicy only stores 200 OK.
             // --------------------------------------------------
             if (!IsPreview)
             {
-                // 1) Pipeline-driven redirect (slug history / normalization, etc.)
+                // 0) Pipeline-level canonical redirect (slug history / normalization / home alias)
                 if (!string.IsNullOrWhiteSpace(ctx.RedirectToUrl))
-                {
-                    return RedirectPermanent(ctx.RedirectToUrl);
-                }
+                    return RedirectPermanent(ctx.RedirectToUrl + Request.QueryString);
 
-                // 2) Canonical host + path enforcement
-                if (!string.IsNullOrWhiteSpace(ctx.CanonicalUrl))
+                // 1) Canonical host + path enforcement (preserve query string)
+                if (!string.IsNullOrWhiteSpace(ctx.CanonicalUrl)
+                    && Uri.TryCreate(ctx.CanonicalUrl, UriKind.Absolute, out var canonical))
                 {
-                    if (Uri.TryCreate(ctx.CanonicalUrl, UriKind.Absolute, out var canonical))
+                    var currentHost = Request.Host.Host;
+                    var currentPath = (Request.PathBase + Request.Path).ToString();
+                    if (string.IsNullOrEmpty(currentPath)) currentPath = "/";
+
+                    var canonicalHost = canonical.Host;
+                    var canonicalPath = canonical.AbsolutePath;
+
+                    if (!string.Equals(currentHost, canonicalHost, StringComparison.OrdinalIgnoreCase) ||
+                        !string.Equals(currentPath.TrimEnd('/'), canonicalPath.TrimEnd('/'), StringComparison.OrdinalIgnoreCase))
                     {
-                        // Current absolute URL (without query string)
-                        var currentRaw = $"{Request.Scheme}://{Request.Host.Host}{Request.PathBase}{Request.Path}";
-
-                        if (Uri.TryCreate(currentRaw, UriKind.Absolute, out var currentUri))
-                        {
-                            var currentPath = currentUri.AbsolutePath.TrimEnd('/');
-                            var canonicalPath = canonical.AbsolutePath.TrimEnd('/');
-
-                            if (string.IsNullOrEmpty(currentPath)) currentPath = "/";
-                            if (string.IsNullOrEmpty(canonicalPath)) canonicalPath = "/";
-
-                            var sameHost = string.Equals(currentUri.Host, canonical.Host, StringComparison.OrdinalIgnoreCase);
-                            var samePath = string.Equals(currentPath, canonicalPath, StringComparison.OrdinalIgnoreCase);
-
-                            if (!sameHost || !samePath)
-                            {
-                                return RedirectPermanent(ctx.CanonicalUrl);
-                            }
-                        }
+                        return RedirectPermanent(ctx.CanonicalUrl + Request.QueryString);
                     }
+                }
+            }
+
+            // --------------------------------------------------
+            // SEO/PERF: ETag support (PUBLIC ONLY)
+            // - Redirects already handled above.
+            // - OutputCache policy stores only 200 OK; 304 won't be cached (good).
+            // --------------------------------------------------
+            if (!IsPreview && ctx.PageEntity?.PublishedRevisionId != null)
+            {
+                var etag = BuildPublicEtag(ctx.PageEntity);
+                Response.Headers.ETag = etag;
+
+                // Optional: Last-Modified for clients that use If-Modified-Since
+                if (ctx.PageEntity.PublishedAt.HasValue)
+                    Response.Headers.LastModified = ctx.PageEntity.PublishedAt.Value.ToUniversalTime().ToString("R");
+
+                var inm = Request.Headers.IfNoneMatch.ToString();
+                if (!string.IsNullOrWhiteSpace(inm) &&
+                    inm.Split(',').Select(x => x.Trim()).Any(x => string.Equals(x, etag, StringComparison.Ordinal)))
+                {
+                    // Must still include validators
+                    Response.Headers.ETag = etag;
+                    return StatusCode(StatusCodes.Status304NotModified);
                 }
             }
 
@@ -158,6 +206,29 @@ namespace WebsiteBuilder.IRF.Pages
             Response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0";
             Response.Headers["Pragma"] = "no-cache";
             Response.Headers["Expires"] = "0";
+        }
+
+        private async Task<string?> GetTenantPrimaryHostAsync(CancellationToken ct)
+        {
+            var host = await _db.DomainMappings
+                .AsNoTracking()
+                .Where(d =>
+                    d.TenantId == _tenant.TenantId &&
+                    d.IsPrimary &&
+                    d.IsActive &&
+                    !d.IsDeleted)
+                .Select(d => d.Host)
+                .FirstOrDefaultAsync(ct);
+
+            return string.IsNullOrWhiteSpace(host) ? null : host.Trim().ToLowerInvariant();
+        }
+        private string BuildPublicEtag(WebsiteBuilder.Models.Page page)
+        {
+            // PublishedRevisionId changes on every publish => perfect cache validator.
+            // Weak ETag is fine for HTML.
+            var tenant = page.TenantId.ToString("N");
+            var rev = page.PublishedRevisionId?.ToString() ?? "0";
+            return $"W/\"t{tenant}-r{rev}\"";
         }
     }
 }

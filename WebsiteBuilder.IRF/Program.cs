@@ -187,7 +187,7 @@ builder.Services.AddScoped<IMediaAlertNotifier>(sp => sp.GetRequiredService<Comp
 builder.Services.AddScoped<ITenantSitemapIndexService, TenantSitemapIndexService>();
 
 builder.Services.AddScoped<ITenantUrlResolver, TenantUrlResolver>();
-builder.Services.AddSingleton<PublicPageOutputCachePolicy>();
+builder.Services.AddScoped<PublicPageOutputCachePolicy>();
 
 var cacheProvider = builder.Configuration["OutputCache:Provider"]?.Trim();
 

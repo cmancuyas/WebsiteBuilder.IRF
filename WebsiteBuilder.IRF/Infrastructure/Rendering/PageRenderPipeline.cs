@@ -172,14 +172,23 @@ public sealed class PageRenderPipeline : IPageRenderPipeline
 
         var publishedSlug = NormalizeSlug(cached.RevisionSlug);
         var canonicalPath = string.IsNullOrWhiteSpace(publishedSlug) ? "/" : "/" + publishedSlug;
+
+        // Keep query string for redirects (utm, etc.). Canonical tag stays clean.
+        var query = ""; // pipeline doesn't have Request; keep RedirectToUrl clean and add query in PageModel OR pass it in.
         var canonicalUrl = $"{scheme}://{host}{canonicalPath}";
 
-        // 301 redirect if requested slug != published slug (slug history + normalization)
+        // If requested slug is not canonical slug, redirect.
         string? redirectToUrl = null;
+
+        // IMPORTANT: requestedSlug passed in is already normalized upstream.
+        // Still normalize defensively:
         var normalizedRequestedSlug = NormalizeSlug(requestedSlug);
 
+        // Redirect if request path differs from canonical path.
         if (!string.Equals(normalizedRequestedSlug, publishedSlug, StringComparison.OrdinalIgnoreCase))
+        {
             redirectToUrl = canonicalUrl;
+        }
 
         // ---- SEO fields FROM CACHED PUBLISHED SNAPSHOT ----
         var metaTitle = !string.IsNullOrWhiteSpace(cached.MetaTitle)
@@ -219,6 +228,10 @@ public sealed class PageRenderPipeline : IPageRenderPipeline
     // ==========================
     private async Task<Page?> ResolvePageAsync(string normalizedSlug, CancellationToken ct)
     {
+        // Allow "/home" to behave like "/" (alias). Canonical redirect happens later.
+        if (normalizedSlug == "home")
+            normalizedSlug = "";
+
         // "/" requested → use Tenant.HomePageId
         if (string.IsNullOrWhiteSpace(normalizedSlug))
         {
@@ -247,12 +260,14 @@ public sealed class PageRenderPipeline : IPageRenderPipeline
             return page;
 
         // 2) Fallback: slug history -> resolve PageId
+        var legacy = NormalizeSlugLegacy(normalizedSlug);
+
         var history = await _db.PageSlugHistories.AsNoTracking()
             .Where(h =>
                 h.TenantId == _tenant.TenantId &&
                 h.IsActive &&
                 !h.IsDeleted &&
-                h.OldSlug == normalizedSlug)
+                (h.OldSlug == normalizedSlug || h.OldSlug == legacy))
             .OrderByDescending(h => h.ChangedAt)
             .FirstOrDefaultAsync(ct);
 
@@ -302,5 +317,11 @@ public sealed class PageRenderPipeline : IPageRenderPipeline
         s = Regex.Replace(s, @"-+", "-");
 
         return s.Trim('-');
+    }
+    private static string NormalizeSlugLegacy(string? slug)
+    {
+        var s = (slug ?? "").Trim();
+        s = s.Trim('/');
+        return s.ToLowerInvariant(); // "" means home
     }
 }

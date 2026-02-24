@@ -48,13 +48,40 @@ namespace WebsiteBuilder.IRF.DataAccess
         }
         private static void ConfigurePageSlugHistory(ModelBuilder modelBuilder)
         {
-            modelBuilder.Entity<Tenant>(b =>
+            modelBuilder.Entity<PageSlugHistory>(b =>
             {
+                b.ToTable("PageSlugHistories");
 
-                b.HasIndex(x => x.Slug)
-                .IsUnique();
+                b.HasKey(x => x.Id);
+                b.Property(x => x.Id).ValueGeneratedOnAdd();
+
+                b.Property(x => x.TenantId).IsRequired();
+                b.Property(x => x.PageId).IsRequired();
+
+                b.Property(x => x.OldSlug)
+                    .HasMaxLength(200)
+                    .IsRequired();
+
+                b.Property(x => x.NewSlug)
+                    .HasMaxLength(200);
+
+                // ✅ Uniqueness per tenant (B2 requirement)
+                b.HasIndex(x => new { x.TenantId, x.OldSlug })
+                    .IsUnique();
+
+                // Helpful indexes
+                b.HasIndex(x => new { x.TenantId, x.PageId });
+                b.HasIndex(x => new { x.TenantId, x.IsDeleted, x.IsActive });
+
+                // Relationship (optional but clean)
+                b.HasOne(x => x.Page)
+                    .WithMany()
+                    .HasForeignKey(x => x.PageId)
+                    .OnDelete(DeleteBehavior.Cascade);
             });
         }
+
+
         private static void ConfigureBaseModelConventions(ModelBuilder modelBuilder)
         {
             foreach (var entityType in modelBuilder.Model.GetEntityTypes())
