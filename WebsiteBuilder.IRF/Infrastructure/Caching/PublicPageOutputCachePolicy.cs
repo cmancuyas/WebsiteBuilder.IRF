@@ -17,6 +17,13 @@ public sealed class PublicPageOutputCachePolicy : IOutputCachePolicy
     {
         var http = context.HttpContext;
 
+        // Only cache safe idempotent requests
+        if (!HttpMethods.IsGet(http.Request.Method) && !HttpMethods.IsHead(http.Request.Method))
+        {
+            Disable(context);
+            return ValueTask.CompletedTask;
+        }
+
         // preview => NO lookup + NO store
         if (IsPreview(http))
         {
@@ -43,9 +50,12 @@ public sealed class PublicPageOutputCachePolicy : IOutputCachePolicy
         context.AllowCacheLookup = true;
         context.AllowCacheStorage = true;
 
-        // Vary by host (tenant isolation)
-        var host = (http.Request.Host.HasValue ? http.Request.Host.Value : "").ToLowerInvariant();
+        // ✅ Vary by host (tenant isolation) - NORMALIZED (no port/trailing dot)
+        var host = HostNormalizer.Normalize(http.Request.Host.Host);
         context.CacheVaryByRules.VaryByValues["host"] = host;
+
+        // Optional: vary by scheme if you ever serve both http/https without full redirect at edge
+        // context.CacheVaryByRules.VaryByValues["scheme"] = http.Request.Scheme;
 
         // Tags
         context.Tags.Add("public-pages");
