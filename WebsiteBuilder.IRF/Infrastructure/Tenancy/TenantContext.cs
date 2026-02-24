@@ -4,7 +4,9 @@
     {
         public Guid TenantId { get; set; }
         public string Slug { get; set; } = string.Empty;
+
         public string Host { get; set; } = string.Empty;
+        public string PrimaryHost { get; set; } = string.Empty;
 
         public bool IsResolved => TenantId != Guid.Empty;
     }

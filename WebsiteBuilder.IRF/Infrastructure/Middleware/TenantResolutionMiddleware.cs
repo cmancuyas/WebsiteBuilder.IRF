@@ -10,8 +10,6 @@ namespace WebsiteBuilder.IRF.Infrastructure.Middleware
 {
     public sealed class TenantResolutionMiddleware
     {
-        private const string AdminTenantCookie = "wb.admin.tenant";
-
         private readonly RequestDelegate _next;
         private readonly ILogger<TenantResolutionMiddleware> _logger;
         private readonly IConfiguration _config;
@@ -31,7 +29,7 @@ namespace WebsiteBuilder.IRF.Infrastructure.Middleware
             ITenantResolver tenantResolver,
             ITenantContext tenantContext)
         {
-            // ✅ Admin handled by AdminTenantResolutionMiddleware
+            // ✅ Admin handled elsewhere
             if (context.Request.Path.StartsWithSegments("/Admin", StringComparison.OrdinalIgnoreCase))
             {
                 await _next(context);
@@ -40,11 +38,11 @@ namespace WebsiteBuilder.IRF.Infrastructure.Middleware
 
             var path = context.Request.Path.Value ?? string.Empty;
 
-            // ✅ Always use host WITHOUT port
-            var host = context.Request.Host.Host?.Trim().ToLowerInvariant() ?? string.Empty;
+            // ✅ Canonical host normalization (no port / no trailing dot / lowercase)
+            var requestHost = HostNormalizer.Normalize(context.Request.Host.Host);
 
             // =========================
-            // 1) Static/system bypass (public only)
+            // 1) Static/system bypass
             // =========================
             if (ShouldBypassTenantResolution(context))
             {
@@ -55,49 +53,51 @@ namespace WebsiteBuilder.IRF.Infrastructure.Middleware
             // =========================
             // 2) Local/dev bypass (keep)
             // =========================
-            if (string.IsNullOrWhiteSpace(host) || host is "localhost" or "127.0.0.1")
+            if (string.IsNullOrWhiteSpace(requestHost) || requestHost is "localhost" or "127.0.0.1")
             {
                 await _next(context);
                 return;
             }
 
             // =========================
-            // 3) Platform admin host (marketing/root) bypass
+            // 3) Platform admin host bypass
             // =========================
-            if (IsPlatformAdminHost(host, _config))
+            if (IsPlatformAdminHost(requestHost, _config))
             {
                 await _next(context);
                 return;
             }
 
             // =========================
-            // 4) Resolve tenant normally (public tenant hosts)
+            // 4) Resolve tenant (domain mapping first, then platform subdomain slug)
             // =========================
             string? slug = null;
 
-            var platformDomain = _config["SaaS:PlatformDomain"]?.Trim().ToLowerInvariant();
+            var platformDomain = HostNormalizer.Normalize(_config["SaaS:PlatformDomain"]);
             if (!string.IsNullOrWhiteSpace(platformDomain))
             {
-                // Root platform domain (public pages) → no tenant
-                if (host.Equals(platformDomain, StringComparison.OrdinalIgnoreCase))
+                // Root platform domain (marketing/root) → no tenant
+                if (requestHost.Equals(platformDomain, StringComparison.OrdinalIgnoreCase))
                 {
                     await _next(context);
                     return;
                 }
 
-                // Platform subdomain (tenant slug)
-                if (host.EndsWith("." + platformDomain, StringComparison.OrdinalIgnoreCase))
+                // Platform subdomain -> tenant slug fallback
+                if (requestHost.EndsWith("." + platformDomain, StringComparison.OrdinalIgnoreCase))
                 {
-                    var sub = host[..^(platformDomain.Length + 1)];
+                    var sub = requestHost[..^(platformDomain.Length + 1)];
                     slug = sub.Split('.', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
                 }
             }
 
-            var resolvedTenant = await tenantResolver.ResolveAsync(host, slug, context.RequestAborted);
+            var resolved = await tenantResolver.ResolveAsync(requestHost, slug, context.RequestAborted);
 
-            if (resolvedTenant is null)
+            if (resolved is null)
             {
-                _logger.LogInformation("Tenant not found | host={Host} slug={Slug} path={Path}", host, slug, path);
+                _logger.LogInformation(
+                    "Tenant not found | host={Host} slug={Slug} path={Path}",
+                    requestHost, slug, path);
 
                 if (_config.GetValue("SaaS:AllowUnknownHosts", false))
                 {
@@ -110,30 +110,92 @@ namespace WebsiteBuilder.IRF.Infrastructure.Middleware
                 return;
             }
 
-            SetTenantContext(context, tenantContext, resolvedTenant, hostOverride: host);
+            // ✅ Set tenant context (request host + primary host)
+            SetTenantContext(context, tenantContext, resolved);
+
+            // =========================
+            // 5) SEO-safe alias -> primary redirect
+            //    - skip preview
+            //    - skip non-GET/HEAD (avoid breaking POST callbacks)
+            // =========================
+            if (ShouldRedirectAliasToPrimary(context, tenantContext, resolved))
+            {
+                var target = BuildPrimaryRedirectUrl(context, tenantContext.PrimaryHost);
+
+                // Prevent intermediary/proxy caching of redirects
+                context.Response.Headers.CacheControl = "no-store";
+
+                context.Response.Redirect(target, permanent: true);
+                return;
+            }
+
             await _next(context);
         }
-
 
         private static void SetTenantContext(
             HttpContext context,
             ITenantContext tenantContext,
-            ResolvedTenant resolved,
-            string hostOverride)
+            ResolvedTenant resolved)
         {
             tenantContext.TenantId = resolved.TenantId;
             tenantContext.Slug = resolved.Slug ?? string.Empty;
-            tenantContext.Host = (hostOverride ?? string.Empty).Trim().ToLowerInvariant();
+
+            // Request host (what user typed / DNS pointed)
+            tenantContext.Host = HostNormalizer.Normalize(resolved.RequestHost);
+
+            // Primary host (canonical)
+            tenantContext.PrimaryHost = HostNormalizer.Normalize(resolved.PrimaryHost);
 
             context.Items["TenantId"] = resolved.TenantId;
             context.Items["TenantSlug"] = resolved.Slug ?? string.Empty;
+            context.Items["TenantHost"] = tenantContext.Host;
+            context.Items["TenantPrimaryHost"] = tenantContext.PrimaryHost;
+        }
+
+        private static bool ShouldRedirectAliasToPrimary(
+            HttpContext context,
+            ITenantContext tenantContext,
+            ResolvedTenant resolved)
+        {
+            // No tenant => no redirect
+            if (!tenantContext.IsResolved) return false;
+
+            // No primary host => nothing to redirect to
+            if (string.IsNullOrWhiteSpace(tenantContext.PrimaryHost)) return false;
+
+            // Preview should never redirect (draft must be viewable on any host in dev/testing)
+            if (context.Request.Query.ContainsKey("preview")) return false;
+
+            // Only redirect GET/HEAD (avoid breaking form posts / webhooks)
+            if (!HttpMethods.IsGet(context.Request.Method) && !HttpMethods.IsHead(context.Request.Method))
+                return false;
+
+            // Bypass routes (you already bypass earlier, but keep extra safety)
+            if (ShouldBypassTenantResolution(context)) return false;
+
+            // Redirect only when request host != primary host
+            var reqHost = HostNormalizer.Normalize(context.Request.Host.Host);
+            var primary = HostNormalizer.Normalize(tenantContext.PrimaryHost);
+
+            return !string.IsNullOrWhiteSpace(reqHost)
+                   && !string.IsNullOrWhiteSpace(primary)
+                   && !reqHost.Equals(primary, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string BuildPrimaryRedirectUrl(HttpContext context, string primaryHost)
+        {
+            var scheme = context.Request.Scheme; // keep https/http (edge should enforce https)
+            var path = context.Request.PathBase.Add(context.Request.Path).ToString();
+            var query = context.Request.QueryString.HasValue ? context.Request.QueryString.Value : string.Empty;
+
+            return $"{scheme}://{primaryHost}{path}{query}";
         }
 
         private static bool IsPlatformAdminHost(string host, IConfiguration config)
         {
-            host = (host ?? string.Empty).Trim().ToLowerInvariant();
+            host = HostNormalizer.Normalize(host);
 
-            var platformDomain = config["SaaS:PlatformDomain"]?.Trim().ToLowerInvariant();
+            var platformDomain = HostNormalizer.Normalize(config["SaaS:PlatformDomain"]);
             if (string.IsNullOrWhiteSpace(platformDomain)) return false;
 
             // Root platform domain
@@ -156,9 +218,6 @@ namespace WebsiteBuilder.IRF.Infrastructure.Middleware
         {
             var path = context.Request.Path.Value ?? string.Empty;
             if (string.IsNullOrWhiteSpace(path)) return true;
-
-            // NOTE: DO NOT include "/Admin" here anymore;
-            // Admin is handled explicitly at the top of InvokeAsync.
 
             if (path.StartsWith("/Preview", StringComparison.OrdinalIgnoreCase) ||
                 path.StartsWith("/sitemap", StringComparison.OrdinalIgnoreCase) ||

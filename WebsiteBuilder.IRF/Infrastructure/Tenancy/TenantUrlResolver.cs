@@ -1,55 +1,60 @@
 ﻿using Microsoft.AspNetCore.Http;
-using Microsoft.EntityFrameworkCore;
-using WebsiteBuilder.IRF.DataAccess;
+using Microsoft.Extensions.Configuration;
+using WebsiteBuilder.IRF.Infrastructure.Tenancy;
 
-namespace WebsiteBuilder.IRF.Infrastructure.Tenancy
+namespace WebsiteBuilder.IRF.Infrastructure.Rendering
 {
+    public interface ITenantUrlResolver
+    {
+        Task<(string Scheme, string Host)> GetCanonicalAsync(CancellationToken ct = default);
+    }
+
     public sealed class TenantUrlResolver : ITenantUrlResolver
     {
-        private readonly DataContext _db;
-        private readonly ITenantContext _tenant;
         private readonly IHttpContextAccessor _http;
+        private readonly ITenantContext _tenant;
+        private readonly IConfiguration _cfg;
 
-        public TenantUrlResolver(DataContext db, ITenantContext tenant, IHttpContextAccessor http)
+        public TenantUrlResolver(IHttpContextAccessor http, ITenantContext tenant, IConfiguration cfg)
         {
-            _db = db;
-            _tenant = tenant;
             _http = http;
+            _tenant = tenant;
+            _cfg = cfg;
         }
 
-        public async Task<(string Scheme, string Host)> GetCanonicalAsync(CancellationToken ct = default)
+        public Task<(string Scheme, string Host)> GetCanonicalAsync(CancellationToken ct = default)
         {
-            var req = _http.HttpContext?.Request;
+            var ctx = _http.HttpContext;
 
-            // If tenant isn't resolved, fall back to request host/scheme safely.
-            if (_tenant.TenantId == Guid.Empty || req is null)
+            // ---- Scheme (proxy-safe) ----
+            var scheme = ctx?.Request.Scheme ?? "https";
+
+            // If you're behind a proxy/CDN and ForwardedHeaders is enabled, Request.Scheme is already corrected.
+            // If not, optionally honor X-Forwarded-Proto (controlled via config).
+            if (_cfg.GetValue("SaaS:HonorForwardedProto", true) && ctx is not null)
             {
-                var fallbackHost = (req?.Host.Host ?? "localhost").Trim().ToLowerInvariant();
-                var fallbackScheme = (req?.Scheme ?? "https").Trim().ToLowerInvariant();
-                return (fallbackScheme, fallbackHost);
+                var fproto = ctx.Request.Headers["X-Forwarded-Proto"].ToString();
+                if (!string.IsNullOrWhiteSpace(fproto))
+                {
+                    // could be "https, http" in some setups—take first
+                    scheme = fproto.Split(',')[0].Trim();
+                }
             }
 
-            var mappedHost = await _db.DomainMappings
-                .AsNoTracking()
-                .Where(d => d.TenantId == _tenant.TenantId)
-                .Where(d => !d.IsDeleted && d.IsActive)
-                .OrderByDescending(d => d.IsPrimary)
-                .ThenBy(d => d.Id)
-                .Select(d => d.Host)
-                .FirstOrDefaultAsync(ct);
+            // Optional: force https canonical in production
+            if (_cfg.GetValue("SaaS:ForceHttpsCanonical", true))
+                scheme = "https";
 
-            // Prefer mapped canonical host; otherwise fall back to current request host (without port).
-            var host = !string.IsNullOrWhiteSpace(mappedHost)
-                ? mappedHost.Trim()
-                : (req.Host.Host?.Trim() ?? "localhost");
+            // ---- Host (tenant-safe) ----
+            // Never trust forwarded host for canonicalization.
+            // Canonical host MUST be tenant primary host (fallback to request host if primary missing).
+            var host = !string.IsNullOrWhiteSpace(_tenant.PrimaryHost)
+                ? _tenant.PrimaryHost
+                : _tenant.Host;
 
-            // If we have a mapped host, force https canonical (common SaaS assumption).
-            // Otherwise, respect request scheme (dev may be http).
-            var scheme = !string.IsNullOrWhiteSpace(mappedHost)
-                ? "https"
-                : (req.Scheme ?? "https");
+            host = HostNormalizer.Normalize(host);
 
-            return (scheme.Trim().ToLowerInvariant(), host.Trim().ToLowerInvariant());
+            return Task.FromResult((scheme, host));
         }
     }
 }

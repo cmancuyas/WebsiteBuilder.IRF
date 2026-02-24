@@ -233,13 +233,16 @@ if (!app.Environment.IsDevelopment())
     app.UseHsts();
 }
 
+// ✅ Must be FIRST so Request.Scheme is correct behind proxy/CDN
 app.UseForwardedHeaders(new ForwardedHeadersOptions
 {
-    ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto | ForwardedHeaders.XForwardedHost
+    ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto,
+
+    // Optional hardening (recommended when you set KnownNetworks/KnownProxies):
+    // ForwardLimit = 1
 });
 
 app.UseHttpsRedirection();
-
 app.UseResponseCompression();
 
 app.UseRouting();
@@ -251,6 +254,9 @@ app.UseMiddleware<AdminTenantResolutionMiddleware>();
 // 2) Public tenant resolver (host-based, non-admin)
 app.UseMiddleware<TenantResolutionMiddleware>();
 
+// 3) Alias -> primary domain 301 (SEO-safe)
+app.UseMiddleware<AliasToPrimaryRedirectMiddleware>();
+
 // ============================================================
 // SEO URL Normalization (301 redirects)
 // - lowercase paths
@@ -260,6 +266,7 @@ app.UseMiddleware<TenantResolutionMiddleware>();
 // - preserve query string
 // - GET/HEAD only
 // - exclude admin/preview/sitemaps/static
+// - DO NOT CACHE redirects
 // ============================================================
 app.Use(async (ctx, next) =>
 {
@@ -275,7 +282,7 @@ app.Use(async (ctx, next) =>
     {
         return p.StartsWith("/Admin", StringComparison.OrdinalIgnoreCase)
             || p.StartsWith("/Preview", StringComparison.OrdinalIgnoreCase)
-            || p.StartsWith("/api", StringComparison.OrdinalIgnoreCase)   // ← ADD THIS LINE
+            || p.StartsWith("/api", StringComparison.OrdinalIgnoreCase)
             || p.StartsWith("/sitemap", StringComparison.OrdinalIgnoreCase)
             || p.StartsWith("/sitemaps", StringComparison.OrdinalIgnoreCase)
             || p.Equals("/robots.txt", StringComparison.OrdinalIgnoreCase)
@@ -286,7 +293,6 @@ app.Use(async (ctx, next) =>
             || p.StartsWith("/images", StringComparison.OrdinalIgnoreCase)
             || p.StartsWith("/favicon", StringComparison.OrdinalIgnoreCase);
     }
-
 
     if (IsExcluded(path))
     {
@@ -314,6 +320,9 @@ app.Use(async (ctx, next) =>
 
         ctx.Response.StatusCode = StatusCodes.Status301MovedPermanently;
         ctx.Response.Headers.Location = location;
+
+        // ✅ never cache normalization redirects
+        ctx.Response.Headers.CacheControl = "no-store";
         return;
     }
 
@@ -324,7 +333,7 @@ app.Use(async (ctx, next) =>
 // /robots.txt (DYNAMIC, tenant-aware, overrides wwwroot/robots.txt)
 // IMPORTANT: must run BEFORE UseStaticFiles()
 // ----------------------------
-app.Use(async (context, next) =>
+app.Use((Func<HttpContext, Func<Task>, Task>)(async (context, next) =>
 {
     if (HttpMethods.IsGet(context.Request.Method) &&
         context.Request.Path.Equals("/robots.txt", StringComparison.OrdinalIgnoreCase))
@@ -354,27 +363,27 @@ app.Use(async (context, next) =>
 
                 Sitemap: {sitemapUrl}
                 ");
-             return;
+            return;
         }
 
         await context.Response.WriteAsync(
             $@"User-agent: *
-            Allow: /
+                Allow: /
 
-            Disallow: /Admin/
-            Disallow: /admin/
-            Disallow: /api/
-            Disallow: /Preview/
-            Disallow: /preview/
-            Disallow: /_framework/
+                Disallow: /Admin/
+                Disallow: /admin/
+                Disallow: /api/
+                Disallow: /Preview/
+                Disallow: /preview/
+                Disallow: /_framework/
 
-            Sitemap: {sitemapUrl}
-            ");
+                Sitemap: {sitemapUrl}
+                ");
         return;
     }
 
     await next();
-});
+}));
 
 app.UseStaticFiles();
 
@@ -383,6 +392,7 @@ app.UseAuthorization();
 
 app.UseMiddleware<OutputCacheDiagnosticsMiddleware>();
 
+// Ensure preview is never cached anywhere (browser/proxy/CDN)
 app.Use(async (ctx, next) =>
 {
     if (ctx.Request.Query.ContainsKey("preview"))
@@ -398,8 +408,9 @@ app.Use(async (ctx, next) =>
 
 app.UseOutputCache();
 
-
-
+// ============================================================
+// Sitemap helpers
+// ============================================================
 static string ComputeETag(string content)
 {
     var bytes = Encoding.UTF8.GetBytes(content);
@@ -425,6 +436,9 @@ static bool IsNotModified(HttpContext http, string etag)
 static IResult XmlResult(string xml) =>
     Results.Text(xml, "application/xml; charset=utf-8");
 
+// ----------------------------
+// Admin JSON validator
+// ----------------------------
 app.MapPost("/admin/api/validate-section-json",
     async (HttpContext http,
            ISectionValidationService validator,
@@ -504,17 +518,15 @@ app.MapGet("/sitemaps/pages-{part:int}.xml", async (HttpContext http, int part, 
     return XmlResult(xml);
 });
 
+// Admin status pages
 app.UseWhen(ctx => ctx.Request.Path.StartsWithSegments("/Admin", StringComparison.OrdinalIgnoreCase),
     adminApp => adminApp.UseStatusCodePagesWithReExecute("/Admin/Errors/{0}"));
 
-
+// Razor pages + fallback
 app.MapRazorPages();
-
 
 // IMPORTANT: fallback to CMS page renderer
 app.MapFallbackToPage("/{slug?}", "/[slug]")
    .CacheOutput("PublicPages");
-
-
 
 app.Run();

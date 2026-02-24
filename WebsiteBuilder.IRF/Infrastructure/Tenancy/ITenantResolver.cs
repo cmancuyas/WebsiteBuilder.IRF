@@ -10,5 +10,17 @@ namespace WebsiteBuilder.IRF.Infrastructure.Tenancy
         Task<ResolvedTenant?> ResolveByIdAsync(Guid tenantId, CancellationToken ct = default);
     }
 
-    public sealed record ResolvedTenant(Guid TenantId, string Slug, string Host);
+    public sealed record ResolvedTenant(
+        Guid TenantId,
+        string Slug,
+
+        // The host used by the incoming request
+        string RequestHost,
+
+        // The canonical/primary host for the tenant (for canonical URLs + redirect target)
+        string PrimaryHost,
+
+        // True if the requestHost is NOT the primary host
+        bool IsAlias
+    );
 }

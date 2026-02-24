@@ -16,7 +16,6 @@ namespace WebsiteBuilder.IRF.Infrastructure.Tenancy
         {
             if (tenantId == Guid.Empty) return null;
 
-            // Adjust property names if your Tenant model differs
             var tenant = await _db.Tenants
                 .AsNoTracking()
                 .Where(t => t.Id == tenantId && !t.IsDeleted && t.IsActive)
@@ -25,80 +24,98 @@ namespace WebsiteBuilder.IRF.Infrastructure.Tenancy
 
             if (tenant is null) return null;
 
-            var primaryHost = await _db.DomainMappings
-                .AsNoTracking()
-                .Where(d => d.TenantId == tenant.Id && !d.IsDeleted && d.IsActive)
-                .OrderByDescending(d => d.IsPrimary)
-                .ThenBy(d => d.Id)
-                .Select(d => d.Host)
-                .FirstOrDefaultAsync(ct);
+            var primaryHost = await GetPrimaryHostAsync(tenant.Id, ct);
 
             return new ResolvedTenant(
-                tenant.TenantIdOrIdFix(tenant.Id), // see note below
-                tenant.Slug ?? string.Empty,
-                (primaryHost ?? string.Empty).Trim().ToLowerInvariant()
+                TenantId: tenant.Id,
+                Slug: tenant.Slug ?? string.Empty,
+                RequestHost: primaryHost,   // when resolving by ID, request host is unknown; set to primary
+                PrimaryHost: primaryHost,
+                IsAlias: false
             );
         }
 
         public async Task<ResolvedTenant?> ResolveAsync(string host, string? slug, CancellationToken ct = default)
         {
-            host = (host ?? string.Empty).Trim().ToLowerInvariant();
-            slug = string.IsNullOrWhiteSpace(slug) ? null : slug.Trim().ToLowerInvariant();
+            var requestHost = HostNormalizer.Normalize(host);
+            var slugNorm = string.IsNullOrWhiteSpace(slug) ? null : slug.Trim().ToLowerInvariant();
 
-            // 1) Resolve by explicit host mapping first
-            var mapped = await _db.DomainMappings
+            if (string.IsNullOrWhiteSpace(requestHost))
+                return null;
+
+            // 1) Resolve by explicit domain mapping first (custom domain OR platform domains you store)
+            // NOTE: Ideally use a HostNormalized column. For now, we assume d.Host is already stored normalized.
+            var mapping = await _db.DomainMappings
                 .AsNoTracking()
-                .Where(d => d.Host.ToLower() == host)
                 .Where(d => !d.IsDeleted && d.IsActive)
-                .OrderByDescending(d => d.IsPrimary)
-                .Select(d => new { d.TenantId })
+                .Where(d => d.Host == requestHost) // no ToLower() on column = index friendly
+                .Select(d => new { d.TenantId, d.IsPrimary })
                 .FirstOrDefaultAsync(ct);
 
-            if (mapped is not null)
-            {
-                var byId = await ResolveByIdAsync(mapped.TenantId, ct);
-                if (byId is not null)
-                    return byId with { Host = host }; // keep current request host if you want
-            }
-
-            // 2) If using platform subdomain slug resolution, fallback by slug
-            if (slug is not null)
+            if (mapping is not null)
             {
                 var tenant = await _db.Tenants
                     .AsNoTracking()
-                    .Where(t => t.Slug.ToLower() == slug)
-                    .Where(t => !t.IsDeleted && t.IsActive)
+                    .Where(t => t.Id == mapping.TenantId && !t.IsDeleted && t.IsActive)
                     .Select(t => new { t.Id, t.Slug })
                     .FirstOrDefaultAsync(ct);
 
                 if (tenant is null) return null;
 
-                var primaryHost = await _db.DomainMappings
-                    .AsNoTracking()
-                    .Where(d => d.TenantId == tenant.Id && !d.IsDeleted && d.IsActive)
-                    .OrderByDescending(d => d.IsPrimary)
-                    .ThenBy(d => d.Id)
-                    .Select(d => d.Host)
-                    .FirstOrDefaultAsync(ct);
+                var primaryHost = await GetPrimaryHostAsync(tenant.Id, ct);
 
-                // Prefer mapped domain if it exists; else keep request host
-                var finalHost = !string.IsNullOrWhiteSpace(primaryHost) ? primaryHost : host;
+                // If no primary host exists, treat requestHost as primary to avoid breaking routing
+                if (string.IsNullOrWhiteSpace(primaryHost))
+                    primaryHost = requestHost;
 
                 return new ResolvedTenant(
-                    tenant.TenantIdOrIdFix(tenant.Id), // see note below
-                    tenant.Slug ?? string.Empty,
-                    finalHost.Trim().ToLowerInvariant()
+                    TenantId: tenant.Id,
+                    Slug: tenant.Slug ?? string.Empty,
+                    RequestHost: requestHost,
+                    PrimaryHost: primaryHost,
+                    IsAlias: requestHost != primaryHost
+                );
+            }
+
+            // 2) Optional: fallback by slug (platform subdomain routing)
+            if (slugNorm is not null)
+            {
+                var tenant = await _db.Tenants
+                    .AsNoTracking()
+                    .Where(t => !t.IsDeleted && t.IsActive)
+                    .Where(t => t.Slug == slugNorm) // assuming tenant slugs are stored normalized
+                    .Select(t => new { t.Id, t.Slug })
+                    .FirstOrDefaultAsync(ct);
+
+                if (tenant is null) return null;
+
+                var primaryHost = await GetPrimaryHostAsync(tenant.Id, ct);
+                if (string.IsNullOrWhiteSpace(primaryHost))
+                    primaryHost = requestHost;
+
+                return new ResolvedTenant(
+                    TenantId: tenant.Id,
+                    Slug: tenant.Slug ?? string.Empty,
+                    RequestHost: requestHost,
+                    PrimaryHost: primaryHost,
+                    IsAlias: requestHost != primaryHost
                 );
             }
 
             return null;
         }
-    }
 
-    internal static class TenantResolverExtensions
-    {
-        // If your tenant PK is Id (Guid), just return id.
-        // This helper exists only because I don’t know if your Tenant model uses TenantId or Id.
-        public static Guid TenantIdOrIdFix(this object _, Guid id) => id;
+        private async Task<string> GetPrimaryHostAsync(Guid tenantId, CancellationToken ct)
+        {
+            var host = await _db.DomainMappings
+                .AsNoTracking()
+                .Where(d => d.TenantId == tenantId && !d.IsDeleted && d.IsActive)
+                .OrderByDescending(d => d.IsPrimary)
+                .ThenBy(d => d.Id)
+                .Select(d => d.Host)
+                .FirstOrDefaultAsync(ct);
+
+            return HostNormalizer.Normalize(host);
+        }
     }
 }
