@@ -140,15 +140,21 @@ namespace WebsiteBuilder.IRF.Infrastructure.Tenancy
 
             string ResolveUrl(int? pageId, string? url)
             {
-                // Prefer published PageId -> slug
-                if (pageId.HasValue &&
-                    publishedSlugs.TryGetValue(pageId.Value, out var slug) &&
-                    !string.IsNullOrWhiteSpace(slug))
+                // If this item is intended to link to a page, ONLY allow it when the page is published.
+                // Never fall back to Url for page-linked items, because Url may still contain "/{slug}".
+                if (pageId.HasValue)
                 {
-                    return ToUrl(slug);
+                    if (publishedSlugs.TryGetValue(pageId.Value, out var slug) &&
+                        !string.IsNullOrWhiteSpace(slug))
+                    {
+                        return ToUrl(slug);
+                    }
+
+                    // Page is missing/unpublished/inactive/deleted => do not emit a working link
+                    return "#";
                 }
 
-                // Fallback to stored URL
+                // URL-type item: use stored URL
                 if (!string.IsNullOrWhiteSpace(url))
                 {
                     var trimmed = url.Trim();
@@ -163,6 +169,7 @@ namespace WebsiteBuilder.IRF.Infrastructure.Tenancy
                 // safe fallback (don’t emit empty href)
                 return "#";
             }
+
 
             static string SafeTitle(string? label)
                 => string.IsNullOrWhiteSpace(label) ? "Untitled" : label.Trim();
@@ -244,6 +251,8 @@ namespace WebsiteBuilder.IRF.Infrastructure.Tenancy
 
             _cache.Remove(CacheKey(menuId) + ":raw");
         }
+        public void Invalidate(Guid tenantId, int menuId)
+    => _cache.Remove($"tenant-nav:{tenantId}:menu:{menuId}:raw");
 
         public void InvalidateMany(params int[] menuIds)
         {
@@ -280,6 +289,12 @@ namespace WebsiteBuilder.IRF.Infrastructure.Tenancy
 
             return roles.Any(user.IsInRole);
         }
+        private static bool IsAbsoluteUrl(string s)
+            => s.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            || s.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+            || s.StartsWith("mailto:", StringComparison.OrdinalIgnoreCase)
+            || s.StartsWith("tel:", StringComparison.OrdinalIgnoreCase)
+            || s.StartsWith("//", StringComparison.OrdinalIgnoreCase); // optional but good
 
         private sealed class NavRow
         {

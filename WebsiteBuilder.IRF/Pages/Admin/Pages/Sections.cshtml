@@ -1,0 +1,387 @@
+﻿@page "{id:int}"
+@using WebsiteBuilder.IRF.Infrastructure.Sections.Settings
+@using System.Text.Json
+@model WebsiteBuilder.IRF.Pages.Admin.Pages.SectionsModel
+@{
+    ViewData["Title"] = "Sections";
+}
+
+<!-- Anti-forgery token for JS -->
+<form id="antiForgeryForm" method="post" class="d-none">
+    @Html.AntiForgeryToken()
+</form>
+
+<div class="d-flex align-items-center justify-content-between mb-3">
+    <div>
+        <h2 class="mb-0">Sections</h2>
+        <div class="text-muted small">@Model.PageTitle · <code>/@Model.PageSlug</code></div>
+        <div class="text-muted small">Draft Revision: @Model.DraftRevisionId</div>
+    </div>
+
+    <div class="d-flex gap-2">
+        <a class="btn btn-outline-secondary"
+           asp-page="/Admin/Pages/Edit"
+           asp-route-id="@Model.Id">
+            Back
+        </a>
+    </div>
+</div>
+
+@if (!string.IsNullOrWhiteSpace(Model.Banner))
+{
+    <div class="alert alert-info">@Model.Banner</div>
+}
+
+@if (!Model.HasDraft)
+{
+    <div class="alert alert-warning">
+        This page has no draft revision. Restore a draft before editing sections.
+    </div>
+}
+else
+{
+    <div class="card mb-3">
+        <div class="card-body">
+            <form method="post" asp-page-handler="AddSection" class="row g-2 align-items-end">
+                <div class="col-12 col-md-6">
+                    <label class="form-label">Add Section</label>
+                    <select asp-for="Add.SectionTypeId"
+                            asp-items="Model.SectionTypeOptions"
+                            class="form-select">
+                    </select>
+                    <span asp-validation-for="Add.SectionTypeId" class="text-danger small"></span>
+                </div>
+
+                <div class="col-12 col-md-6 d-flex justify-content-end">
+                    <button type="submit" class="btn btn-primary">
+                        Add
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-body">
+            <div class="fw-semibold mb-2">Draft Sections</div>
+
+            <div id="sectionsList" class="d-grid gap-2">
+                @if (Model.SectionRows is null || Model.SectionRows.Count == 0)
+                {
+                    <div class="text-muted">No sections yet.</div>
+                }
+                else
+                {
+                    @foreach (var row in Model.SectionRows)
+                    {
+                        <partial name="Partials/_PageRevisionSectionRow" model="row" />
+                    }
+                }
+            </div>
+        </div>
+    </div>
+}
+
+@section Scripts {
+    <partial name="_ValidationScriptsPartial" />
+
+    <script>
+        (function () {
+
+            function getSectionCard(sectionId) {
+              return document.querySelector(`.section-card[data-section-id="${sectionId}"]`);
+            }
+
+            function markInvalidSections(invalidIds) {
+              // Clear prior
+              document.querySelectorAll('.section-card.is-invalid').forEach(el => {
+                el.classList.remove('is-invalid', 'pulse');
+              });
+
+              if (!invalidIds || invalidIds.length === 0) return;
+
+              invalidIds.forEach(id => {
+                const card = getSectionCard(id);
+                if (card) card.classList.add('is-invalid');
+              });
+            }
+
+            function scrollToFirstInvalid(invalidIds) {
+              if (!invalidIds || invalidIds.length === 0) return;
+
+              const firstId = invalidIds[0];
+              const card = getSectionCard(firstId);
+              if (!card) return;
+
+              // Optional pulse on the first invalid
+              card.classList.add('pulse');
+
+              // Smooth scroll + focus
+              card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+              // If you have an edit button/input inside, focus it:
+              const focusTarget =
+                card.querySelector('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+
+              if (focusTarget) setTimeout(() => focusTarget.focus({ preventScroll: true }), 350);
+            }
+
+
+            const pageId = @Model.Id;
+
+            // ✅ draft revision concurrency token (base64 rowversion)
+            let draftRevisionRowVersion =
+                @Html.Raw(JsonSerializer.Serialize(Model.DraftRevisionRowVersionBase64 ?? ""));
+
+            let sortableInstance = null;
+
+            // ============================================
+            // ✅ INVALID ID TRACKING (URL + UI)
+            // ============================================
+
+            function parseInvalidIdsFromQuery() {
+                const params = new URLSearchParams(window.location.search);
+                const csv = params.get("invalidSectionIds");
+                if (!csv) return [];
+
+                return csv
+                    .split(",")
+                    .map(x => Number(x.trim()))
+                    .filter(n => Number.isFinite(n) && n > 0);
+            }
+
+            let invalidIdSet = new Set(parseInvalidIdsFromQuery());
+
+            function updateInvalidIdsInUrl() {
+                const params = new URLSearchParams(window.location.search);
+
+                const ids = Array.from(invalidIdSet.values());
+                if (ids.length > 0) {
+                    params.set("invalidSectionIds", ids.join(","));
+                } else {
+                    params.delete("invalidSectionIds");
+                }
+
+                const qs = params.toString();
+                const newUrl = window.location.pathname + (qs ? ("?" + qs) : "");
+                history.replaceState({}, "", newUrl);
+            }
+
+            function clearInvalidStyling(sectionId) {
+                const card = document.getElementById("section-" + sectionId);
+                if (card) {
+                    card.classList.remove("border", "border-danger");
+                }
+
+                if (invalidIdSet.has(sectionId)) {
+                    invalidIdSet.delete(sectionId);
+                    updateInvalidIdsInUrl();
+                }
+            }
+
+            function highlightAndExpandInvalid(ids) {
+                if (!ids || !ids.length) return;
+
+                ids.forEach(id => {
+                    invalidIdSet.add(id);
+
+                    // Highlight card
+                    const row = document.getElementById("section-" + id);
+                    if (row) row.classList.add("border", "border-danger");
+
+                    // Expand collapse
+                    const collapseEl = document.getElementById("sec-editor-" + id);
+                    if (collapseEl && window.bootstrap?.Collapse) {
+                        try {
+                            const instance = bootstrap.Collapse.getOrCreateInstance(collapseEl, { toggle: false });
+                            instance.show();
+                        } catch { }
+                    }
+                });
+
+                // Scroll to first invalid
+                const first = document.getElementById("section-" + ids[0]);
+                if (first) first.scrollIntoView({ behavior: "smooth", block: "center" });
+
+                updateInvalidIdsInUrl();
+            }
+
+            // ============================================
+            // ✅ GLOBAL BRIDGE FOR EDITOR PARTIALS
+            // ============================================
+
+            function syncDraftTokenGlobal() {
+                window.__draftRevisionRowVersionBase64 = draftRevisionRowVersion;
+            }
+
+            // expose once
+            window.__clearInvalidStyling = clearInvalidStyling;
+            syncDraftTokenGlobal();
+
+            // ============================================
+            // Helpers
+            // ============================================
+
+            function getAntiForgeryToken() {
+                const el = document.querySelector('#antiForgeryForm input[name="__RequestVerificationToken"]');
+                return el ? el.value : null;
+            }
+
+            async function postJson(url, body) {
+                const token = getAntiForgeryToken();
+
+                const res = await fetch(url, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        ...(token ? { "RequestVerificationToken": token } : {})
+                    },
+                    body: JSON.stringify(body)
+                });
+
+                let json = null;
+                try { json = await res.json(); } catch { }
+
+                // ✅ Concurrency conflict
+                if (res.status === 409) {
+                    const msg = json?.error || json?.message || "This draft was changed by someone else.";
+                    alert(msg + " Reloading…");
+                    window.location.reload();
+                    return null;
+                }
+
+                if (!res.ok || json?.ok === false) {
+                    throw new Error(json?.error || json?.message || ("Request failed: " + res.status));
+                }
+
+                // ✅ Refresh draft token (server returns draftRevisionRowVersion)
+                if (json?.draftRevisionRowVersion) {
+                    draftRevisionRowVersion = json.draftRevisionRowVersion;
+                    syncDraftTokenGlobal();
+                }
+
+                return json;
+            }
+
+            // ============================================
+            // ✅ AUTO EXPAND INVALID SECTIONS (from query)
+            // ============================================
+
+            highlightAndExpandInvalid(parseInvalidIdsFromQuery());
+
+            // ============================================
+            // DELETE (AJAX + concurrency token)
+            // ============================================
+
+            document.addEventListener("click", async function (e) {
+                const btn = e.target.closest("[data-delete-revision-section]");
+                if (!btn) return;
+
+                const id = Number(btn.getAttribute("data-delete-revision-section"));
+                if (!Number.isFinite(id) || id <= 0) return;
+
+                if (!confirm("Delete this section?")) return;
+
+                btn.disabled = true;
+
+                try {
+                    const url = `/Admin/Pages/Sections/${pageId}?handler=DeleteRevisionSection`;
+
+                    await postJson(url, {
+                        revisionSectionId: id,
+                        draftRevisionRowVersion
+                    });
+
+                    const row = document.getElementById("section-" + id);
+                    if (row) row.remove();
+
+                    // If it was marked invalid, clear it from tracking
+                    clearInvalidStyling(id);
+
+                } catch (err) {
+                    alert(err.message || "Delete failed.");
+                    btn.disabled = false;
+                }
+            });
+
+            // ============================================
+            // REORDER (SortableJS + concurrency token)
+            // ============================================
+
+            function currentOrder(list) {
+                return Array.from(list.querySelectorAll('.section-item[data-revision-section-id]'))
+                    .map(el => Number(el.getAttribute('data-revision-section-id')))
+                    .filter(n => Number.isFinite(n) && n > 0);
+            }
+
+            async function persistOrder(list) {
+                const orderedRevisionSectionIds = currentOrder(list);
+                if (!orderedRevisionSectionIds.length)
+                    throw new Error("No sections found to reorder.");
+
+                const url = `/Admin/Pages/Sections/${pageId}?handler=ReorderRevisionSections`;
+
+                const payload = await postJson(url, {
+                    pageId,
+                    orderedRevisionSectionIds,
+                    draftRevisionRowVersion
+                });
+
+                if (payload?.missingFromClient || payload?.extraFromClient) {
+                    console.warn("Reorder mismatch details:", payload);
+                }
+            }
+
+            function bindSortable(list) {
+                if (!window.Sortable) return;
+
+                if (sortableInstance && typeof sortableInstance.destroy === "function") {
+                    try { sortableInstance.destroy(); } catch { }
+                    sortableInstance = null;
+                }
+
+                sortableInstance = new Sortable(list, {
+                    animation: 150,
+                    handle: ".section-drag-handle",
+                    draggable: ".section-item",
+                    onEnd: async function (evt) {
+                        if (evt.oldIndex === evt.newIndex) return;
+
+                        try {
+                            await persistOrder(list);
+                        } catch (err) {
+                            alert(err.message || "Reorder failed.");
+                            window.location.reload();
+                        }
+                    }
+                });
+            }
+
+            const list = document.getElementById("sectionsList");
+            if (list) bindSortable(list);
+
+            window.__saveSectionSettings = async function(sectionId, settingsJson) {
+              const row = document.getElementById("section-" + sectionId);
+              const sectionRowVersionBase64 = row?.getAttribute("data-section-rowversion") || "";
+
+              const res = await fetch(`/Admin/Pages/Sections/${pageId}?handler=SaveSectionSettings`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", ...(token?) },
+                body: JSON.stringify({
+                  sectionId,
+                  draftRevisionRowVersionBase64: window.__draftRevisionRowVersionBase64 || "",
+                  sectionRowVersionBase64,
+                  settingsJson: settingsJson || "{}"
+                })
+              });
+
+              // handle 409 draft mismatch → reload
+              // handle 409 section mismatch → show "section changed" and reload (or re-fetch)
+              // handle 400 validation → mark invalid + show errors
+              // handle success → update both tokens, update section rowversion on DOM, clear red border
+            };
+
+
+        })();
+    </script>
+}

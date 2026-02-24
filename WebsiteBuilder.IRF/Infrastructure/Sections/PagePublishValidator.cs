@@ -41,13 +41,25 @@ namespace WebsiteBuilder.IRF.Infrastructure.Sections
         /// <summary>
         /// Called by Edit.cshtml.cs: validates draft revision sections for the given page.
         /// </summary>
-        public async Task<PagePublishValidationResult> ValidateDraftSectionsAsync(int pageId, CancellationToken ct = default)
+        public async Task<PagePublishValidationResult> ValidateDraftSectionsAsync(
+            int pageId,
+            CancellationToken ct = default)
         {
             var result = new PagePublishValidationResult();
 
+            if (!_tenant.IsResolved)
+            {
+                AddGeneralError(result, "Tenant not resolved.");
+                return result;
+            }
+
             var page = await _db.Pages
                 .AsNoTracking()
-                .FirstOrDefaultAsync(p => p.Id == pageId && p.TenantId == _tenant.TenantId, ct);
+                .Where(p =>
+                    p.Id == pageId &&
+                    p.TenantId == _tenant.TenantId &&
+                    !p.IsDeleted)
+                .FirstOrDefaultAsync(ct);
 
             if (page == null)
             {
@@ -55,14 +67,17 @@ namespace WebsiteBuilder.IRF.Infrastructure.Sections
                 return result;
             }
 
-            // Resolve draft revision id (prefer property if present; fallback to latest revision)
+            // Resolve draft revision id (prefer property if present; fallback to latest revision for this page)
             var draftRevisionId = TryGetDraftRevisionId(page);
 
             if (draftRevisionId == null)
             {
                 draftRevisionId = await _db.PageRevisions
                     .AsNoTracking()
-                    .Where(r => r.PageId == page.Id && r.TenantId == _tenant.TenantId)
+                    .Where(r =>
+                        r.PageId == page.Id &&
+                        r.TenantId == _tenant.TenantId &&
+                        !r.IsDeleted)
                     .OrderByDescending(r => r.Id)
                     .Select(r => (int?)r.Id)
                     .FirstOrDefaultAsync(ct);
@@ -74,19 +89,19 @@ namespace WebsiteBuilder.IRF.Infrastructure.Sections
                 return result;
             }
 
-            // ✅ Read from PageRevisionSections (your model: SettingsJson + SectionTypeId/SectionType)
-            // ONLY validate active draft sections (Trash must not block Publish)
+            // ✅ Read from PageRevisionSections (SettingsJson + SectionType)
+            // Only validate NON-deleted sections so Trash doesn't block Publish.
             var sections = await _db.PageRevisionSections
                 .AsNoTracking()
                 .Include(s => s.SectionType)
                 .Where(s =>
                     s.TenantId == _tenant.TenantId &&
-                    s.PageRevisionId == draftRevisionId &&
-                    !s.IsDeleted &&               // ✅ important
-                    s.IsActive)                   // optional, keep if you use inactive sections
+                    s.PageRevisionId == draftRevisionId.Value &&
+                    !s.IsDeleted &&
+                    s.IsActive) // keep if you use IsActive as "disabled"
                 .OrderBy(s => s.SortOrder)
+                .ThenBy(s => s.Id)
                 .ToListAsync(ct);
-
 
             if (sections.Count == 0)
             {
@@ -96,7 +111,7 @@ namespace WebsiteBuilder.IRF.Infrastructure.Sections
 
             foreach (var s in sections)
             {
-                var typeKey = s.SectionType?.Key;
+                var typeKey = (s.SectionType?.Key ?? string.Empty).Trim();
 
                 if (string.IsNullOrWhiteSpace(typeKey))
                 {
@@ -109,9 +124,9 @@ namespace WebsiteBuilder.IRF.Infrastructure.Sections
                     continue;
                 }
 
-                var contentJson = s.SettingsJson;
+                var settingsJson = string.IsNullOrWhiteSpace(s.SettingsJson) ? "{}" : s.SettingsJson;
 
-                var vr = await _sectionValidation.ValidateAsync(typeKey, contentJson);
+                var vr = await _sectionValidation.ValidateAsync(typeKey, settingsJson);
 
                 if (!vr.IsValid)
                 {
@@ -124,15 +139,11 @@ namespace WebsiteBuilder.IRF.Infrastructure.Sections
                 }
             }
 
-
-
             return result;
         }
 
         private static void AddGeneralError(PagePublishValidationResult result, string message)
-        {
-            AddSectionError(result, sectionId: 0, typeKey: "General", message: message);
-        }
+            => AddSectionError(result, sectionId: 0, typeKey: "General", message: message);
 
         private static void AddSectionError(PagePublishValidationResult result, int sectionId, string typeKey, string message)
         {
@@ -156,6 +167,7 @@ namespace WebsiteBuilder.IRF.Infrastructure.Sections
 
         private static void AddSectionErrors(PagePublishValidationResult result, int sectionId, string typeKey, IEnumerable<string> messages)
         {
+            if (messages == null) return;
             foreach (var m in messages)
                 AddSectionError(result, sectionId, typeKey, m);
         }
@@ -177,13 +189,6 @@ namespace WebsiteBuilder.IRF.Infrastructure.Sections
             }
 
             return null;
-        }
-
-        private sealed class DraftSectionPayload
-        {
-            public int SectionId { get; init; }
-            public string? TypeKey { get; init; }
-            public string? ContentJson { get; init; }
         }
     }
 }

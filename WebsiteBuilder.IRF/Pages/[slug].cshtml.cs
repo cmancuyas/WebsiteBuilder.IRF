@@ -1,141 +1,175 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
-using System.Text.RegularExpressions;
 using WebsiteBuilder.IRF.DataAccess;
+using WebsiteBuilder.IRF.Infrastructure.Rendering;
 using WebsiteBuilder.IRF.Infrastructure.Tenancy;
-using WebsiteBuilder.Models;
-using WebsiteBuilder.Models.Constants;
 
 namespace WebsiteBuilder.IRF.Pages
 {
     public class _slug_Model : PageModel
     {
-        private readonly DataContext _db;
         private readonly ITenantContext _tenant;
         private readonly IWebHostEnvironment _env;
+        private readonly IConfiguration _cfg;
+        private readonly IPageRenderPipeline _pipeline;
+        private readonly DataContext _db;
 
-        public _slug_Model(DataContext db, ITenantContext tenant, IWebHostEnvironment env)
+        public _slug_Model(
+            ITenantContext tenant,
+            IWebHostEnvironment env,
+            IConfiguration cfg,
+            IPageRenderPipeline pipeline,
+            DataContext db)
         {
-            _db = db;
             _tenant = tenant;
             _env = env;
+            _cfg = cfg;
+            _pipeline = pipeline;
+            _db = db;
         }
 
         public WebsiteBuilder.Models.Page? PageEntity { get; private set; }
         public bool IsPreview { get; private set; }
 
-        public List<RenderSectionDto> RenderSections { get; private set; } = new();
+        public IReadOnlyList<PageRenderContext.RenderSectionDto> RenderSections { get; private set; }
+            = Array.Empty<PageRenderContext.RenderSectionDto>();
 
-        public sealed class RenderSectionDto
-        {
-            public int SectionTypeId { get; init; }
-            public string? SectionTypeName { get; init; }
-            public int SortOrder { get; init; }
-            public string? SettingsJson { get; init; }
-        }
-
-        // Catch-all route param: /{**slug}
-        public async Task<IActionResult> OnGetAsync(string? slug)
+        public async Task<IActionResult> OnGetAsync(string? slug, CancellationToken ct)
         {
             if (!_tenant.IsResolved)
                 return NotFound();
 
+            // --------------------------------------------------
+            // Preview gate (single source of truth)
+            // --------------------------------------------------
             var previewRequested = IsPreviewRequested();
             IsPreview = previewRequested && UserCanPreview();
 
-            // Hard stop: never allow anonymous preview (unless Dev is allowed by UserCanPreview)
+            // If preview is requested but not allowed, do not reveal existence
             if (previewRequested && !IsPreview)
-                return NotFound(); // or Forbid/Unauthorized if you prefer
+                return NotFound();
 
-            // SEO protection ONLY when preview is actually enabled
+            // --------------------------------------------------
+            // SEO HARDENING A: Canonical host enforcement (PUBLIC ONLY)
+            // - bypass for preview + authenticated
+            // - preserve path + query
+            // --------------------------------------------------
+            if (!IsPreview && User.Identity?.IsAuthenticated != true)
+            {
+                var primaryHost = await GetTenantPrimaryHostAsync(ct);
+
+                if (!string.IsNullOrWhiteSpace(primaryHost))
+                {
+                    var reqHost = Request.Host.Host?.Trim().ToLowerInvariant();
+
+                    if (!string.Equals(reqHost, primaryHost, StringComparison.OrdinalIgnoreCase))
+                    {
+                        var scheme = Request.Scheme;
+                        var pathAndQuery = $"{Request.PathBase}{Request.Path}{Request.QueryString}";
+                        var target = $"{scheme}://{primaryHost}{pathAndQuery}";
+                        return RedirectPermanent(target);
+                    }
+                }
+            }
+
+            // --------------------------------------------------
+            // Preview response hardening
+            // --------------------------------------------------
             if (IsPreview)
             {
                 Response.Headers["X-Robots-Tag"] = "noindex, nofollow, noarchive, nosnippet";
                 ApplyNoCacheHeaders();
+
+                ViewData["RobotsNoIndex"] = true;
+                ViewData["CanonicalUrl"] = null;
             }
 
-            var normalizedSlug = NormalizeSlug(slug);
-            if (string.IsNullOrWhiteSpace(normalizedSlug))
-                normalizedSlug = "home";
+            // --------------------------------------------------
+            // Build render context (published-only unless preview enabled)
+            // --------------------------------------------------
+            var ctx = await _pipeline.BuildForSlugAsync(slug, previewRequested: IsPreview, ct);
 
-            // Canonicalize home: redirect /home -> /
-            if (normalizedSlug == "home" &&
-                HttpContext.Request.Path.Equals("/home", StringComparison.OrdinalIgnoreCase))
+            if (ctx is null)
+                return NotFound();
+
+            // --------------------------------------------------
+            // Cache identity for OutputCache policy & diagnostics (PUBLIC ONLY)
+            // --------------------------------------------------
+            if (!IsPreview && ctx.PageEntity != null)
             {
-                return Redirect("/");
+                HttpContext.Items["PageId"] = ctx.PageEntity.Id;
+                HttpContext.Items["TenantId"] = ctx.PageEntity.TenantId;
+
+                // PublicPageOutputCachePolicy compatibility (if used)
+                HttpContext.Items["ResolvedPageId"] = ctx.PageEntity.Id;
             }
 
-            var pageQuery = _db.Pages
-                .AsNoTracking()
-                .Where(p =>
-                    p.TenantId == _tenant.TenantId &&
-                    p.IsActive &&
-                    !p.IsDeleted &&
-                    p.Slug == normalizedSlug);
-
+            // --------------------------------------------------
+            // PUBLIC-ONLY REDIRECT LOGIC (SEO CONSOLIDATION)
+            // NOTE: Redirect responses should NOT be cached.
+            // --------------------------------------------------
             if (!IsPreview)
-                pageQuery = pageQuery.Where(p => p.PageStatusId == PageStatusIds.Published);
-            else
-                pageQuery = pageQuery.Where(p => p.PageStatusId != PageStatusIds.Archived);
-
-            PageEntity = await pageQuery.FirstOrDefaultAsync(HttpContext.RequestAborted);
-
-            if (PageEntity is null)
-                return NotFound();
-
-            if (IsPreview)
             {
-                if (PageEntity.DraftRevisionId == null)
-                    return NotFound();
+                // 0) Pipeline-level canonical redirect (slug history / normalization / home alias)
+                if (!string.IsNullOrWhiteSpace(ctx.RedirectToUrl))
+                    return RedirectPermanent(ctx.RedirectToUrl + Request.QueryString);
 
-                var draftSections = await _db.PageRevisionSections
-                    .AsNoTracking()
-                    .Include(s => s.SectionType)
-                    .Where(s =>
-                        s.TenantId == _tenant.TenantId &&
-                        s.PageRevisionId == PageEntity.DraftRevisionId.Value &&
-                        s.IsActive &&
-                        !s.IsDeleted)
-                    .OrderBy(s => s.SortOrder)
-                    .ThenBy(s => s.Id)
-                    .ToListAsync(HttpContext.RequestAborted);
-
-                RenderSections = draftSections.Select(s => new RenderSectionDto
+                // 1) Canonical host + path enforcement (preserve query string)
+                if (!string.IsNullOrWhiteSpace(ctx.CanonicalUrl)
+                    && Uri.TryCreate(ctx.CanonicalUrl, UriKind.Absolute, out var canonical))
                 {
-                    SectionTypeId = s.SectionTypeId,
-                    SectionTypeName = s.SectionType?.Name,
-                    SortOrder = s.SortOrder,
-                    SettingsJson = s.SettingsJson
-                }).ToList();
+                    var currentHost = Request.Host.Host;
+                    var currentPath = (Request.PathBase + Request.Path).ToString();
+                    if (string.IsNullOrEmpty(currentPath)) currentPath = "/";
 
-                ApplyNoCacheHeaders();
-                return Page();
+                    var canonicalHost = canonical.Host;
+                    var canonicalPath = canonical.AbsolutePath;
+
+                    if (!string.Equals(currentHost, canonicalHost, StringComparison.OrdinalIgnoreCase) ||
+                        !string.Equals(currentPath.TrimEnd('/'), canonicalPath.TrimEnd('/'), StringComparison.OrdinalIgnoreCase))
+                    {
+                        return RedirectPermanent(ctx.CanonicalUrl + Request.QueryString);
+                    }
+                }
             }
 
-
-            if (PageEntity.PublishedRevisionId == null)
-                return NotFound();
-
-            var publishedSections = await _db.PageRevisionSections
-                .AsNoTracking()
-                .Include(s => s.SectionType)
-                .Where(s =>
-                    s.TenantId == _tenant.TenantId &&
-                    s.PageRevisionId == PageEntity.PublishedRevisionId.Value &&
-                    s.IsActive &&
-                    !s.IsDeleted)
-                .OrderBy(s => s.SortOrder)
-                .ThenBy(s => s.Id)
-                .ToListAsync(HttpContext.RequestAborted);
-
-            RenderSections = publishedSections.Select(s => new RenderSectionDto
+            // --------------------------------------------------
+            // SEO/PERF: ETag support (PUBLIC ONLY)
+            // - Redirects already handled above.
+            // - OutputCache policy stores only 200 OK; 304 won't be cached (good).
+            // --------------------------------------------------
+            if (!IsPreview && ctx.PageEntity?.PublishedRevisionId != null)
             {
-                SectionTypeId = s.SectionTypeId,
-                SectionTypeName = s.SectionType?.Name,
-                SortOrder = s.SortOrder,
-                SettingsJson = s.SettingsJson
-            }).ToList();
+                var etag = BuildPublicEtag(ctx.PageEntity);
+                Response.Headers.ETag = etag;
+
+                // Optional: Last-Modified for clients that use If-Modified-Since
+                if (ctx.PageEntity.PublishedAt.HasValue)
+                    Response.Headers.LastModified = ctx.PageEntity.PublishedAt.Value.ToUniversalTime().ToString("R");
+
+                var inm = Request.Headers.IfNoneMatch.ToString();
+                if (!string.IsNullOrWhiteSpace(inm) &&
+                    inm.Split(',').Select(x => x.Trim()).Any(x => string.Equals(x, etag, StringComparison.Ordinal)))
+                {
+                    // Must still include validators
+                    Response.Headers.ETag = etag;
+                    return StatusCode(StatusCodes.Status304NotModified);
+                }
+            }
+
+            // --------------------------------------------------
+            // RENDER CONTEXT -> VIEW
+            // --------------------------------------------------
+            PageEntity = ctx.PageEntity;
+            RenderSections = ctx.RenderSections;
+
+            ViewData["CanonicalUrl"] = IsPreview ? null : ctx.CanonicalUrl;
+            ViewData["RobotsNoIndex"] = ctx.RobotsNoIndex;
+
+            ViewData["MetaTitle"] = ctx.MetaTitle;
+            ViewData["MetaDescription"] = ctx.MetaDescription;
+            ViewData["OgImageUrl"] = ctx.OgImageUrl;
 
             return Page();
         }
@@ -146,14 +180,13 @@ namespace WebsiteBuilder.IRF.Pages
             if (string.IsNullOrWhiteSpace(val)) return false;
 
             return val.Equals("1", StringComparison.OrdinalIgnoreCase)
-                || val.Equals("true", StringComparison.OrdinalIgnoreCase)
-                || val.Equals("yes", StringComparison.OrdinalIgnoreCase);
+                   || val.Equals("true", StringComparison.OrdinalIgnoreCase)
+                   || val.Equals("yes", StringComparison.OrdinalIgnoreCase);
         }
 
         private bool UserCanPreview()
         {
-            // Temporary: allow preview without login ONLY in Development
-            if (_env.IsDevelopment())
+            if (_env.IsDevelopment() && _cfg.GetValue<bool>("Preview:AllowAnonymousInDev"))
                 return true;
 
             if (User.Identity?.IsAuthenticated != true)
@@ -168,7 +201,6 @@ namespace WebsiteBuilder.IRF.Pages
             return false;
         }
 
-
         private void ApplyNoCacheHeaders()
         {
             Response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0";
@@ -176,13 +208,27 @@ namespace WebsiteBuilder.IRF.Pages
             Response.Headers["Expires"] = "0";
         }
 
-        private static string NormalizeSlug(string? slug)
+        private async Task<string?> GetTenantPrimaryHostAsync(CancellationToken ct)
         {
-            slug ??= string.Empty;
-            slug = slug.Trim().Trim('/').ToLowerInvariant();
-            slug = Regex.Replace(slug, @"\s+", "-");
-            slug = Regex.Replace(slug, @"-+", "-");
-            return slug.Trim('-');
+            var host = await _db.DomainMappings
+                .AsNoTracking()
+                .Where(d =>
+                    d.TenantId == _tenant.TenantId &&
+                    d.IsPrimary &&
+                    d.IsActive &&
+                    !d.IsDeleted)
+                .Select(d => d.Host)
+                .FirstOrDefaultAsync(ct);
+
+            return string.IsNullOrWhiteSpace(host) ? null : host.Trim().ToLowerInvariant();
+        }
+        private string BuildPublicEtag(WebsiteBuilder.Models.Page page)
+        {
+            // PublishedRevisionId changes on every publish => perfect cache validator.
+            // Weak ETag is fine for HTML.
+            var tenant = page.TenantId.ToString("N");
+            var rev = page.PublishedRevisionId?.ToString() ?? "0";
+            return $"W/\"t{tenant}-r{rev}\"";
         }
     }
 }

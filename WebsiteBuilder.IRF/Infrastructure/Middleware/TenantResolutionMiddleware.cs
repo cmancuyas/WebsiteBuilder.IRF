@@ -1,13 +1,17 @@
 ﻿using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using System;
+using System.Linq;
+using System.Threading.Tasks;
 using WebsiteBuilder.IRF.Infrastructure.Tenancy;
-using WebsiteBuilder.IRF.Repository.IRepository;
 
 namespace WebsiteBuilder.IRF.Infrastructure.Middleware
 {
     public sealed class TenantResolutionMiddleware
     {
+        private const string AdminTenantCookie = "wb.admin.tenant";
+
         private readonly RequestDelegate _next;
         private readonly ILogger<TenantResolutionMiddleware> _logger;
         private readonly IConfiguration _config;
@@ -27,34 +31,54 @@ namespace WebsiteBuilder.IRF.Infrastructure.Middleware
             ITenantResolver tenantResolver,
             ITenantContext tenantContext)
         {
-            // 1) Bypass tenant resolution for system/platform routes
+            // ✅ Admin handled by AdminTenantResolutionMiddleware
+            if (context.Request.Path.StartsWithSegments("/Admin", StringComparison.OrdinalIgnoreCase))
+            {
+                await _next(context);
+                return;
+            }
+
+            var path = context.Request.Path.Value ?? string.Empty;
+
+            // ✅ Always use host WITHOUT port
+            var host = context.Request.Host.Host?.Trim().ToLowerInvariant() ?? string.Empty;
+
+            // =========================
+            // 1) Static/system bypass (public only)
+            // =========================
             if (ShouldBypassTenantResolution(context))
             {
                 await _next(context);
                 return;
             }
 
-            // ✅ Always use host WITHOUT port
-            var host = context.Request.Host.Host?.Trim().ToLowerInvariant();
-            if (string.IsNullOrWhiteSpace(host))
+            // =========================
+            // 2) Local/dev bypass (keep)
+            // =========================
+            if (string.IsNullOrWhiteSpace(host) || host is "localhost" or "127.0.0.1")
             {
                 await _next(context);
                 return;
             }
 
-            // Local/dev bypass
-            if (host is "localhost" or "127.0.0.1")
+            // =========================
+            // 3) Platform admin host (marketing/root) bypass
+            // =========================
+            if (IsPlatformAdminHost(host, _config))
             {
                 await _next(context);
                 return;
             }
 
+            // =========================
+            // 4) Resolve tenant normally (public tenant hosts)
+            // =========================
             string? slug = null;
 
             var platformDomain = _config["SaaS:PlatformDomain"]?.Trim().ToLowerInvariant();
             if (!string.IsNullOrWhiteSpace(platformDomain))
             {
-                // Root platform domain → no tenant
+                // Root platform domain (public pages) → no tenant
                 if (host.Equals(platformDomain, StringComparison.OrdinalIgnoreCase))
                 {
                     await _next(context);
@@ -66,20 +90,14 @@ namespace WebsiteBuilder.IRF.Infrastructure.Middleware
                 {
                     var sub = host[..^(platformDomain.Length + 1)];
                     slug = sub.Split('.', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
-
-                    var reserved = new[] { "www", "app", "admin", "api", "identity" };
-                    if (slug != null && reserved.Contains(slug, StringComparer.OrdinalIgnoreCase))
-                        slug = null;
                 }
             }
 
-            var resolved = await tenantResolver.ResolveAsync(host, slug, context.RequestAborted);
+            var resolvedTenant = await tenantResolver.ResolveAsync(host, slug, context.RequestAborted);
 
-            if (resolved is null)
+            if (resolvedTenant is null)
             {
-                _logger.LogInformation(
-                    "Tenant not found | host={Host} slug={Slug} path={Path}",
-                    host, slug, context.Request.Path);
+                _logger.LogInformation("Tenant not found | host={Host} slug={Slug} path={Path}", host, slug, path);
 
                 if (_config.GetValue("SaaS:AllowUnknownHosts", false))
                 {
@@ -92,24 +110,65 @@ namespace WebsiteBuilder.IRF.Infrastructure.Middleware
                 return;
             }
 
-            // ✅ Canonical tenant context assignment
+            SetTenantContext(context, tenantContext, resolvedTenant, hostOverride: host);
+            await _next(context);
+        }
+
+
+        private static void SetTenantContext(
+            HttpContext context,
+            ITenantContext tenantContext,
+            ResolvedTenant resolved,
+            string hostOverride)
+        {
             tenantContext.TenantId = resolved.TenantId;
             tenantContext.Slug = resolved.Slug ?? string.Empty;
-            tenantContext.Host = host;
+            tenantContext.Host = (hostOverride ?? string.Empty).Trim().ToLowerInvariant();
 
-            // Optional convenience
             context.Items["TenantId"] = resolved.TenantId;
-            context.Items["TenantSlug"] = resolved.Slug;
+            context.Items["TenantSlug"] = resolved.Slug ?? string.Empty;
+        }
 
-            await _next(context);
+        private static bool IsPlatformAdminHost(string host, IConfiguration config)
+        {
+            host = (host ?? string.Empty).Trim().ToLowerInvariant();
+
+            var platformDomain = config["SaaS:PlatformDomain"]?.Trim().ToLowerInvariant();
+            if (string.IsNullOrWhiteSpace(platformDomain)) return false;
+
+            // Root platform domain
+            if (host.Equals(platformDomain, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            // Reserved subdomains on platform domain
+            if (host.EndsWith("." + platformDomain, StringComparison.OrdinalIgnoreCase))
+            {
+                var sub = host[..^(platformDomain.Length + 1)];
+                var first = sub.Split('.', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "";
+                return first.Equals("admin", StringComparison.OrdinalIgnoreCase)
+                    || first.Equals("app", StringComparison.OrdinalIgnoreCase);
+            }
+
+            return false;
         }
 
         private static bool ShouldBypassTenantResolution(HttpContext context)
         {
             var path = context.Request.Path.Value ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(path)) return true;
+
+            // NOTE: DO NOT include "/Admin" here anymore;
+            // Admin is handled explicitly at the top of InvokeAsync.
+
+            if (path.StartsWith("/Preview", StringComparison.OrdinalIgnoreCase) ||
+                path.StartsWith("/sitemap", StringComparison.OrdinalIgnoreCase) ||
+                path.StartsWith("/sitemaps", StringComparison.OrdinalIgnoreCase) ||
+                path.Equals("/robots.txt", StringComparison.OrdinalIgnoreCase))
+                return true;
 
             if (path.StartsWith("/_TenantDebug", StringComparison.OrdinalIgnoreCase) ||
-                path.StartsWith("/_content", StringComparison.OrdinalIgnoreCase))
+                path.StartsWith("/_content", StringComparison.OrdinalIgnoreCase) ||
+                path.StartsWith("/_framework", StringComparison.OrdinalIgnoreCase))
                 return true;
 
             if (path.StartsWith("/css", StringComparison.OrdinalIgnoreCase) ||
@@ -117,14 +176,12 @@ namespace WebsiteBuilder.IRF.Infrastructure.Middleware
                 path.StartsWith("/lib", StringComparison.OrdinalIgnoreCase) ||
                 path.StartsWith("/images", StringComparison.OrdinalIgnoreCase) ||
                 path.StartsWith("/uploads", StringComparison.OrdinalIgnoreCase) ||
+                path.StartsWith("/favicon", StringComparison.OrdinalIgnoreCase) ||
                 path.Equals("/favicon.ico", StringComparison.OrdinalIgnoreCase) ||
                 path.StartsWith("/.well-known", StringComparison.OrdinalIgnoreCase))
                 return true;
 
-            if (path.StartsWith("/Identity", StringComparison.OrdinalIgnoreCase) ||
-                path.StartsWith("/Account", StringComparison.OrdinalIgnoreCase) ||
-                path.StartsWith("/app", StringComparison.OrdinalIgnoreCase) ||
-                path.StartsWith("/health", StringComparison.OrdinalIgnoreCase) ||
+            if (path.StartsWith("/health", StringComparison.OrdinalIgnoreCase) ||
                 path.StartsWith("/swagger", StringComparison.OrdinalIgnoreCase))
                 return true;
 

@@ -1,396 +1,229 @@
 ﻿@page "{id:int}"
+@using System.Text.Json
 @model WebsiteBuilder.IRF.Pages.Admin.Pages.EditModel
-@using WebsiteBuilder.Models.Constants
-
 @{
     ViewData["Title"] = "Edit Page";
 
-    // SAFE: Input is always initialized
-    var isEditable = Model.Input.PageStatusId == PageStatusIds.Draft;
+    // ✅ Single source of truth for initial blocked state:
+    // block if ANY publish validation errors exist (including General errors where SectionId == 0)
+    var publishBlockedInitial = (Model.PublishValidationErrors?.Count ?? 0) > 0;
 
-    // Pass to partials
-    ViewData["IsEditable"] = isEditable;
-
-    // CSP nonce (Program.cs middleware sets: context.Items["CspNonce"])
-    var nonce = HttpContext?.Items?["CspNonce"]?.ToString() ?? "";
+    // ✅ Compute invalid section ids ONCE (used for banner + JS init)
+    var invalidSectionIdsInitial = (Model.PublishValidationErrors ?? new())
+        .Where(e => e.SectionId > 0)
+        .Select(e => e.SectionId)
+        .Distinct()
+        .ToList();
 }
 
-<!-- Anti-forgery token carrier for JS fetch calls -->
 <form id="antiForgeryForm" method="post" class="d-none">
     @Html.AntiForgeryToken()
 </form>
 
-<div class="container py-4">
-
-    <div class="d-flex align-items-center justify-content-between mb-3">
-        <div>
-            <h2 class="mb-0">Edit Page</h2>
-            <div class="text-muted small">Tenant: @Model.TenantHost</div>
-        </div>
-
-        <div class="d-flex gap-2 align-items-center">
-
-            <a class="btn btn-outline-secondary" asp-page="/Admin/Pages/Index">Back</a>
-
-            <a class="btn btn-outline-primary" href="@Model.PreviewUrl">Preview</a>
-
-            <a class="btn btn-outline-primary" href="@Model.PreviewUrl" target="_blank" rel="noopener">
-                Open Preview
-            </a>
-
-            <div class="d-flex align-items-center gap-2">
-                <span id="globalSaveIndicator" class="small text-muted">
-                    All changes saved
-                </span>
-
-                <button type="button" class="btn btn-sm btn-outline-secondary d-none" id="retryFailedAutosavesBtn">
-                    Retry
-                </button>
-
-                <span id="offlineBadge" class="badge bg-warning text-dark d-none">
-                    Offline
-                </span>
-            </div>
-
-            @* Publish *@
-            @if (Model.CanPublish)
-            {
-                <form method="post" class="d-inline" asp-page-handler="Publish" asp-route-id="@Model.Input.Id">
-                    <button id="btnPublish" class="btn btn-success page-action-btn" type="submit">
-                        Publish
-                    </button>
-                </form>
-            }
-            else
-            {
-                <button type="button" class="btn btn-success" disabled>Publish</button>
-            }
-
-            @* Unpublish *@
-            @if (Model.CanUnpublish)
-            {
-                <form method="post" class="d-inline" asp-page-handler="Unpublish" asp-route-id="@Model.Input.Id">
-                    <button class="btn btn-warning page-action-btn" type="submit">
-                        Unpublish
-                    </button>
-                </form>
-            }
-            else
-            {
-                <button type="button" class="btn btn-outline-warning" disabled>Unpublish</button>
-            }
-
-            @* Archive *@
-            @if (Model.CanArchive)
-            {
-                <form method="post" class="d-inline" asp-page-handler="Archive" asp-route-id="@Model.Input.Id">
-                    <button class="btn btn-danger page-action-btn" type="submit">
-                        Archive
-                    </button>
-                </form>
-            }
-            else
-            {
-                <button type="button" class="btn btn-outline-danger" disabled>Archive</button>
-            }
-
-            @* Restore *@
-            @if (Model.CanRestore)
-            {
-                <form method="post" class="d-inline" asp-page-handler="Restore" asp-route-id="@Model.Input.Id">
-                    <button type="submit" class="btn btn-outline-secondary">Restore</button>
-                </form>
-            }
-        </div>
+<div class="d-flex align-items-center justify-content-between mb-3">
+    <div>
+        <h2 class="mb-0">@Model.PageTitle</h2>
+        <div class="text-muted small">/<span>@(string.IsNullOrEmpty(Model.PageSlug) ? "" : Model.PageSlug)</span></div>
     </div>
 
-    @* Read-only banner *@
-    @if (!isEditable)
-    {
-        <div class="alert alert-warning mb-3" role="alert">
-            <strong>Read-only:</strong> This page is <strong>@Model.PageEntity.PageStatusId</strong>.
-            Unpublish the page to edit sections and page fields.
-        </div>
-    }
+    <div class="d-flex gap-2 align-items-center">
+        <a class="btn btn-outline-secondary" asp-page="/Admin/Pages/Index">Back</a>
 
-    @* Why Publish is disabled *@
-    @if (!Model.CanPublish && Model.Input.PageStatusId != PageStatusIds.Published)
-    {
-        <div class="text-muted small mb-3">
-            Publishing is disabled:
-            <ul class="mb-0">
-                @if (Model.IsArchived)
-                {
-                    <li>This page is archived. Restore it before publishing.</li>
-                }
-                @if (!Model.HasSlug)
-                {
-                    <li>Slug is required.</li>
-                }
-                @if (!Model.HasSections)
-                {
-                    <li>Add at least one section.</li>
-                }
-            </ul>
-        </div>
-    }
-
-    @if (!isEditable &&
-        Model.PageEntity.PublishedRevisionId.HasValue &&
-        Model.PublishedRevisions?.Any() == true)
-    {
-        <div class="alert alert-info d-flex justify-content-between align-items-center">
-            <div>
-                This page is published. Editing is disabled.
-                Restore a draft from the current published version to continue editing.
-            </div>
-
-            <form method="post" asp-page-handler="RestoreDraft" class="ms-3">
-                <input type="hidden" name="id" value="@Model.PageEntity.Id" />
-                <input type="hidden" name="revisionId" value="@Model.PageEntity.PublishedRevisionId.Value" />
-                <button type="submit"
-                        class="btn btn-sm btn-outline-primary"
-                        onclick="return confirm('Restore draft from the current published version?');">
-                    Restore Draft
+        @* ✅ Hybrid hard guard: ALWAYS render form, disable button server-side if blocked *@
+        @if (Model.CanPublish)
+        {
+            <form method="post" asp-page-handler="Publish" class="m-0" id="publishForm">
+                @Html.AntiForgeryToken()
+                <button id="publishBtn"
+                        class="btn btn-success"
+                        type="submit"
+                        @(publishBlockedInitial ? "disabled" : "")
+                        title="@(publishBlockedInitial ? "Fix validation errors before publishing" : "Publish")">
+                    Publish
                 </button>
             </form>
+        }
+
+        @if (Model.CanRestoreDraft)
+        {
+            <a class="btn btn-outline-primary"
+               asp-page="/Admin/Pages/Revisions"
+               asp-route-id="@Model.Id">
+                Revisions
+            </a>
+        }
+    </div>
+</div>
+
+@* ✅ Client-side banner (initial state aligned with server-side guard) *@
+@if (Model.CanPublish)
+{
+    <div id="publishBlockedBanner"
+         class="alert alert-danger mb-3 @(publishBlockedInitial ? "" : "d-none")"
+         data-initial-invalid-ids='@Html.Raw(JsonSerializer.Serialize(invalidSectionIdsInitial))'>
+        Publish is disabled because the draft has validation errors. Fix the highlighted sections below.
+    </div>
+}
+
+@* ✅ Publish validation errors MUST be outside the flex header *@
+@if (Model.PublishValidationErrors?.Count > 0)
+{
+    <div class="alert alert-danger mb-3">
+        @{
+            var invalidIdsCsv = string.Join(",", invalidSectionIdsInitial);
+        }
+
+        <div class="d-flex align-items-center justify-content-between mb-2">
+            <div class="fw-semibold">Publish blocked due to invalid section settings:</div>
+
+            @if (!string.IsNullOrWhiteSpace(invalidIdsCsv))
+            {
+                <a class="btn btn-sm btn-outline-light"
+                   asp-page="/Admin/Pages/Sections"
+                   asp-route-id="@Model.Id"
+                   asp-route-invalidSectionIds="@invalidIdsCsv">
+                    Fix in Sections
+                </a>
+            }
         </div>
-    }
 
-    @if (Model.PublishedRevisions != null && Model.PublishedRevisions.Count > 0)
-    {
-        <div class="card mt-3">
-            <div class="card-header d-flex align-items-center justify-content-between">
-                <div>
-                    <strong>Revision History</strong>
-                    <div class="text-muted small">Rollback changes the live published revision.</div>
-                </div>
-            </div>
-
-            <div class="card-body p-0">
-                <table class="table mb-0">
-                    <thead>
-                        <tr>
-                            <th style="width:120px;">Revision</th>
-                            <th style="width:120px;">Version</th>
-                            <th>Published At</th>
-                            <th style="width:180px;">Action</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        @foreach (var r in Model.PublishedRevisions)
-                        {
-                            var isCurrent = Model.PageEntity.PublishedRevisionId == r.Id;
-                            <tr>
-                                <td>#@r.Id</td>
-                                <td>v@r.VersionNumber</td>
-                                <td>@(r.PublishedAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? r.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm"))</td>
-                                <td>
-                                    @if (isCurrent)
-                                    {
-                                        <span class="badge bg-success">Current</span>
-                                    }
-                                    else
-                                    {
-                                        <form method="post" asp-page-handler="Rollback" class="d-inline">
-                                            <input type="hidden" name="id" value="@Model.PageEntity.Id" />
-                                            <input type="hidden" name="revisionId" value="@r.Id" />
-                                            <button type="submit"
-                                                    class="btn btn-sm btn-outline-danger"
-                                                    onclick="return confirm('Rollback to version v@r.VersionNumber? This will change the live site.');">
-                                                Rollback
-                                            </button>
-                                        </form>
-                                    }
-                                </td>
-                            </tr>
-                        }
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    }
-
-    @* Feedback *@
-    @if (Model.SaveSuccess)
-    {
-        <div class="alert alert-success">Page saved successfully.</div>
-    }
-
-    @if (TempData["Success"] is string ok && !string.IsNullOrWhiteSpace(ok))
-    {
-        <div class="alert alert-success">@ok</div>
-    }
-
-    @if (TempData["Error"] is string err && !string.IsNullOrWhiteSpace(err))
-    {
-        <div class="alert alert-danger">@err</div>
-    }
-
-    <div id="sectionFeedback" class="alert alert-info py-2 d-none" role="alert"></div>
-
-    <div class="row g-3">
-        <div class="col-12 col-lg-7">
-            <form id="pageEditForm" method="post" class="card shadow-sm">
-                <div class="card-body">
-
-                    <input type="hidden" asp-for="Input.Id" />
-
-                    @if (!isEditable)
+        <ul class="mb-0">
+            @foreach (var e in Model.PublishValidationErrors)
+            {
+                if (e.SectionId == 0)
+                {
+                    foreach (var msg in e.Messages)
                     {
-                        <fieldset disabled>
-                            <partial name="_Form" for="Input" />
-
-                            <div class="form-check form-switch mt-3">
-                                <input asp-for="Input.ShowInNavigation"
-                                       class="form-check-input"
-                                       role="switch"
-                                       data-dirty-scope="page" />
-                                <label asp-for="Input.ShowInNavigation" class="form-check-label">
-                                    Show in navigation
-                                </label>
-                            </div>
-                            <div class="form-text">
-                                If off, this page stays hidden from public navigation even when published.
-                            </div>
-
-                            <div class="mb-3">
-                                <label asp-for="Input.NavigationOrder" class="form-label"></label>
-                                <input asp-for="Input.NavigationOrder" class="form-control" data-dirty-scope="page" />
-                                <span class="text-danger" asp-validation-for="Input.NavigationOrder"></span>
-                            </div>
-                        </fieldset>
+                        <li>@msg</li>
                     }
-                    else
-                    {
-                        <partial name="_Form" for="Input" />
+                }
+                else
+                {
+                    <li>
+                        <a href="#section-@e.SectionId" class="text-decoration-underline">
+                            Section #@e.SectionId (@e.TypeKey)
+                        </a>
 
-                        <div class="form-check mt-3">
-                            <input asp-for="Input.ShowInNavigation" class="form-check-input" />
-                            <label asp-for="Input.ShowInNavigation" class="form-check-label"></label>
+                        <ul class="mb-0">
+                            @foreach (var msg in e.Messages)
+                            {
+                                <li>@msg</li>
+                            }
+                        </ul>
+                    </li>
+                }
+            }
+        </ul>
+    </div>
+}
+
+@if (!string.IsNullOrWhiteSpace(Model.Banner))
+{
+    <div class="alert alert-info">@Model.Banner</div>
+}
+
+@* ✅ Two-column layout: Editor (left) + Live Preview (right) *@
+<div class="row g-3">
+    <div class="col-12 col-lg-6">
+        <div class="card">
+            <div class="card-body">
+                @* ✅ Main Save form (single form only) *@
+                <form id="pageEditForm" method="post" asp-page-handler="Save">
+                    <div class="row g-3">
+                        <div class="col-12 col-md-6">
+                            <label class="form-label">Title</label>
+                            <input asp-for="Input.Title" class="form-control" />
+                            <span asp-validation-for="Input.Title" class="text-danger small"></span>
                         </div>
 
-                        <div class="mb-3">
-                            <label asp-for="Input.NavigationOrder" class="form-label"></label>
-                            <input asp-for="Input.NavigationOrder" class="form-control" />
-                            <span class="text-danger" asp-validation-for="Input.NavigationOrder"></span>
-                        </div>
-                    }
-
-                </div>
-
-                <div class="card-footer d-flex justify-content-end gap-2">
-                    <button type="submit"
-                            class="btn btn-primary"
-                            id="saveBtn"
-                            data-save-button
-                            @(isEditable ? null : "disabled")>
-                        Save
-                    </button>
-                </div>
-            </form>
-        </div>
-
-        <div class="col-12 col-lg-5">
-            <div class="card shadow-sm">
-                <div class="card-header d-flex align-items-center justify-content-between">
-                    <div>
-                        <strong>Sections</strong>
-                        <div class="text-muted small">
-                            @(isEditable ? "Drag and drop to reorder." : "Sections are read-only while not Draft.")
-                        </div>
-                    </div>
-
-                    <div class="d-flex align-items-center gap-2">
-                        <div class="btn-group" role="group" aria-label="Sections tabs">
-                            <button type="button" class="btn btn-sm btn-outline-secondary active" id="tabSectionsBtn">
-                                Sections <span class="badge bg-secondary ms-1" id="activeCountBadge">@Model.SectionCount</span>
-                            </button>
-                            <button type="button" class="btn btn-sm btn-outline-secondary" id="tabTrashBtn">
-                                Trash <span class="badge bg-secondary ms-1" id="trashCountBadge">@Model.TrashCount</span>
-                            </button>
+                        <div class="col-12 col-md-6">
+                            <label class="form-label">Slug</label>
+                            <input asp-for="Input.Slug" class="form-control" />
+                            <div class="form-text">Empty = home.</div>
+                            <span asp-validation-for="Input.Slug" class="text-danger small"></span>
                         </div>
 
-                        <button type="button"
-                                class="btn btn-sm btn-primary page-action-btn"
-                                data-bs-toggle="modal"
-                                data-bs-target="#addSectionModal"
-                                id="addSectionBtn"
-                                @(isEditable ? null : "disabled")>
-                            Add Section
-                        </button>
-                    </div>
-                </div>
+                        <div class="col-12 col-md-6">
+                            <label class="form-label">Layout Key</label>
+                            <input asp-for="Input.LayoutKey" class="form-control" />
+                        </div>
 
-                <div class="card-body">
-                    <div id="sectionUndoBanner"
-                         class="alert alert-warning d-none py-2"
-                         role="alert"
-                         data-readonly="@(!isEditable)">
-                        <div class="d-flex align-items-center justify-content-between gap-2">
-                            <div class="small">
-                                <strong>Section deleted.</strong> You can undo this action.
-                            </div>
-                            <div class="d-flex align-items-center gap-2">
-                                <button type="button"
-                                        class="btn btn-sm btn-outline-dark"
-                                        id="undoDeleteBtn"
-                                        @(isEditable ? null : "disabled")>
-                                    Undo
-                                </button>
-                                <button type="button"
-                                        class="btn-close"
-                                        aria-label="Close"
-                                        id="closeUndoBannerBtn">
-                                </button>
+                        <div class="col-12 col-md-6">
+                            <label class="form-label">Show in Navigation</label>
+                            <div class="form-check form-switch">
+                                <input asp-for="Input.ShowInNavigation" class="form-check-input" />
+                                <label class="form-check-label" asp-for="Input.ShowInNavigation">Enabled</label>
                             </div>
                         </div>
+
+                        <div class="col-12">
+                            <label class="form-label">Meta Title</label>
+                            <input asp-for="Input.MetaTitle" class="form-control" />
+                        </div>
+
+                        <div class="col-12">
+                            <label class="form-label">Meta Description</label>
+                            <textarea asp-for="Input.MetaDescription" class="form-control" rows="3"></textarea>
+                        </div>
                     </div>
 
-                    <div id="sectionsPanel">
-                        @if (!Model.HasSections)
-                        {
-                            <div class="text-muted">No sections yet. Click <strong>Add Section</strong> to begin.</div>
-                        }
-                        else
-                        {
-                            <div id="sectionsContainer" class="vstack gap-2">
-                                @foreach (var s in Model.Sections)
+                    <hr class="my-4" />
+
+                    @* ✅ Sections header *@
+                    <div class="d-flex align-items-center justify-content-between">
+                        <div>
+                            <div class="fw-semibold">Sections</div>
+                            <div class="text-muted small">
+                                Draft sections: @Model.SectionCount
+                                @if (!Model.HasDraft)
                                 {
-                                    var vm = Model.BuildSectionRowRenderVm(s);
-                                    <partial name="~/Pages/Admin/Pages/Partials/_PageRevisionSectionRow.cshtml" model="vm" />
+                                    <span class="ms-2 badge text-bg-warning">No Draft</span>
                                 }
                             </div>
-                        }
+                        </div>
+
+                        <div class="d-flex gap-2">
+                            <button type="button"
+                                    class="btn btn-outline-primary"
+                                    id="addSectionBtn"
+                                    data-bs-toggle="modal"
+                                    data-bs-target="#addSectionModal"
+                                    @(Model.HasDraft ? null : "disabled")>
+                                Add Section
+                            </button>
+
+                            <a class="btn btn-outline-secondary"
+                               asp-page="/Admin/Pages/Sections"
+                               asp-route-id="@Model.Id">
+                                Manage Sections / Revisions
+                            </a>
+                        </div>
                     </div>
 
-                    <div id="trashPanel" class="d-none">
-                        @if (Model.TrashCount <= 0)
+                    <div id="sectionsHost" class="mt-3">
+                        @if (!Model.HasDraft)
                         {
-                            <div class="text-muted">Trash is empty.</div>
+                            <div class="alert alert-warning mb-0">
+                                No draft exists for this page. Restore a draft from a published revision to edit sections.
+                            </div>
+                        }
+                        else if (Model.SectionCount == 0)
+                        {
+                            <div class="alert alert-light border mb-0" id="noSectionsAlert">
+                                No sections yet. Use <strong>Add Section</strong> to add sections.
+                            </div>
                         }
                         else
                         {
-                            <div id="trashList" class="vstack gap-2">
-                                @foreach (var s in Model.TrashedSections)
+                            <div id="sectionsList" class="d-grid gap-2">
+                                @foreach (var row in Model.SectionRows)
                                 {
-                                    <div class="card"
-                                         id="trash-section-@s.Id"
-                                         data-section-id="@s.Id"
-                                         data-revision-section-id="@s.Id">
-
-                                        <div class="card-body py-2 d-flex align-items-center justify-content-between">
-                                            <div>
-                                                <div class="fw-semibold">@Model.GetSectionTitle(s)</div>
-                                                <div class="text-muted small">Section ID: @s.Id</div>
-                                            </div>
-
-                                            <button type="button"
-                                                    class="btn btn-sm btn-outline-primary"
-                                                    onclick="restoreRevisionSection(@s.Id)"
-                                                    @(isEditable ? null : "disabled")>
-                                                Restore
-                                            </button>
+                                    @* ✅ Wrap every row with a consistent "section-card" + id used by validation links *@
+                                    <div class="card section-card"
+                                         id="section-@row.RevisionSectionId"
+                                         data-section-id="@row.RevisionSectionId">
+                                        <div class="card-body p-0">
+                                            <partial name="Partials/_PageRevisionSectionRow" model="row" />
                                         </div>
                                     </div>
                                 }
@@ -398,885 +231,275 @@
                         }
                     </div>
 
+                    <div class="mt-3 d-flex justify-content-end">
+                        <button type="submit" class="btn btn-primary">Save Draft</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        @* Published info remains under editor column *@
+        @if (Model.PublishedInfo is not null)
+        {
+            <div class="card mt-3">
+                <div class="card-body">
+                    <div class="fw-semibold">Published</div>
+                    <div class="text-muted small">
+                        Revision #@Model.PublishedInfo.VersionNumber · Slug: <code>@Model.PublishedInfo.Slug</code>
+                        @if (Model.PublishedInfo.PublishedAt is not null)
+                        {
+                            <span>· @Model.PublishedInfo.PublishedAt</span>
+                        }
+                    </div>
+
+                    @if (!Model.HasDraft)
+                    {
+                        <form method="post" asp-page-handler="RestoreDraft" class="mt-2">
+                            @Html.AntiForgeryToken()
+                            <input type="hidden" name="revisionId" value="@Model.PublishedInfo.Id" />
+                            <button class="btn btn-outline-primary" type="submit">Restore Draft From Published</button>
+                        </form>
+                    }
+                </div>
+            </div>
+        }
+    </div>
+
+    @* ✅ Live Preview column *@
+    <div class="col-12 col-lg-6">
+        <div class="card h-100">
+            <div class="card-header d-flex align-items-center justify-content-between">
+                <div class="fw-semibold">
+                    Live Preview
+                    @if (!Model.HasDraft)
+                    {
+                        <span class="badge text-bg-success ms-2">Published</span>
+                    }
+                    else
+                    {
+                        <span class="badge text-bg-secondary ms-2">Draft</span>
+                    }
                 </div>
 
-                <div class="card-footer small text-muted">
-                    @(isEditable ? "Reordering saves automatically." : "Reordering is disabled while not Draft.")
+                <div class="d-flex align-items-center gap-2">
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="previewRefreshBtn">
+                        Refresh
+                    </button>
+                    <span class="text-muted small" id="previewStatus"></span>
                 </div>
+            </div>
+
+            <div class="card-body p-0" style="height: 75vh;">
+                @{
+                    var draftPreviewUrl = Url.Page("/Admin/Pages/Preview", new { id = Model.Id, rev = "draft" });
+
+                    var publishedPath = string.IsNullOrWhiteSpace(Model.PageSlug)
+                    ? "/"
+                    : "/" + Model.PageSlug.Trim('/');
+
+                    var previewSrc = Model.HasDraft ? draftPreviewUrl : publishedPath;
+
+                    var previewTitle = Model.HasDraft ? "Draft Preview" : "Published (Live) Preview";
+                }
+                <iframe id="previewFrame"
+                        title="@previewTitle"
+                        style="border:0;width:100%;height:100%;"
+                        src="@previewSrc">
+                </iframe>
             </div>
         </div>
     </div>
-
 </div>
 
+@* ✅ Add Section Modal *@
 <div class="modal fade" id="addSectionModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog">
         <div class="modal-content">
-            <form method="post"
-                  asp-page-handler="AddSection"
-                  asp-route-id="@Model.Input.Id">
-                @Html.AntiForgeryToken()
+            <div class="modal-header">
+                <h5 class="modal-title">Add Section</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
 
-                <div class="modal-header">
-                    <h5 class="modal-title">Add Section</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                </div>
+            <div class="modal-body">
+                <label class="form-label">Section Type</label>
+                <select class="form-select" id="addSectionType">
+                    <option value="">-- Select --</option>
+                    @foreach (var opt in Model.SectionTypeOptions)
+                    {
+                        <option value="@opt.Value">@opt.Text</option>
+                    }
+                </select>
 
-                <div class="modal-body">
-                    <div class="mb-3">
-                        <label class="form-label">Section Type</label>
-                        <select class="form-select" name="sectionTypeId" required>
-                            <option value="">-- Select --</option>
-                            @foreach (var opt in Model.SectionTypeOptions)
-                            {
-                                <option value="@opt.Value">@opt.Text</option>
-                            }
-                        </select>
+                <div class="mt-3">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="insertAtTop">
+                        <label class="form-check-label" for="insertAtTop">Insert at top</label>
+                    </div>
+
+                    <label class="form-label mt-2">Insert after (optional)</label>
+                    <select class="form-select" id="insertAfter">
+                        <option value="">(Bottom)</option>
+                        @foreach (var row in Model.SectionRows)
+                        {
+                            <option value="@row.RevisionSectionId">@row.Title</option>
+                        }
+                    </select>
+
+                    <div class="form-text">
+                        If “Insert at top” is checked, “Insert after” is ignored.
                     </div>
                 </div>
+            </div>
 
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
-                    <button type="submit" class="btn btn-primary">Add</button>
-                </div>
-            </form>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="confirmAddSectionBtn">Add</button>
+            </div>
         </div>
     </div>
 </div>
+
+@section PageBuilderScripts {
+    <script src="~/js/pagebuilder/section-editor-base.js" asp-append-version="true"></script>
+    <script src="~/js/pagebuilder/editors/hero-editor.js" asp-append-version="true"></script>
+    <script src="~/js/pagebuilder/preview-controller.js" asp-append-version="true"></script>
+
+    <script>
+        document.addEventListener("DOMContentLoaded", function () {
+            window.PageBuilder.initHeroEditors();
+            window.PageBuilder.initPreview({ iframeId: "previewFrame" });
+        });
+    </script>
+}
 
 @section Scripts {
     <partial name="_ValidationScriptsPartial" />
 
-    <style nonce="@nonce">
-        .cursor-grab {
-            cursor: grab;
-            user-select: none;
-        }
+    <script src="~/js/pagebuilder/section-list-controller.js" asp-append-version="true"></script>
 
-        .sortable-ghost {
-            opacity: .6;
-        }
-    </style>
+    @if (Model.HasDraft)
+    {
+        <script>
+            document.addEventListener("DOMContentLoaded", function () {
 
-    <script nonce="@nonce" src="~/lib/jquery-sortablejs/jquery-sortable.min.js"></script>
-    <script nonce="@nonce">
-        window.PAGE_IS_EDITABLE = @(isEditable.ToString().ToLowerInvariant());
-        let isSaving = false;
+                const pageId = @Model.Id;
 
-        function getAntiForgeryToken() {
-            const scoped = document.querySelector('#antiForgeryForm input[name="__RequestVerificationToken"]');
-            if (scoped?.value) return scoped.value;
-            const el = document.querySelector('input[name="__RequestVerificationToken"]');
-            return el ? el.value : null;
-        }
-    </script>
-
-    <script nonce="@nonce">
-        (function () {
-            const indicator = document.getElementById("globalSaveIndicator");
-            const retryBtn = document.getElementById("retryFailedAutosavesBtn");
-            const offlineBadge = document.getElementById("offlineBadge");
-
-            const state = { saving: 0, failed: 0, lastSavedAt: null, retryQueue: new Map() };
-            window.AutosaveUxState = state;
-
-            function fmt(d) {
-                return d ? `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}` : "";
-            }
-
-            function render() {
-                if (!indicator) return;
-
-                const offline = navigator.onLine === false;
-                offlineBadge?.classList.toggle("d-none", !offline);
-                retryBtn?.classList.toggle("d-none", state.failed === 0);
-
-                if (offline) { indicator.textContent = "Offline — changes not saved"; indicator.className = "small text-warning"; return; }
-                if (state.saving > 0) { indicator.textContent = "Saving…"; indicator.className = "small text-muted"; return; }
-                if (state.failed > 0) { indicator.textContent = "Save failed"; indicator.className = "small text-danger"; return; }
-                if (window.PageDirty?._keys?.has("page")) { indicator.textContent = "Unsaved page changes (click Save)"; indicator.className = "small text-warning"; return; }
-
-                indicator.textContent = state.lastSavedAt ? `All changes saved (Saved ${fmt(state.lastSavedAt)})` : "All changes saved";
-                indicator.className = "small text-success";
-            }
-
-            window.AutosaveUx = {
-                onSaving() { state.saving++; render(); },
-                onSaved() { state.saving = Math.max(0, state.saving - 1); state.lastSavedAt = new Date(); render(); },
-                onFailed(sectionId, retryFn) { state.saving = Math.max(0, state.saving - 1); state.failed++; if (retryFn) state.retryQueue.set(sectionId, retryFn); render(); },
-                onRecovered(sectionId) { state.saving = Math.max(0, state.saving - 1); if (state.failed > 0) state.failed--; state.retryQueue.delete(sectionId); state.lastSavedAt = new Date(); render(); }
-            };
-
-            retryBtn?.addEventListener("click", async () => {
-                for (const fn of state.retryQueue.values()) { try { await fn(); } catch { } }
-                render();
-            });
-
-            window.addEventListener("online", render);
-            window.addEventListener("offline", render);
-            document.addEventListener("DOMContentLoaded", render);
-        })();
-    </script>
-
-    <script nonce="@nonce">
-        (function () {
-            function updatePageActionButtons(disabled) {
-                document.querySelectorAll(".page-action-btn").forEach(btn => {
-                    btn.disabled = disabled;
-                    btn.classList.toggle("disabled", disabled);
-                    if (disabled) btn.setAttribute("title", "Saving changes…");
-                    else btn.removeAttribute("title");
-                });
-            }
-
-            const ux = window.AutosaveUx;
-            if (!ux) return;
-
-            const originalOnSaving = ux.onSaving;
-            const originalOnSaved = ux.onSaved;
-            const originalOnFailed = ux.onFailed;
-            const originalOnRecovered = ux.onRecovered;
-
-            ux.onSaving = function (...args) {
-                originalOnSaving?.apply(this, args);
-                updatePageActionButtons(true);
-            };
-
-            ux.onSaved = function (...args) {
-                originalOnSaved?.apply(this, args);
-                if ((window.AutosaveUxState?.saving ?? 0) === 0) updatePageActionButtons(false);
-            };
-
-            ux.onFailed = function (...args) {
-                originalOnFailed?.apply(this, args);
-                updatePageActionButtons(false);
-            };
-
-            ux.onRecovered = function (...args) {
-                originalOnRecovered?.apply(this, args);
-                if ((window.AutosaveUxState?.saving ?? 0) === 0) updatePageActionButtons(false);
-            };
-        })();
-    </script>
-
-    <script nonce="@nonce">
-        document.addEventListener("DOMContentLoaded", function () {
-
-            if (window.PAGE_IS_EDITABLE !== true) return;
-
-            const el = document.getElementById("sectionsContainer");
-            if (!el) return;
-
-            if (typeof Sortable === "undefined") {
-                console.error("SortableJS failed to load (CSP/CDN blocked). Reorder disabled.");
-                return;
-            }
-
-            function getIds() {
-                return Array.from(el.querySelectorAll(".section-item"))
-                    .map(x => parseInt(x.getAttribute("data-section-id"), 10))
-                    .filter(n => Number.isFinite(n));
-            }
-
-            function applyOrder(ids) {
-                const map = new Map();
-                el.querySelectorAll(".section-item").forEach(node => {
-                    const id = parseInt(node.getAttribute("data-section-id"), 10);
-                    if (Number.isFinite(id)) map.set(id, node);
-                });
-
-                for (const id of ids) {
-                    const node = map.get(id);
-                    if (node) el.appendChild(node);
+                // ✅ Read initial invalid IDs from banner (single source of truth)
+                const publishBannerEl = document.getElementById('publishBlockedBanner');
+                let initialInvalidSectionIds = [];
+                if (publishBannerEl?.dataset?.initialInvalidIds) {
+                    try { initialInvalidSectionIds = JSON.parse(publishBannerEl.dataset.initialInvalidIds); }
+                    catch { initialInvalidSectionIds = []; }
                 }
-            }
 
-            let hasPendingChanges = false;
-
-            function setSaving(state) {
-                isSaving = state;
-                hasPendingChanges = state;
-
-                // FIX: do NOT keep old disabled state
-                document.querySelectorAll(".page-action-btn").forEach(btn => {
-                    btn.disabled = state;
-                });
-            }
-
-            window.addEventListener("beforeunload", function (e) {
-                if (!hasPendingChanges) return;
-                e.preventDefault();
-                e.returnValue = "";
-            });
-
-            Sortable.create(el, {
-                handle: ".cursor-grab",
-                animation: 150,
-                ghostClass: "sortable-ghost",
-                onStart: function () {
-                    el.dataset.prevOrder = JSON.stringify(getIds());
-                },
-                onEnd: async function () {
-                    if (isSaving) return;
-
-                    const ids = getIds();
-                    const prev = (() => {
-                        try { return JSON.parse(el.dataset.prevOrder || "[]"); }
-                        catch { return []; }
-                    })();
-
-                    const token = getAntiForgeryToken();
-                    setSaving(true);
-
-                    try {
-                        const res = await fetch("?handler=ReorderSections", {
-                            method: "POST",
-                            headers: {
-                                "Content-Type": "application/json",
-                                ...(token ? { "RequestVerificationToken": token } : {})
-                            },
-                            body: JSON.stringify({
-                                pageId: @Model.Input.Id,
-                                orderedSectionIds: ids
-                            })
-                        });
-
-                        const json = await res.json().catch(() => null);
-
-                        if (!res.ok || !json || json.ok !== true) {
-                            if (prev.length) applyOrder(prev);
-                            const msg = (json && (json.message || json.Message)) || "Failed to save order.";
-                            alert(msg);
-                            return;
-                        }
-
-                        hasPendingChanges = false;
-                    } catch {
-                        if (prev.length) applyOrder(prev);
-                        hasPendingChanges = false;
-                        alert("Failed to save order.");
-                    } finally {
-                        setSaving(false);
-                    }
+                function getSectionCard(sectionId) {
+                    return document.querySelector(`.section-card[data-section-id="${sectionId}"]`);
                 }
-            });
-        });
-    </script>
 
-    @* KEEP the rest of your scripts (delete/restore/autosave/dirty state) but ADD nonce="@nonce" to every script tag *@
-
-    <script nonce="@nonce">
-        // -----------------------------
-        // Soft delete / Undo / Trash UI for draft sections
-        // -----------------------------
-        (function () {
-
-            if (window.PAGE_IS_EDITABLE !== true) return;
-
-            let lastDeletedId = null;
-            let undoTimer = null;
-
-            function q(id) { return document.getElementById(id); }
-
-            function toInt(val) {
-                const n = parseInt(String(val), 10);
-                return Number.isFinite(n) ? n : 0;
-            }
-
-            function incBadge(badgeId, delta) {
-                const el = q(badgeId);
-                if (!el) return;
-                const next = toInt(el.textContent) + toInt(delta);
-                el.textContent = String(Math.max(0, next));
-            }
-
-            function showUndoBanner(sectionId) {
-                const banner = q("sectionUndoBanner");
-                if (!banner) return;
-
-                banner.classList.remove("d-none");
-                lastDeletedId = sectionId;
-
-                if (undoTimer) clearTimeout(undoTimer);
-                undoTimer = setTimeout(() => {
-                    banner.classList.add("d-none");
-                    lastDeletedId = null;
-                }, 12000);
-            }
-
-            function hideUndoBanner() {
-                const banner = q("sectionUndoBanner");
-                if (!banner) return;
-                banner.classList.add("d-none");
-                lastDeletedId = null;
-                if (undoTimer) clearTimeout(undoTimer);
-                undoTimer = null;
-            }
-
-            function setActiveTab(tab) {
-                const tabSectionsBtn = q("tabSectionsBtn");
-                const tabTrashBtn = q("tabTrashBtn");
-                const sectionsPanel = q("sectionsPanel");
-                const trashPanel = q("trashPanel");
-                const addBtn = q("addSectionBtn");
-
-                if (!tabSectionsBtn || !tabTrashBtn || !sectionsPanel || !trashPanel) return;
-
-                const isTrash = tab === "trash";
-
-                tabSectionsBtn.classList.toggle("active", !isTrash);
-                tabTrashBtn.classList.toggle("active", isTrash);
-
-                sectionsPanel.classList.toggle("d-none", isTrash);
-                trashPanel.classList.toggle("d-none", !isTrash);
-
-                if (addBtn) addBtn.classList.toggle("d-none", isTrash);
-
-                if (isTrash) hideUndoBanner();
-            }
-
-            async function postJson(handler, payload) {
-                const token = getAntiForgeryToken();
-
-                const res = await fetch(handler, {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                        ...(token ? { "RequestVerificationToken": token } : {})
-                    },
-                    body: JSON.stringify(payload || {})
-                });
-
-                const data = await res.json().catch(() => null);
-                if (!res.ok || !data || data.ok !== true) {
-                    const msg = (data && (data.message || data.Message)) || "Request failed.";
-                    throw new Error(msg);
-                }
-                return data;
-            }
-
-            function appendToTrash(sectionId, titleText) {
-                const trashPanel = q("trashPanel");
-                let trashList = q("trashList");
-
-                if (!trashList && trashPanel) {
-                    trashPanel.innerHTML = `<div id="trashList" class="vstack gap-2"></div>`;
-                    trashList = q("trashList");
-                }
-                if (!trashList) return;
-
-                const emptyMsg = trashPanel && trashPanel.querySelector('.text-muted');
-                if (emptyMsg) emptyMsg.remove();
-
-                const card = document.createElement("div");
-                card.className = "card";
-                card.id = `trash-section-${sectionId}`;
-                card.setAttribute("data-section-id", String(sectionId));
-                card.innerHTML = `
-                    <div class="card-body py-2 d-flex align-items-center justify-content-between">
-                        <div>
-                            <div class="fw-semibold">${titleText || "Section"}</div>
-                            <div class="text-muted small">Section ID: ${sectionId}</div>
-                        </div>
-                        <button type="button" class="btn btn-sm btn-outline-primary" data-restore-revision-section="${sectionId}">Restore</button>
-                    </div>
-                `;
-
-                trashList.prepend(card);
-            }
-
-            window.deleteRevisionSection = async function (sectionId) {
-                const id = toInt(sectionId);
-                if (!id) return;
-
-                const card = document.getElementById(`section-${id}`);
-                const title = card ? (card.querySelector('.section-title')?.textContent || '').trim() : '';
-
-                try {
-                    await postJson("?handler=DeleteRevisionSection", { sectionId: id });
-
-                    if (card) card.remove();
-
-                    incBadge("activeCountBadge", -1);
-                    incBadge("trashCountBadge", +1);
-
-                    appendToTrash(id, title);
-                    showUndoBanner(id);
-
-                } catch (e) {
-                    alert(e && e.message ? e.message : "Delete failed.");
-                }
-            };
-
-            window.restoreRevisionSection = async function (sectionId) {
-                const id = toInt(sectionId);
-                if (!id) return;
-
-                try {
-                    await postJson("?handler=RestoreRevisionSections", { sectionIds: [id] });
-
-                    const trashCard = document.getElementById(`trash-section-${id}`);
-                    if (trashCard) trashCard.remove();
-
-                    incBadge("trashCountBadge", -1);
-                    incBadge("activeCountBadge", +1);
-
-                    const htmlRes = await fetch(`?handler=RevisionSectionRow&sectionId=${id}`, {
-                        method: "GET",
-                        headers: { "X-Requested-With": "XMLHttpRequest" }
+                function clearInvalidMarks() {
+                    document.querySelectorAll('.section-card.is-invalid').forEach(el => {
+                        el.classList.remove('is-invalid', 'pulse');
                     });
-
-                    const html = await htmlRes.text();
-                    if (!htmlRes.ok || !html || !html.trim()) {
-                        throw new Error("Failed to load restored section markup.");
-                    }
-
-                    setActiveTab("sections");
-                    hideUndoBanner();
-
-                    const sectionsPanel = q("sectionsPanel");
-                    const emptyMsg = sectionsPanel?.querySelector(".text-muted");
-                    if (emptyMsg && emptyMsg.textContent?.toLowerCase().includes("no sections")) {
-                        emptyMsg.remove();
-                    }
-
-                    const container = document.getElementById("sectionsContainer");
-                    if (!container) throw new Error("sectionsContainer not found.");
-
-                    const wrap = document.createElement("div");
-                    wrap.innerHTML = html.trim();
-                    const restoredEl = wrap.firstElementChild;
-                    if (!restoredEl) throw new Error("Invalid restored HTML.");
-
-                    container.prepend(restoredEl);
-
-                } catch (e) {
-                    alert(e && e.message ? e.message : "Restore failed.");
                 }
-            };
 
-            document.addEventListener("DOMContentLoaded", function () {
-                q("tabSectionsBtn")?.addEventListener("click", () => setActiveTab("sections"));
-                q("tabTrashBtn")?.addEventListener("click", () => setActiveTab("trash"));
+                function markInvalidSections(invalidIds) {
+                    clearInvalidMarks();
+                    if (!invalidIds || invalidIds.length === 0) return;
 
-                q("undoDeleteBtn")?.addEventListener("click", function () {
-                    if (!lastDeletedId) return;
-                    window.restoreRevisionSection(lastDeletedId);
+                    invalidIds.forEach(id => {
+                        const card = getSectionCard(id);
+                        if (card) card.classList.add('is-invalid');
+                    });
+                }
+
+                function scrollToFirstInvalid(invalidIds) {
+                    if (!invalidIds || invalidIds.length === 0) return;
+
+                    const card = getSectionCard(invalidIds[0]);
+                    if (!card) return;
+
+                    card.classList.add('pulse');
+                    card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
+
+                window.PageBuilder.initSectionList({
+                    pageId: pageId,
+                    draftRevisionRowVersionBase64: @Html.Raw(JsonSerializer.Serialize(Model.DraftRevisionRowVersionBase64 ?? "")),
+                    invalidSectionIds: initialInvalidSectionIds
                 });
 
-                q("closeUndoBannerBtn")?.addEventListener("click", hideUndoBanner);
+                const publishBtn = document.getElementById('publishBtn');
+                const publishBanner = document.getElementById('publishBlockedBanner');
 
-                document.addEventListener("click", function (e) {
-                    const btn = e.target.closest("[data-delete-revision-section]");
-                    if (!btn) return;
-                    const id = toInt(btn.getAttribute("data-delete-revision-section") || btn.dataset.deleteRevisionSection);
-                    if (!id) return;
-                    window.deleteRevisionSection(id);
-                });
+                function applyPublishState(isValid, invalidIds) {
+                    const blocked = !isValid;
 
-                document.addEventListener("click", function (e) {
-                    const btn = e.target.closest("[data-restore-revision-section]");
-                    if (!btn) return;
-                    const id = toInt(btn.getAttribute("data-restore-revision-section") || btn.dataset.restoreRevisionSection);
-                    if (!id) return;
-                    window.restoreRevisionSection(id);
-                });
-
-                setActiveTab("sections");
-            });
-        })();
-    </script>
-
-    @* IMPORTANT:
-       For your remaining SectionAutoSave + PageDirty scripts, keep your logic,
-       but make sure each <script> has nonce="@nonce".
-    *@
-    <script nonce="@nonce">
-        /* ============================================================
-         * [AUTOSAVE UX INDICATOR]
-         * - Shows global "Saving… / All changes saved / Save failed"
-         * - Tracks in-flight saves and failures
-         * - Supports a Retry button for failed autosaves
-         * ============================================================ */
-        (function () {
-            const indicator = document.getElementById("globalSaveIndicator");
-            const retryBtn = document.getElementById("retryFailedAutosavesBtn");
-            const offlineBadge = document.getElementById("offlineBadge");
-
-            // authoritative counters live here
-            const state = {
-                saving: 0,
-                failed: 0,
-                lastSavedAt: null,
-                retryQueue: new Map() // sectionId -> retryFn
-            };
-
-            // expose state so other blocks can read it safely
-            window.AutosaveUxState = state;
-
-            function fmt(d) {
-                return d
-                    ? `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`
-                    : "";
-            }
-
-            function render() {
-                if (!indicator) return;
-
-                const offline = navigator.onLine === false;
-                offlineBadge?.classList.toggle("d-none", !offline);
-
-                retryBtn?.classList.toggle("d-none", state.failed === 0);
-
-                if (offline) {
-                    indicator.textContent = "Offline — changes not saved";
-                    indicator.className = "small text-warning";
-                    return;
-                }
-
-                if (state.saving > 0) {
-                    indicator.textContent = "Saving…";
-                    indicator.className = "small text-muted";
-                    return;
-                }
-
-                if (state.failed > 0) {
-                    indicator.textContent = "Save failed";
-                    indicator.className = "small text-danger";
-                    return;
-                }
-
-                // Page-level dirty (manual Save)
-                if (window.PageDirty?._keys?.has("page")) {
-                    indicator.textContent = "Unsaved page changes (click Save)";
-                    indicator.className = "small text-warning";
-                    return;
-                }
-
-                indicator.textContent = state.lastSavedAt
-                    ? `All changes saved (Saved ${fmt(state.lastSavedAt)})`
-                    : "All changes saved";
-                indicator.className = "small text-success";
-            }
-
-            window.AutosaveUx = {
-                onSaving(sectionId) {
-                    state.saving++;
-                    render();
-                },
-                onSaved(sectionId) {
-                    state.saving = Math.max(0, state.saving - 1);
-                    state.lastSavedAt = new Date();
-                    render();
-                },
-                onFailed(sectionId, retryFn) {
-                    state.saving = Math.max(0, state.saving - 1);
-                    state.failed++;
-                    if (retryFn) state.retryQueue.set(sectionId, retryFn);
-                    render();
-                },
-                onRecovered(sectionId) {
-                    state.saving = Math.max(0, state.saving - 1);
-                    if (state.failed > 0) state.failed--;
-                    state.retryQueue.delete(sectionId);
-                    state.lastSavedAt = new Date();
-                    render();
-                }
-            };
-
-            retryBtn?.addEventListener("click", async () => {
-                for (const fn of state.retryQueue.values()) {
-                    try { await fn(); } catch { /* ignore */ }
-                }
-                render();
-            });
-
-            window.addEventListener("online", render);
-            window.addEventListener("offline", render);
-            document.addEventListener("DOMContentLoaded", render);
-        })();
-    </script>
-
-    <script nonce="@nonce">
-        /* ============================================================
-         * [DISABLE PAGE ACTIONS WHILE SAVING]
-         * - Hooks into AutosaveUx events
-         * - Disables/enables buttons with .page-action-btn
-         * ============================================================ */
-        (function () {
-            function updatePageActionButtons(disabled) {
-                document.querySelectorAll(".page-action-btn").forEach(btn => {
-                    btn.disabled = disabled;
-                    btn.classList.toggle("disabled", disabled);
-
-                    if (disabled) btn.setAttribute("title", "Saving changes…");
-                    else btn.removeAttribute("title");
-                });
-            }
-
-            const ux = window.AutosaveUx;
-            if (!ux) return;
-
-            const originalOnSaving = ux.onSaving;
-            const originalOnSaved = ux.onSaved;
-            const originalOnFailed = ux.onFailed;
-            const originalOnRecovered = ux.onRecovered;
-
-            ux.onSaving = function (...args) {
-                originalOnSaving?.apply(this, args);
-                updatePageActionButtons(true);
-            };
-
-            ux.onSaved = function (...args) {
-                originalOnSaved?.apply(this, args);
-                if ((window.AutosaveUxState?.saving ?? 0) === 0) {
-                    updatePageActionButtons(false);
-                }
-            };
-
-            ux.onFailed = function (...args) {
-                originalOnFailed?.apply(this, args);
-                // allow user to proceed even if autosave failed
-                updatePageActionButtons(false);
-            };
-
-            ux.onRecovered = function (...args) {
-                originalOnRecovered?.apply(this, args);
-                if ((window.AutosaveUxState?.saving ?? 0) === 0) {
-                    updatePageActionButtons(false);
-                }
-            };
-        })();
-    </script>
-    <script nonce="@nonce">
-        /* ============================================================
-         * [SECTION AUTOSAVE HELPER]
-         * - Debounced autosave for section settings (JSON)
-         * - Updates per-section status element (Saving/Saved/Failed)
-         * - Shows validation errors returned by server
-         * - Integrates with AutosaveUx + PageDirty
-         *
-         * Usage from a section partial:
-         *   const saver = SectionAutoSave.bindSectionAutoSave(
-         *       sectionId,
-         *       () => JSON.stringify(payload),
-         *       '?handler=SaveSection',
-         *       statusEl,
-         *       errorsEl
-         *   );
-         *   // call when inputs change:
-         *   saver.notifyChanged();
-         *   // optional manual trigger:
-         *   saver.saveNow();
-         * ============================================================ */
-        (function () {
-            function debounce(fn, delay) {
-                let t = null;
-                return function () {
-                    const ctx = this, args = arguments;
-                    clearTimeout(t);
-                    t = setTimeout(() => fn.apply(ctx, args), delay);
-                };
-            }
-
-            function bindSectionAutoSave(sectionId, getSettingsJson, saveUrl, statusEl, errorsEl) {
-                const dirtyKey = `section:${sectionId}`;
-                let inFlight = 0;
-
-                function clearErrors() {
-                    if (!errorsEl) return;
-                    errorsEl.classList.add("d-none");
-                    errorsEl.innerHTML = "";
-                }
-
-                function showErrors(errors) {
-                    if (!errorsEl) return;
-
-                    const list = Array.isArray(errors) ? errors : [];
-                    if (!list.length) { clearErrors(); return; }
-
-                    errorsEl.classList.remove("d-none");
-                    errorsEl.innerHTML = `
-                        <div class="alert alert-danger py-2 mb-0">
-                            <div class="fw-semibold small mb-1">Please fix the following:</div>
-                            <ul class="small mb-0">
-                                ${list.map(e => `<li>${String(e)}</li>`).join("")}
-                            </ul>
-                        </div>
-                    `;
-                }
-
-                async function runSave() {
-                    window.AutosaveUx && window.AutosaveUx.onSaving(sectionId);
-
-                    const settingsJson = getSettingsJson();
-
-                    inFlight++;
-                    if (statusEl) {
-                        statusEl.textContent = "Saving...";
-                        statusEl.classList.remove("text-danger", "text-success");
-                        statusEl.classList.add("text-muted");
-                        statusEl.title = "";
+                    if (publishBtn) {
+                        publishBtn.disabled = blocked;
+                        publishBtn.title = blocked ? "Fix validation errors before publishing" : "Publish";
                     }
 
-                    try {
-                        const token = (typeof getAntiForgeryToken === "function") ? getAntiForgeryToken() : null;
-
-                        const res = await fetch(saveUrl, {
-                            method: "POST",
-                            headers: {
-                                "Content-Type": "application/json",
-                                ...(token ? { "RequestVerificationToken": token } : {})
-                            },
-                            body: JSON.stringify({ sectionId, settingsJson })
-                        });
-
-                        const data = await res.json().catch(() => null);
-
-                        if (!res.ok || !data || data.ok !== true) {
-                            const errors = (data && (data.errors || data.Errors)) || [];
-                            const message = (data && (data.message || data.Message)) || "Save failed.";
-                            throw { message, errors };
-                        }
-
-                        inFlight--;
-                        clearErrors();
-
-                        // Clear dirty only after successful save
-                        window.PageDirty?.clear?.(dirtyKey);
-
-                        // success signal
-                        window.AutosaveUx?.onSaved?.(sectionId);
-
-                        if (inFlight === 0 && statusEl) {
-                            statusEl.textContent = "Saved";
-                            statusEl.classList.remove("text-muted", "text-danger");
-                            statusEl.classList.add("text-success");
-                        }
-
-                        return data;
-                    } catch (e) {
-                        inFlight--;
-
-                        if (statusEl) {
-                            statusEl.textContent = "Save failed";
-                            statusEl.classList.remove("text-muted", "text-success");
-                            statusEl.classList.add("text-danger");
-                            statusEl.title = (e && e.message) ? e.message : "Error";
-                        }
-
-                        // failed signal (provide retry fn)
-                        window.AutosaveUx?.onFailed?.(sectionId, () => runSave());
-
-                        showErrors(e && e.errors ? e.errors : []);
-                        return null;
+                    if (publishBanner) {
+                        publishBanner.classList.toggle('d-none', !blocked);
                     }
+
+                    markInvalidSections(invalidIds || []);
                 }
 
-                const debounced = debounce(runSave, 1000);
-
-                return {
-                    notifyChanged: () => {
-                        window.PageDirty?.set?.(dirtyKey);
-                        debounced();
-                    },
-                    saveNow: () => runSave()
-                };
-            }
-
-            window.SectionAutoSave = { bindSectionAutoSave };
-        })();
-    </script>
-    <script nonce="@nonce">
-        /* ============================================================
-         * [GLOBAL DIRTY STATE]
-         * - Tracks unsaved changes from:
-         *   - page fields (manual Save) -> key "page"
-         *   - section autosaves -> key "section:{id}"
-         * - Warns on navigation/unload if dirty
-         * - Can be checked via: PageDirty.isDirty
-         * ============================================================ */
-        (function () {
-            const Dirty = {
-                _keys: new Set(),
-                get isDirty() { return this._keys.size > 0; },
-
-                set(key) { this._keys.add(key || "page"); },
-
-                clear(key) {
-                    if (!key) { this._keys.clear(); return; }
-                    this._keys.delete(key);
-                },
-
-                confirmIfDirty(msg) {
-                    if (!this.isDirty) return true;
-                    return window.confirm(msg || "You have unsaved changes. Leave this page?");
+                async function fetchDraftValidation() {
+                    const url = `${window.location.pathname}?handler=ValidateDraft&id=${pageId}`;
+                    const res = await fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+                    if (!res.ok) return null;
+                    return await res.json();
                 }
-            };
 
-            window.PageDirty = Dirty;
+                async function refreshPublishValidity(options) {
+                    const opts = options || {};
+                    const scrollIfInvalid = !!opts.scrollIfInvalid;
 
-            document.addEventListener("DOMContentLoaded", function () {
-                const form =
-                    document.getElementById("pageEditForm") ||
-                    document.querySelector("form:not(#antiForgeryForm)");
+                    const data = await fetchDraftValidation();
+                    if (!data) return null;
 
-                if (!form) return;
+                    applyPublishState(!!data.isValid, data.invalidSectionIds || []);
 
-                // Page-level dirty only for page-scoped inputs
-                form.addEventListener("input", function (e) {
-                    const t = e.target;
-                    if (!t) return;
-                    if (t.name === "__RequestVerificationToken") return;
-
-                    if (t.matches("input, textarea, select") &&
-                        t.getAttribute("data-dirty-scope") === "page") {
-                        Dirty.set("page");
+                    if (scrollIfInvalid && data.isValid === false) {
+                        scrollToFirstInvalid(data.invalidSectionIds || []);
                     }
-                }, true);
 
-                form.addEventListener("change", function (e) {
-                    const t = e.target;
-                    if (!t) return;
-                    if (t.name === "__RequestVerificationToken") return;
+                    return data;
+                }
 
-                    if (t.matches("input, textarea, select") &&
-                        t.getAttribute("data-dirty-scope") === "page") {
-                        Dirty.set("page");
-                    }
-                }, true);
+                window.PageBuilder = window.PageBuilder || {};
+                window.PageBuilder.refreshPublishValidity = refreshPublishValidity;
 
-                // Clear dirty on Save submit
-                form.addEventListener("submit", function () {
-                    Dirty.clear();
-                });
+                // Initial paint behavior
+                applyPublishState(initialInvalidSectionIds.length === 0, initialInvalidSectionIds);
 
-                // Intercept internal navigation
-                document.body.addEventListener("click", function (e) {
-                    const a = e.target?.closest?.("a");
-                    if (!a) return;
+                if (initialInvalidSectionIds.length > 0) {
+                    scrollToFirstInvalid(initialInvalidSectionIds);
+                }
 
-                    const href = a.getAttribute("href");
-                    if (!href || href === "#" || href.startsWith("javascript:")) return;
+                // Live sync (no scrolling)
+                refreshPublishValidity({ scrollIfInvalid: false });
 
-                    if (a.getAttribute("data-bypass-dirty") === "true") return;
+                // Scroll ONLY if user tries to publish while invalid
+                publishBtn?.addEventListener('click', async function (e) {
+                    const data = await refreshPublishValidity({ scrollIfInvalid: true });
 
-                    const target = (a.getAttribute("target") || "").toLowerCase();
-                    if (target === "_blank") return;
-
-                    if (!Dirty.confirmIfDirty()) {
+                    if (!data || data.isValid === false) {
                         e.preventDefault();
-                        e.stopPropagation();
+                        return;
                     }
-                }, true);
-            });
+                });
 
-            window.addEventListener("beforeunload", function (e) {
-                if (!Dirty.isDirty) return;
-                e.preventDefault();
-                e.returnValue = "";
+                document.querySelectorAll('a[href^="#section-"]').forEach(a => {
+                    a.addEventListener('click', function () {
+                        const id = (this.getAttribute('href') || '').replace('#', '');
+                        const el = document.getElementById(id);
+                        if (el) el.classList.add('pulse');
+                    });
+                });
             });
-        })();
-    </script>
-
+        </script>
+    }
 }

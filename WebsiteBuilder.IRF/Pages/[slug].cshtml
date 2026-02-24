@@ -2,8 +2,8 @@
 @model WebsiteBuilder.IRF.Pages._slug_Model
 
 @{
-    Layout = "_AdminLayout"; // adjust if needed
     var isPreview = Model.IsPreview;
+    Layout = isPreview ? "_AdminLayout" : "_TenantLayout";
 }
 
 @section Head {
@@ -12,11 +12,54 @@
         <meta name="robots" content="noindex,nofollow,noarchive,nosnippet" />
         <meta name="googlebot" content="noindex,nofollow,noarchive,nosnippet" />
     }
+    else
+    {
+        var canonicalUrl = ViewData["CanonicalUrl"] as string;
+        var metaTitle = ViewData["MetaTitle"] as string;
+        var metaDesc = ViewData["MetaDescription"] as string;
+        var ogImageUrl = ViewData["OgImageUrl"] as string;
+
+        if (!string.IsNullOrWhiteSpace(metaDesc))
+        {
+            <meta name="description" content="@metaDesc" />
+        }
+
+        if (!string.IsNullOrWhiteSpace(canonicalUrl))
+        {
+            <link rel="canonical" href="@canonicalUrl" />
+            <meta property="og:url" content="@canonicalUrl" />
+        }
+
+        if (!string.IsNullOrWhiteSpace(metaTitle))
+        {
+            <meta property="og:title" content="@metaTitle" />
+        }
+
+        if (!string.IsNullOrWhiteSpace(metaDesc))
+        {
+            <meta property="og:description" content="@metaDesc" />
+        }
+
+        <meta property="og:type" content="website" />
+
+        if (!string.IsNullOrWhiteSpace(ogImageUrl))
+        {
+            <meta property="og:image" content="@ogImageUrl" />
+            <meta name="twitter:card" content="summary_large_image" />
+        }
+        else
+        {
+            <meta name="twitter:card" content="summary" />
+        }
+    }
 }
+
 
 @if (isPreview)
 {
-    var exitUrl = Request.Path; // same page, without querystring
+    var exitUrl = (Request.Path.Value?.Equals("/home", StringComparison.OrdinalIgnoreCase) == true)
+        ? "/"
+        : (Request.Path.Value ?? "/");
 
     <div style="position:sticky;top:0;z-index:1050;background:#111827;color:#fff;padding:10px 16px;border-bottom:1px solid rgba(255,255,255,.15);">
         <div class="container d-flex align-items-center justify-content-between">
@@ -28,23 +71,22 @@
             <div class="d-flex align-items-center gap-2">
                 <a class="btn btn-sm btn-light" href="@exitUrl">Exit preview</a>
 
-                <a class="btn btn-sm btn-outline-light"
-                   href="/Admin/Pages/Edit/@Model.PageEntity!.Id">
-                    Back to Edit
-                </a>
+                @if (Model.PageEntity != null)
+                {
+                    <a class="btn btn-sm btn-outline-light" href="/Admin/Pages/Edit/@Model.PageEntity.Id">
+                        Back to Edit
+                    </a>
+                }
             </div>
         </div>
     </div>
 }
 
-
 @foreach (var section in Model.RenderSections)
 {
-    @await Component.InvokeAsync(
-    "PageSection",
-        new
-        {
-            sectionTypeId = section.SectionTypeId,
-            settingsJson = section.SettingsJson
-        })
+    @await Component.InvokeAsync("PageSection", new
+    {
+        sectionTypeId = section.SectionTypeId,
+        settingsJson = section.SettingsJson
+    })
 }

@@ -1,6 +1,8 @@
-﻿using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.AspNetCore.OutputCaching;
+using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using WebsiteBuilder.IRF.DataAccess;
 using WebsiteBuilder.IRF.Infrastructure.Sections;
 using WebsiteBuilder.IRF.Infrastructure.Tenancy;
@@ -14,12 +16,18 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
         private readonly DataContext _db;
         private readonly ITenantContext _tenant;
         private readonly ISectionValidationService _sectionValidation;
+        private readonly IOutputCacheStore _outputCache;
 
-        public PagePublishingService(DataContext db, ITenantContext tenant, ISectionValidationService sectionValidation)
+        public PagePublishingService(
+            DataContext db,
+            ITenantContext tenant,
+            ISectionValidationService sectionValidation,
+            IOutputCacheStore outputCache)
         {
             _db = db;
             _tenant = tenant;
             _sectionValidation = sectionValidation;
+            _outputCache = outputCache;
         }
 
         public async Task<PublishResult> PublishAsync(
@@ -27,17 +35,50 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
             Guid actorUserId,
             CancellationToken ct = default)
         {
-            // IMPORTANT: SQL retry strategy + transactions require ExecuteAsync wrapper
+            static string Slugify(string? slug)
+            {
+                slug ??= string.Empty;
+
+                var s = slug.Trim().Trim('/').ToLowerInvariant();
+                s = Regex.Replace(s, @"[\s_]+", "-");
+                s = Regex.Replace(s, @"[^a-z0-9\-]+", string.Empty);
+                s = Regex.Replace(s, @"-+", "-");
+
+                return s.Trim('-'); // "" means home
+            }
+
             var strategy = _db.Database.CreateExecutionStrategy();
+
+            static bool IsValidSlug(string slug)
+            {
+                // "" allowed only for home page (enforced separately)
+                if (slug == "") return true;
+
+                // Lowercase letters/numbers with single hyphen separators
+                // No leading/trailing hyphen, no double hyphen by construction,
+                // but we validate anyway for safety.
+                return Regex.IsMatch(
+                    slug,
+                    "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+                    RegexOptions.CultureInvariant
+                );
+            }
+
+            static bool IsReservedSlug(string slug) =>
+                string.Equals(slug, "home", StringComparison.OrdinalIgnoreCase);
 
             try
             {
-                return await strategy.ExecuteAsync(async () =>
+                // We'll return these out of the transaction so we can evict caches AFTER commit
+                Guid? tenantIdForEvict = null;
+                int? pageIdForEvict = null;
+
+                var result = await strategy.ExecuteAsync(async () =>
                 {
                     if (!_tenant.IsResolved)
                         return PublishResult.Fail("Tenant not resolved.");
 
-                    // Load page + draft pointer (tracked)
+                    // Load page (tracked)
                     var page = await _db.Pages
                         .FirstOrDefaultAsync(p =>
                             p.Id == pageId &&
@@ -51,7 +92,14 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
                     if (page.DraftRevisionId == null)
                         return PublishResult.Fail("Cannot publish: no draft revision found.");
 
-                    // Load draft revision (no tracking ok; we only read it)
+                    // Capture prior published state BEFORE we overwrite page.Slug
+                    var hadPublishedBefore =
+                        page.PublishedRevisionId.HasValue &&
+                        page.PageStatusId == PageStatusIds.Published;
+
+                    var oldPublishedSlug = Slugify(page.Slug);
+
+                    // Load draft revision (no tracking)
                     var draft = await _db.PageRevisions
                         .AsNoTracking()
                         .FirstOrDefaultAsync(r =>
@@ -64,7 +112,72 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
                     if (draft == null)
                         return PublishResult.Fail("Cannot publish: draft revision not found.");
 
-                    // Load draft sections (TRACKED: we may mutate SettingsJson during gallery migration)
+                    // ✅ Canonical slug for this publish (must match PageRenderPipeline.NormalizeSlug)
+                    var newSlug = Slugify(draft.Slug);
+
+                    // Determine home page id (we must not allow non-home to be "/")
+                    var tenant = await _db.Tenants.AsNoTracking()
+                        .FirstOrDefaultAsync(t => t.Id == _tenant.TenantId, ct);
+
+                    if (tenant?.HomePageId is null)
+                        return PublishResult.Fail("Cannot publish: tenant home page is not configured.");
+
+                    var isHomePage = (tenant.HomePageId.Value == page.Id);
+
+                    // Reserved slug rules
+                    if (IsReservedSlug(newSlug))
+                    {
+                        if (isHomePage)
+                        {
+                            // Canonical home path
+                            newSlug = "";
+                        }
+                        else
+                        {
+                            return PublishResult.Fail("Slug 'home' is reserved for the home page.");
+                        }
+                    }
+
+                    // Empty slug rules
+                    if (newSlug == "" && !isHomePage)
+                        return PublishResult.Fail("Only the home page may have an empty slug ('/').");
+
+                    // Basic pattern validation (defense-in-depth)
+                    if (!IsValidSlug(newSlug))
+                        return PublishResult.Fail("Invalid slug. Use lowercase letters, numbers, and single hyphens only (e.g., 'about-us').");
+
+                    // ✅ Uniqueness: no other active, non-deleted page in this tenant may have the same canonical slug
+                    var slugExists = await _db.Pages.AsNoTracking()
+                        .AnyAsync(p =>
+                            p.TenantId == _tenant.TenantId &&
+                            p.Id != page.Id &&
+                            p.IsActive &&
+                            !p.IsDeleted &&
+                            (p.Slug ?? "") == newSlug,
+                            ct);
+
+                    if (slugExists)
+                    {
+                        var printable = string.IsNullOrWhiteSpace(newSlug) ? "/" : "/" + newSlug;
+                        return PublishResult.Fail($"Cannot publish: slug '{printable}' is already in use.");
+                    }
+
+                    // Optional: block collision with existing OLD slugs in history (tenant-safe)
+                    var historyCollision = await _db.PageSlugHistories.AsNoTracking()
+                        .AnyAsync(h =>
+                            h.TenantId == _tenant.TenantId &&
+                            h.OldSlug == newSlug &&
+                            h.PageId != page.Id,
+                            ct);
+
+                    if (historyCollision)
+                    {
+                        var printable = string.IsNullOrWhiteSpace(newSlug) ? "/" : "/" + newSlug;
+                        return PublishResult.Fail($"Cannot publish: slug '{printable}' conflicts with an existing redirect history.");
+                    }
+
+
+                    // Load draft sections (TRACKED)
                     var draftSections = await _db.PageRevisionSections
                         .Where(s =>
                             s.TenantId == _tenant.TenantId &&
@@ -88,17 +201,9 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
 
                     var now = DateTime.UtcNow;
 
-                    // We only start a transaction AFTER all basic guards are passed.
                     await using var tx = await _db.Database.BeginTransactionAsync(ct);
 
-                    // Helper: fail safely with rollback
-                    async Task<PublishResult> FailAsync(string message)
-                    {
-                        try { await tx.RollbackAsync(ct); } catch { /* ignore */ }
-                        return PublishResult.Fail(message);
-                    }
-
-                    // 1) Auto-migrate legacy gallery JSON (items -> images) on draft sections
+                    // 1) Auto-migrate legacy gallery JSON (items -> images)
                     var anyMigrated = false;
 
                     foreach (var s in draftSections)
@@ -209,7 +314,7 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
                         await _db.SaveChangesAsync(ct);
                     }
 
-                    // 2) Validate all sections (after migration + url resolution)
+                    // 2) Validate all sections
                     var errors = new List<string>();
 
                     foreach (var s in draftSections)
@@ -234,7 +339,7 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
                         return new PublishResult { Success = false, Errors = errors };
                     }
 
-                    // 3) Create published snapshot revision from draft content
+                    // 3) Create published snapshot revision
                     var nextVersion =
                         (await _db.PageRevisions
                             .Where(r => r.TenantId == _tenant.TenantId &&
@@ -251,7 +356,7 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
                         IsPublishedSnapshot = true,
 
                         Title = draft.Title,
-                        Slug = draft.Slug,
+                        Slug = newSlug, // ✅ canonical slug
                         LayoutKey = draft.LayoutKey ?? string.Empty,
                         MetaTitle = draft.MetaTitle ?? string.Empty,
                         MetaDescription = draft.MetaDescription ?? string.Empty,
@@ -285,15 +390,64 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
                     _db.PageRevisions.Add(publishedRevision);
                     await _db.SaveChangesAsync(ct);
 
-                    // 4) Update canonical publish pointer + CANONICAL PAGE FIELDS
-                    // This is the piece that fixes your home dropdown + root redirect consistency.
+                    // ----------------------------
+                    // B2: Slug History (only if previously published and slug changed)
+                    // ----------------------------
+                    if (hadPublishedBefore)
+                    {
+                        var newPublishedSlug = Slugify(publishedRevision.Slug);
+
+                        if (!string.Equals(oldPublishedSlug, newPublishedSlug, StringComparison.OrdinalIgnoreCase))
+                        {
+                            // Upsert on (TenantId, OldSlug)
+                            var existing = await _db.PageSlugHistories
+                                .FirstOrDefaultAsync(x =>
+                                    x.TenantId == _tenant.TenantId &&
+                                    x.OldSlug == oldPublishedSlug, ct);
+
+                            if (existing == null)
+                            {
+                                _db.PageSlugHistories.Add(new PageSlugHistory
+                                {
+                                    TenantId = _tenant.TenantId,
+                                    PageId = page.Id,
+                                    OldSlug = oldPublishedSlug,
+                                    NewSlug = newPublishedSlug,
+
+                                    ChangedAt = now,
+                                    ChangedByUserId = actorUserId,
+
+                                    IsActive = true,
+                                    IsDeleted = false,
+                                    CreatedAt = now,
+                                    CreatedBy = actorUserId
+                                });
+                            }
+                            else
+                            {
+                                existing.PageId = page.Id;
+                                existing.NewSlug = newPublishedSlug;
+
+                                existing.ChangedAt = now;
+                                existing.ChangedByUserId = actorUserId;
+
+                                existing.IsActive = true;
+                                existing.IsDeleted = false;
+                                existing.UpdatedAt = now;
+                                existing.UpdatedBy = actorUserId;
+                            }
+
+                            await _db.SaveChangesAsync(ct);
+                        }
+                    }
+
+                    // 4) Update page pointers + canonical columns
                     page.PublishedRevisionId = publishedRevision.Id;
                     page.PublishedAt = now;
                     page.PageStatusId = PageStatusIds.Published;
 
-                    // Sync canonical columns used across the app (lists, redirects, SEO, etc.)
                     page.Title = publishedRevision.Title;
-                    page.Slug = publishedRevision.Slug;
+                    page.Slug = newSlug; // ✅ canonical slug
                     page.LayoutKey = publishedRevision.LayoutKey;
                     page.MetaTitle = publishedRevision.MetaTitle;
                     page.MetaDescription = publishedRevision.MetaDescription;
@@ -304,7 +458,7 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
 
                     await _db.SaveChangesAsync(ct);
 
-                    // 5) Create a fresh draft revision cloned from the published snapshot (new version)
+                    // 5) Create fresh draft cloned from published snapshot
                     var newDraft = new PageRevision
                     {
                         TenantId = _tenant.TenantId,
@@ -313,7 +467,7 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
                         IsPublishedSnapshot = false,
 
                         Title = publishedRevision.Title,
-                        Slug = publishedRevision.Slug,
+                        Slug = newSlug, // ✅ canonical slug
                         LayoutKey = publishedRevision.LayoutKey ?? string.Empty,
                         MetaTitle = publishedRevision.MetaTitle ?? string.Empty,
                         MetaDescription = publishedRevision.MetaDescription ?? string.Empty,
@@ -354,16 +508,28 @@ namespace WebsiteBuilder.IRF.Infrastructure.Pages
 
                     await tx.CommitAsync(ct);
 
+                    // capture for post-commit cache eviction
+                    tenantIdForEvict = page.TenantId;
+                    pageIdForEvict = page.Id;
+
                     return PublishResult.Ok(publishedRevision.Id);
                 });
+
+                // ✅ Evict output cache AFTER commit (outside transaction)
+                if (result.Success && tenantIdForEvict.HasValue && pageIdForEvict.HasValue)
+                {
+                    await _outputCache.EvictByTagAsync($"page:{pageIdForEvict.Value}", ct);
+                    await _outputCache.EvictByTagAsync($"tenant:{tenantIdForEvict.Value}", ct);
+                    await _outputCache.EvictByTagAsync("public-pages", ct);
+                }
+
+                return result;
             }
             catch (Exception ex)
             {
-                // Return a friendly error to the UI (instead of throwing)
                 return PublishResult.Fail("Publish failed: " + ex.Message);
             }
         }
-
 
         private static string BuildMediaUrl(MediaAsset asset)
         {

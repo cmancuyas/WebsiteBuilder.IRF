@@ -595,6 +595,8 @@ namespace WebsiteBuilder.IRF.DataAccess.Migrations.Data
 
                     b.HasIndex("DraftRevisionId");
 
+                    b.HasIndex("PageStatusId");
+
                     b.HasIndex("PublishedRevisionId");
 
                     b.HasIndex("TenantId", "OwnerUserId");
@@ -777,6 +779,85 @@ namespace WebsiteBuilder.IRF.DataAccess.Migrations.Data
                     b.HasIndex("TenantId", "PageRevisionId", "IsDeleted", "IsActive");
 
                     b.ToTable("PageRevisionSections", (string)null);
+                });
+
+            modelBuilder.Entity("WebsiteBuilder.Models.PageSlugHistory", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("ChangedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("ChangedByUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("datetime2")
+                        .HasDefaultValueSql("SYSUTCDATETIME()");
+
+                    b.Property<Guid>("CreatedBy")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("DeletedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("DeletedBy")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<bool>("IsActive")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(true);
+
+                    b.Property<bool>("IsDeleted")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false);
+
+                    b.Property<string>("NewSlug")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("OldSlug")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int>("PageId")
+                        .HasColumnType("int");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("UpdatedBy")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PageId");
+
+                    b.HasIndex("TenantId", "OldSlug")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "PageId");
+
+                    b.HasIndex("TenantId", "IsDeleted", "IsActive");
+
+                    b.ToTable("PageSlugHistories", (string)null);
                 });
 
             modelBuilder.Entity("WebsiteBuilder.Models.PageStatus", b =>
@@ -1124,6 +1205,12 @@ namespace WebsiteBuilder.IRF.DataAccess.Migrations.Data
                         .HasForeignKey("DraftRevisionId")
                         .OnDelete(DeleteBehavior.Restrict);
 
+                    b.HasOne("WebsiteBuilder.Models.PageStatus", "PageStatus")
+                        .WithMany()
+                        .HasForeignKey("PageStatusId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
                     b.HasOne("WebsiteBuilder.Models.PageRevision", "PublishedRevision")
                         .WithMany()
                         .HasForeignKey("PublishedRevisionId")
@@ -1136,6 +1223,8 @@ namespace WebsiteBuilder.IRF.DataAccess.Migrations.Data
                         .IsRequired();
 
                     b.Navigation("DraftRevision");
+
+                    b.Navigation("PageStatus");
 
                     b.Navigation("PublishedRevision");
 
@@ -1171,6 +1260,17 @@ namespace WebsiteBuilder.IRF.DataAccess.Migrations.Data
                     b.Navigation("PageRevision");
 
                     b.Navigation("SectionType");
+                });
+
+            modelBuilder.Entity("WebsiteBuilder.Models.PageSlugHistory", b =>
+                {
+                    b.HasOne("WebsiteBuilder.Models.Page", "Page")
+                        .WithMany()
+                        .HasForeignKey("PageId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Page");
                 });
 
             modelBuilder.Entity("WebsiteBuilder.Models.Tenant", b =>

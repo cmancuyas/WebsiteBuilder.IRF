@@ -20,6 +20,7 @@ namespace WebsiteBuilder.IRF.DataAccess
         public DbSet<MediaCleanupRunLog> MediaCleanupRunLogs => Set<MediaCleanupRunLog>();
         public DbSet<MediaAlert> MediaAlerts => Set<MediaAlert>();
         public DbSet<NavigationMenuItem> NavigationMenuItems => Set<NavigationMenuItem>();
+        public DbSet<PageSlugHistory> PageSlugHistories => Set<PageSlugHistory>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -42,7 +43,44 @@ namespace WebsiteBuilder.IRF.DataAccess
 
             ConfigureSectionTypes(modelBuilder);
 
+            ConfigurePageSlugHistory(modelBuilder);
+
         }
+        private static void ConfigurePageSlugHistory(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<PageSlugHistory>(b =>
+            {
+                b.ToTable("PageSlugHistories");
+
+                b.HasKey(x => x.Id);
+                b.Property(x => x.Id).ValueGeneratedOnAdd();
+
+                b.Property(x => x.TenantId).IsRequired();
+                b.Property(x => x.PageId).IsRequired();
+
+                b.Property(x => x.OldSlug)
+                    .HasMaxLength(200)
+                    .IsRequired();
+
+                b.Property(x => x.NewSlug)
+                    .HasMaxLength(200);
+
+                // ✅ Uniqueness per tenant (B2 requirement)
+                b.HasIndex(x => new { x.TenantId, x.OldSlug })
+                    .IsUnique();
+
+                // Helpful indexes
+                b.HasIndex(x => new { x.TenantId, x.PageId });
+                b.HasIndex(x => new { x.TenantId, x.IsDeleted, x.IsActive });
+
+                // Relationship (optional but clean)
+                b.HasOne(x => x.Page)
+                    .WithMany()
+                    .HasForeignKey(x => x.PageId)
+                    .OnDelete(DeleteBehavior.Cascade);
+            });
+        }
+
 
         private static void ConfigureBaseModelConventions(ModelBuilder modelBuilder)
         {

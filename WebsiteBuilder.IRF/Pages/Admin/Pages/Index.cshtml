@@ -1,55 +1,59 @@
 ﻿@page
 @model WebsiteBuilder.IRF.Pages.Admin.Pages.IndexModel
-
-@if (User.IsInRole(WebsiteBuilder.IRF.Infrastructure.Auth.AppRoles.SuperAdmin) ||
-     User.IsInRole(WebsiteBuilder.IRF.Infrastructure.Auth.AppRoles.Admin))
-{
-    <div class="card mb-3">
-        <div class="card-body">
-            <h6 class="mb-2">Tenant Home Page</h6>
-
-            <form method="post" asp-page-handler="SetHomePage" class="row g-2 align-items-end">
-                @Html.AntiForgeryToken()
-
-                <div class="col-12 col-md-8">
-                    <label class="form-label mb-1">Select a published page</label>
-
-                    <select class="form-select" asp-for="SelectedHomePageId">
-                        <option value="">-- Select Home Page --</option>
-                        @foreach (var opt in Model.PublishedPagesSelect)
-                        {
-                            <option value="@opt.Value" selected="@(opt.Value == Model.SelectedHomePageId?.ToString())">
-                                @opt.Text
-                            </option>
-                        }
-                    </select>
-
-                    <div class="form-text">
-                        This is where <code>/</code> will redirect for this tenant.
-                    </div>
-
-                    <span class="text-danger">
-                        @Html.ValidationMessageFor(m => m.SelectedHomePageId)
-                    </span>
-                </div>
-
-                <div class="col-12 col-md-4">
-                    <button type="submit" class="btn btn-primary w-100">
-                        Set as Home
-                    </button>
-                </div>
-            </form>
-
-            @* Optional: show only "global" errors *@
-            @if (ViewData.ModelState.TryGetValue(string.Empty, out var entry) && entry.Errors.Count > 0)
-            {
-                <div class="text-danger mt-2">
-                    @foreach (var err in entry.Errors)
-                    {
-                        <div>@err.ErrorMessage</div>
-                    }
-                </div>
-            }
-        </div>
-    </div>
+@{
+    ViewData["Title"] = "Pages";
 }
+
+<div class="d-flex align-items-center justify-content-between mb-3">
+    <h2 class="mb-0">Pages</h2>
+    <a class="btn btn-primary" asp-page="/Admin/Pages/Create">New Page</a>
+</div>
+
+<div class="card">
+    <div class="table-responsive">
+        <table class="table table-hover mb-0">
+            <thead>
+                <tr>
+                    <th>Title</th>
+                    <th>Slug</th>
+                    <th>Status</th>
+                    <th class="text-end">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var p in Model.Items)
+                {
+                    <tr>
+                        <td class="fw-semibold">@p.Title</td>
+                        <td><code>@p.Slug</code></td>
+                        <td>
+                            @if (p.IsArchived)
+                            {
+                                <span class="badge bg-secondary">Archived</span>
+                            }
+                            else if (p.PublishedRevisionId != null)
+                            {
+
+                                <span class="badge bg-success">Published</span>
+                            }
+                            else
+                            {
+
+                                <span class="badge bg-warning text-dark">Draft</span>
+                            }
+
+                            @if (p.DraftRevisionId != null)
+                            {
+                                <span class="badge bg-info text-dark ms-1">Has Draft</span>
+                            }
+                        </td>
+                        <td class="text-end">
+                            <a class="btn btn-sm btn-outline-secondary" asp-page="/Admin/Pages/Edit" asp-route-id="@p.Id">Edit</a>
+                            <a class="btn btn-sm btn-outline-secondary" asp-page="/Admin/Pages/Revisions" asp-route-id="@p.Id">Revisions</a>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</div>
