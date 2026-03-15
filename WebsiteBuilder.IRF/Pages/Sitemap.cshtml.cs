@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
 using System.Text;
 using WebsiteBuilder.IRF.DataAccess;
+using WebsiteBuilder.IRF.Infrastructure.Rendering;
 using WebsiteBuilder.IRF.Infrastructure.Tenancy;
 
 namespace WebsiteBuilder.IRF.Pages

@@ -1,0 +1,205 @@
+﻿@page
+@model WebsiteBuilder.IRF.Pages.Admin.Domains.IndexModel
+@{
+    ViewData["Title"] = "Domains";
+}
+
+<div class="d-flex align-items-center justify-content-between mb-3">
+    <div>
+        <h2 class="mb-0">Domains</h2>
+        <div class="text-muted small">Manage custom domains for this tenant</div>
+    </div>
+    <div class="d-flex gap-2">
+        <a class="btn btn-primary" asp-page="/Admin/Domains/Create">Add Domain</a>
+    </div>
+</div>
+
+@if (!string.IsNullOrWhiteSpace(Model.FlashMessage))
+{
+    <div class="alert alert-info">@Model.FlashMessage</div>
+}
+
+<div class="card">
+    <div class="card-body">
+        @if (Model.Domains.Count == 0)
+        {
+            <div class="text-muted">No domains yet. Click <b>Add Domain</b> to onboard one.</div>
+        }
+        else
+        {
+            <div class="table-responsive">
+                <table class="table table-sm align-middle">
+                    <thead>
+                        <tr>
+                            <th>Host</th>
+                            <th>Primary</th>
+                            <th>Status</th>
+                            <th>Activated</th>
+                            <th>Verified</th>
+                            <th style="width: 420px;">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var d in Model.Domains)
+                        {
+                            <tr>
+                                <td>
+                                    <div class="fw-semibold">@d.Host</div>
+                                    <div class="text-muted small">Normalized: @d.NormalizedHost</div>
+                                </td>
+                                <td>
+                                    @if (d.IsPrimary)
+                                    {
+                                        <span class="badge bg-success">Primary</span>
+                                    }
+                                    else
+                                    {
+                                        <span class="badge bg-secondary">Alias</span>
+                                    }
+                                </td>
+                                <td>
+                                    @switch (d.VerificationStatusId)
+                                    {
+                                        case 2:
+                                            <span class="badge bg-success">Verified</span>
+                                            ;
+                                            break;
+                                        case 3:
+                                            <span class="badge bg-danger">Failed</span>
+                                            ;
+                                            break;
+                                        default:
+                                            <span class="badge bg-warning text-dark">Pending</span>
+                                            ;
+                                            break;
+                                    }
+                                    @if (!string.IsNullOrWhiteSpace(d.LastVerificationError))
+                                    {
+                                        <div class="text-danger small mt-1">@d.LastVerificationError</div>
+                                    }
+                                </td>
+                                <td>
+                                    @if (d.ActivatedAt.HasValue)
+                                    {
+                                        <span class="text-success">Yes</span>
+                                        <div class="text-muted small">@d.ActivatedAt.Value.ToString("yyyy-MM-dd HH:mm") UTC</div>
+                                    }
+                                    else
+                                    {
+                                        <span class="text-muted">No</span>
+                                    }
+                                </td>
+                                <td>
+                                    @if (d.VerifiedAt.HasValue)
+                                    {
+                                        <div>@d.VerifiedAt.Value.ToString("yyyy-MM-dd HH:mm") UTC</div>
+                                    }
+                                    else
+                                    {
+                                        <span class="text-muted">—</span>
+                                    }
+                                </td>
+                                <td class="d-flex flex-wrap gap-2">
+                                    <button type="button"
+                                            class="btn btn-outline-secondary btn-sm"
+                                            data-copy="@Model.GetDnsHost(d.NormalizedHost)"
+                                            data-copy-label="DNS Host">
+                                        Copy TXT Host
+                                    </button>
+
+                                    <button type="button"
+                                            class="btn btn-outline-secondary btn-sm"
+                                            data-copy="@Model.GetDnsValue(d.VerificationToken)"
+                                            data-copy-label="TXT Value">
+                                        Copy TXT Value
+                                    </button>
+
+                                    <form method="post" asp-page-handler="Verify" class="d-inline">
+                                        @Html.AntiForgeryToken()
+                                        <input type="hidden" name="id" value="@d.Id" />
+                                        <button class="btn btn-outline-primary btn-sm"
+                                                @(d.VerificationStatusId == 2 ? "disabled" : "")>
+                                            Verify
+                                        </button>
+                                    </form>
+
+                                    <form method="post" asp-page-handler="Activate" class="d-inline">
+                                        @Html.AntiForgeryToken()
+                                        <input type="hidden" name="id" value="@d.Id" />
+                                        <button class="btn btn-outline-success btn-sm"
+                                                @((d.VerificationStatusId != 2 || d.ActivatedAt.HasValue) ? "disabled" : "")>
+                                            Activate
+                                        </button>
+                                    </form>
+
+                                    <form method="post" asp-page-handler="SetPrimary" class="d-inline">
+                                        @Html.AntiForgeryToken()
+                                        <input type="hidden" name="id" value="@d.Id" />
+                                        <button class="btn btn-success btn-sm"
+                                                @((d.VerificationStatusId != 2 || !d.ActivatedAt.HasValue || d.IsPrimary) ? "disabled" : "")>
+                                            Set Primary
+                                        </button>
+                                    </form>
+
+                                    <form method="post" asp-page-handler="Deactivate" class="d-inline">
+                                        @Html.AntiForgeryToken()
+                                        <input type="hidden" name="id" value="@d.Id" />
+                                        <button class="btn btn-outline-warning btn-sm"
+                                                @(!d.ActivatedAt.HasValue ? "disabled" : "")>
+                                            Deactivate
+                                        </button>
+                                    </form>
+
+                                    <form method="post" asp-page-handler="Delete" class="d-inline"
+                                          onsubmit="return confirm('Delete this domain mapping? This is a soft-delete.');">
+                                        @Html.AntiForgeryToken()
+                                        <input type="hidden" name="id" value="@d.Id" />
+                                        <button class="btn btn-outline-danger btn-sm">
+                                            Delete
+                                        </button>
+                                    </form>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+</div>
+
+@section Scripts {
+    <script>
+        (function () {
+          function copyToClipboard(text) {
+            if (navigator.clipboard && window.isSecureContext) {
+              return navigator.clipboard.writeText(text);
+            }
+            // fallback
+            const ta = document.createElement("textarea");
+            ta.value = text;
+            ta.style.position = "fixed";
+            ta.style.left = "-9999px";
+            document.body.appendChild(ta);
+            ta.focus(); ta.select();
+            document.execCommand("copy");
+            document.body.removeChild(ta);
+            return Promise.resolve();
+          }
+
+          document.addEventListener("click", async (e) => {
+            const btn = e.target.closest("[data-copy]");
+            if (!btn) return;
+            const txt = btn.getAttribute("data-copy") || "";
+            const label = btn.getAttribute("data-copy-label") || "Value";
+            try {
+              await copyToClipboard(txt);
+              btn.innerText = "Copied!";
+              setTimeout(() => btn.innerText = ("Copy " + label), 900);
+            } catch {
+              alert("Copy failed. Please copy manually:\n\n" + txt);
+            }
+          });
+        })();
+    </script>
+}
