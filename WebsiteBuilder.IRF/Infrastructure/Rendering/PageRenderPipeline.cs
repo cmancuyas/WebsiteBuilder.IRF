@@ -12,13 +12,13 @@ public sealed class PageRenderPipeline : IPageRenderPipeline
 {
     private readonly DataContext _db;
     private readonly ITenantContext _tenant;
-    private readonly TenantUrlResolver _url;
+    private readonly ITenantUrlResolver _url;
     private readonly IMemoryCache _cache;
 
     private static readonly TimeSpan PublishedCacheTtl = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan DraftCacheTtl = TimeSpan.FromSeconds(5);
 
-    public PageRenderPipeline(DataContext db, ITenantContext tenant, TenantUrlResolver url, IMemoryCache cache)
+    public PageRenderPipeline(DataContext db, ITenantContext tenant, ITenantUrlResolver url, IMemoryCache cache)
     {
         _db = db;
         _tenant = tenant;

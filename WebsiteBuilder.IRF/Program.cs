@@ -7,6 +7,7 @@ using System.Text;
 using WebsiteBuilder.IRF.DataAccess;
 using WebsiteBuilder.IRF.Infrastructure.Auth;
 using WebsiteBuilder.IRF.Infrastructure.Caching;
+using WebsiteBuilder.IRF.Infrastructure.Domains;
 using WebsiteBuilder.IRF.Infrastructure.Media;
 using WebsiteBuilder.IRF.Infrastructure.Middleware;
 using WebsiteBuilder.IRF.Infrastructure.Pages;
@@ -188,6 +189,8 @@ builder.Services.AddScoped<ITenantSitemapIndexService, TenantSitemapIndexService
 
 builder.Services.AddScoped<ITenantUrlResolver, TenantUrlResolver>();
 builder.Services.AddScoped<PublicPageOutputCachePolicy>();
+
+builder.Services.AddSingleton<IDomainVerificationService, DnsTxtDomainVerificationService>();
 
 var cacheProvider = builder.Configuration["OutputCache:Provider"]?.Trim();
 

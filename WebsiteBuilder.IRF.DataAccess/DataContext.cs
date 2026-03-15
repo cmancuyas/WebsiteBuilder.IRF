@@ -148,12 +148,21 @@ namespace WebsiteBuilder.IRF.DataAccess
                 b.Property(x => x.Id).ValueGeneratedOnAdd();
 
                 b.Property(x => x.Host).HasMaxLength(510).IsRequired();
-                b.HasIndex(x => x.Host).IsUnique();
+                b.Property(x => x.NormalizedHost).HasMaxLength(510).IsRequired();
 
-                // One primary domain per tenant
+                // ✅ Global uniqueness (prevents domain hijack / cross-tenant collisions)
+                b.HasIndex(x => x.NormalizedHost).IsUnique();
+
+                // Optional helper index for display/search
+                b.HasIndex(x => x.Host);
+
+                // ✅ One primary domain per tenant (ignore soft deleted)
                 b.HasIndex(x => new { x.TenantId, x.IsPrimary })
                     .IsUnique()
-                    .HasFilter("[IsPrimary] = 1");
+                    .HasFilter("[IsPrimary] = 1 AND [IsDeleted] = 0");
+
+                b.Property(x => x.VerificationToken).HasMaxLength(200).IsRequired();
+                b.Property(x => x.LastVerificationError).HasMaxLength(2000);
 
                 // Keep column name stable (optional)
                 b.Property(x => x.SslModeId).HasColumnName("SslModeId");

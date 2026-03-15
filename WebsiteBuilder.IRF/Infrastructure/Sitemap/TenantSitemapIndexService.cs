@@ -2,6 +2,7 @@
 using System.Xml.Linq;
 using Microsoft.EntityFrameworkCore;
 using WebsiteBuilder.IRF.DataAccess;
+using WebsiteBuilder.IRF.Infrastructure.Rendering;
 using WebsiteBuilder.IRF.Infrastructure.Tenancy;
 using WebsiteBuilder.Models;
 using WebsiteBuilder.Models.Constants;
